@@ -183,21 +183,6 @@
   .type-feedback.ok{background:var(--l8c);color:var(--l8a);}
   .type-feedback.bad{background:var(--l10c);color:var(--l10a);}
 
-  /* ── WRITE (tracing practice) ──────────────────────────── */
-  .write-nav{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px;}
-  .write-navbtn{background:var(--paper);border:2px solid var(--border);border-radius:10px;padding:9px 14px;font-size:1rem;font-weight:700;cursor:pointer;}
-  .write-counter{font-size:.82rem;color:var(--muted);font-weight:700;}
-  .write-meaning{text-align:center;margin-bottom:10px;}
-  .write-meaning .vi{font-size:1.15rem;font-weight:800;}
-  .write-meaning .py{font-size:.9rem;color:var(--muted);font-style:italic;}
-  .write-grid-wrap{position:relative;width:100%;max-width:280px;aspect-ratio:1/1;margin:0 auto 14px;border-radius:10px;overflow:hidden;box-shadow:var(--shadow);touch-action:none;}
-  .write-grid-wrap canvas{position:absolute;top:0;left:0;width:100%;height:100%;}
-  #write-canvas-draw{cursor:crosshair;}
-  .write-tools{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:14px;}
-  .write-tool-btn{background:var(--l9b);color:var(--l9a);border:none;border-radius:10px;padding:9px 14px;font-size:.85rem;font-weight:700;cursor:pointer;}
-  .write-tool-btn.off{background:var(--border);color:var(--muted);}
-  .write-mark-row{display:flex;gap:10px;justify-content:center;}
-
   /* ── LISTEN ────────────────────────────────────────────── */
   .listen-sentence{font-size:1rem;color:var(--muted);text-align:center;padding:0 16px;margin-bottom:6px;font-style:italic;}
   .listen-play{font-size:2.5rem;cursor:pointer;text-align:center;padding:18px;display:block;}
@@ -385,7 +370,6 @@
   <button onclick="goTab('flash')" id="tab-flash">📖 Flashcard</button>
   <button onclick="goTab('quiz')" id="tab-quiz">📝 Trắc nghiệm</button>
   <button onclick="goTab('type')" id="tab-type">⌨️ Gõ chữ</button>
-  <button onclick="goTab('write')" id="tab-write">✍️ Tập viết</button>
   <button onclick="goTab('listen')" id="tab-listen">🎧 Nghe – Chọn</button>
   <button onclick="goTab('aitrans')" id="tab-aitrans">🤖 AI Dịch</button>
   <button onclick="goTab('exam')" id="tab-exam">🏆 Thi thử</button>
@@ -1837,8 +1821,17 @@ function lessonTagStyle(l) { return `background:${lessonTagBg(l)};color:${lesson
 
 // Quyển (book) — Quyển 1: bài 1-15, Quyển 2: bài 16-30
 const BOOKS = [
-  {id:1, name:'Quyển 1', from:1, to:15},
-  {id:2, name:'Quyển 2', from:16, to:30},
+  {id:1,  name:'Quyển 1',      from:1,  to:15, group:'📗 Giáo trình cơ bản'},
+  {id:2,  name:'Quyển 2',      from:16, to:30, group:'📗 Giáo trình cơ bản'},
+  {id:3,  name:'Chuyên ngành', from:31, to:31, group:'🧩 Từ vựng mở rộng'},
+  {id:4,  name:'HSK 1',        from:32, to:32, group:'🎯 Luyện thi HSK'},
+  {id:5,  name:'HSK 2',        from:33, to:33, group:'🎯 Luyện thi HSK'},
+  {id:6,  name:'HSK 3',        from:34, to:34, group:'🎯 Luyện thi HSK'},
+  {id:7,  name:'HSK 4',        from:35, to:35, group:'🎯 Luyện thi HSK'},
+  {id:8,  name:'HSK 4+',       from:36, to:36, group:'🎯 Luyện thi HSK'},
+  {id:9,  name:'HSK 5',        from:37, to:37, group:'🎯 Luyện thi HSK'},
+  {id:10, name:'HSK 6',        from:38, to:38, group:'🎯 Luyện thi HSK'},
+  {id:11, name:'HSK 6+',       from:39, to:39, group:'🎯 Luyện thi HSK'},
 ];
 function lessonsOfBook(bookId) {
   const b = BOOKS.find(x=>x.id===bookId);
@@ -1864,6 +1857,25 @@ function setBook(b) {
   selectedBook = b; selectedLessons.clear(); render();
 }
 
+// Hiển thị các Quyển/nhóm từ vựng theo từng khối riêng biệt (Giáo trình cơ bản /
+// Từ vựng mở rộng / Luyện thi HSK...) để không bị lẫn lộn giữa các loại nội dung khác nhau.
+function bookSelectorHtml() {
+  const loggedIn = isLoggedIn();
+  const groups = [];
+  for (const b of BOOKS) if (!groups.includes(b.group)) groups.push(b.group);
+  return groups.map(g => {
+    const btns = BOOKS.filter(b => b.group === g).map(b => {
+      const locked = !loggedIn && b.id !== 1;
+      const style = selectedBook===b.id?`background:var(--active);border-color:var(--active);color:#fff;`:`border-color:var(--active);color:var(--active);`;
+      return `<button class="lbtn${selectedBook===b.id?' sel':''}${locked?' locked':''}" style="${style}${locked?'opacity:.55;':''}" onclick="setBook(${b.id})">${locked?'🔒 ':''}${b.name}</button>`;
+    }).join('');
+    return `<div style="margin-bottom:8px;">
+      <div style="font-size:.72rem;color:var(--muted);font-weight:700;margin-bottom:4px;">${g}</div>
+      <div>${btns}</div>
+    </div>`;
+  }).join('');
+}
+
 // ════════════════════════════════════════════════════
 // RENDER DISPATCHER
 // ════════════════════════════════════════════════════
@@ -1874,7 +1886,6 @@ function render() {
   else if (currentTab === 'flash') { el.innerHTML = renderFlash(); bindFlash(); }
   else if (currentTab === 'quiz')  { el.innerHTML = renderQuiz(); bindQuiz(); }
   else if (currentTab === 'type')  { el.innerHTML = renderType(); bindType(); }
-  else if (currentTab === 'write') { el.innerHTML = renderWrite(); bindWrite(); }
   else if (currentTab === 'listen'){ el.innerHTML = renderListen(); bindListen(); }
   else if (currentTab === 'aitrans'){ el.innerHTML = renderAiTrans(); bindAiTrans(); }
   else if (currentTab === 'exam')  { el.innerHTML = renderExam(); bindExam(); }
@@ -1891,11 +1902,7 @@ function lessonFilterHtml() {
   const lessons = lessonsOfBook(selectedBook);
   const allSelected = selectedLessons.size === 0;
   const loggedIn = isLoggedIn();
-  const bookBtns = BOOKS.map(b => {
-    const locked = !loggedIn && b.id !== 1;
-    const style = selectedBook===b.id?`background:var(--active);border-color:var(--active);color:#fff;`:`border-color:var(--active);color:var(--active);`;
-    return `<button class="lbtn${selectedBook===b.id?' sel':''}${locked?' locked':''}" style="${style}${locked?'opacity:.55;':''}" onclick="setBook(${b.id})">${locked?'🔒 ':''}${b.name}</button>`;
-  }).join('');
+  const bookBtns = bookSelectorHtml();
   const allBtn = `<button class="lbtn${allSelected?' sel':''}" data-l="0" style="${allSelected ? `border-color:var(--active);background:var(--active);color:#fff;` : `border-color:var(--active);background:${lessonBg(0)};color:var(--active);`}" onclick="toggleLessonAll()">Tất cả</button>`;
   const lessonBtns = lessons.map(l => {
     const sel = !allSelected && selectedLessons.has(l);
@@ -2292,155 +2299,6 @@ function tySkip() {
 }
 
 // ════════════════════════════════════════════════════
-// WRITE (tracing practice on 田字格 grid)
-// ════════════════════════════════════════════════════
-let wrWords=[], wrIdx=0, wrShowGuide=true, wrStrokes=[], wrDrawing=false, wrCurStroke=null;
-let wrGuideCtx=null, wrDrawCtx=null;
-const WR_SIZE = 280;
-
-function renderWrite() {
-  wrWords = sortByPriority(getFilteredWords());
-  if (wrIdx >= wrWords.length) wrIdx = 0;
-  if (!wrWords.length) return `${lessonFilterHtml()}<div class="panel center" style="padding:40px">Không có từ nào!</div>`;
-  return `
-  ${lessonFilterHtml()}
-  <div class="panel">
-    <div class="write-nav">
-      <button class="write-navbtn" onclick="wrPrev()">◀</button>
-      <span class="write-counter" id="wr-counter"></span>
-      <button class="write-navbtn" onclick="wrNext()">▶</button>
-    </div>
-    <div class="write-meaning" id="wr-meaning"></div>
-    <div class="write-grid-wrap">
-      <canvas id="write-canvas-guide" width="${WR_SIZE}" height="${WR_SIZE}"></canvas>
-      <canvas id="write-canvas-draw" width="${WR_SIZE}" height="${WR_SIZE}"></canvas>
-    </div>
-    <div class="write-tools">
-      <button class="write-tool-btn" id="wr-guide-btn" onclick="wrToggleGuide()">👻 Ẩn chữ mẫu</button>
-      <button class="write-tool-btn" onclick="wrUndo()">↩️ Hoàn tác</button>
-      <button class="write-tool-btn" onclick="wrClear()">🗑️ Xoá hết</button>
-      <button class="write-tool-btn" onclick="speak(wrWords[wrIdx].hz)">🔊 Nghe</button>
-    </div>
-    <div class="write-mark-row">
-      <button class="fc-btn btn-fail" onclick="wrMark(false)">❌ Cần luyện thêm</button>
-      <button class="fc-btn btn-ok" onclick="wrMark(true)">✅ Viết được</button>
-    </div>
-  </div>
-  <div class="panel" style="font-size:.8rem;color:var(--muted);text-align:center">
-    ✍️ Đồ theo nét chữ mờ trong khung, sau đó tự đánh giá. Đây là luyện nét bằng tay, chưa kiểm tra thứ tự nét tự động.
-  </div>`;
-}
-
-function bindWrite() {
-  if (!wrWords.length) return;
-  const guideCanvas = document.getElementById('write-canvas-guide');
-  const drawCanvas = document.getElementById('write-canvas-draw');
-  if (!guideCanvas || !drawCanvas) return;
-  wrGuideCtx = guideCanvas.getContext('2d');
-  wrDrawCtx = drawCanvas.getContext('2d');
-  wrUpdate();
-  wrAttachEvents(drawCanvas);
-}
-
-function wrUpdate() {
-  const w = wrWords[wrIdx];
-  document.getElementById('wr-counter').textContent = `${wrIdx+1} / ${wrWords.length}`;
-  document.getElementById('wr-meaning').innerHTML = `
-    <div class="vi">${w.vi}</div>
-    ${showPinyin ? `<div class="py">${w.py}</div>` : ''}`;
-  wrStrokes = [];
-  wrDrawGuide();
-  wrClearCanvasOnly();
-}
-
-function wrDrawGuide() {
-  const ctx = wrGuideCtx; if (!ctx) return;
-  const s = WR_SIZE;
-  ctx.clearRect(0,0,s,s);
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0,0,s,s);
-  ctx.strokeStyle = '#b9c4d6';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(1,1,s-2,s-2);
-  ctx.lineWidth = 1;
-  ctx.setLineDash([6,5]);
-  ctx.beginPath();
-  ctx.moveTo(s/2,0); ctx.lineTo(s/2,s);
-  ctx.moveTo(0,s/2); ctx.lineTo(s,s/2);
-  ctx.moveTo(0,0); ctx.lineTo(s,s);
-  ctx.moveTo(s,0); ctx.lineTo(0,s);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  if (wrShowGuide) {
-    const w = wrWords[wrIdx];
-    ctx.font = `${Math.round(s*0.72)}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = 'rgba(140,150,175,0.4)';
-    ctx.fillText(w.hz, s/2, s/2 + s*0.03);
-  }
-}
-
-function wrClearCanvasOnly() {
-  const ctx = wrDrawCtx; if (!ctx) return;
-  ctx.clearRect(0,0,WR_SIZE,WR_SIZE);
-}
-
-function wrRedrawStrokes() {
-  const ctx = wrDrawCtx; if (!ctx) return;
-  ctx.clearRect(0,0,WR_SIZE,WR_SIZE);
-  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  ctx.strokeStyle = '#c0314f';
-  ctx.lineWidth = 9;
-  wrStrokes.forEach(stroke => {
-    if (stroke.length < 2) return;
-    ctx.beginPath();
-    ctx.moveTo(stroke[0].x, stroke[0].y);
-    for (let i=1;i<stroke.length;i++) ctx.lineTo(stroke[i].x, stroke[i].y);
-    ctx.stroke();
-  });
-}
-
-function wrGetPos(canvas, evt) {
-  const rect = canvas.getBoundingClientRect();
-  const cx = evt.touches && evt.touches.length ? evt.touches[0].clientX : evt.clientX;
-  const cy = evt.touches && evt.touches.length ? evt.touches[0].clientY : evt.clientY;
-  return { x: (cx-rect.left)*(WR_SIZE/rect.width), y: (cy-rect.top)*(WR_SIZE/rect.height) };
-}
-
-function wrAttachEvents(canvas) {
-  const start = (e) => { e.preventDefault(); wrDrawing=true; wrCurStroke=[wrGetPos(canvas,e)]; wrStrokes.push(wrCurStroke); };
-  const move = (e) => { if(!wrDrawing) return; e.preventDefault(); wrCurStroke.push(wrGetPos(canvas,e)); wrRedrawStrokes(); };
-  const end = () => { wrDrawing=false; wrCurStroke=null; };
-  canvas.addEventListener('mousedown', start);
-  canvas.addEventListener('mousemove', move);
-  canvas.addEventListener('mouseup', end);
-  canvas.addEventListener('mouseleave', end);
-  canvas.addEventListener('touchstart', start, {passive:false});
-  canvas.addEventListener('touchmove', move, {passive:false});
-  canvas.addEventListener('touchend', end);
-}
-
-function wrToggleGuide() {
-  wrShowGuide = !wrShowGuide;
-  const btn = document.getElementById('wr-guide-btn');
-  if (btn) { btn.textContent = wrShowGuide ? '👻 Ẩn chữ mẫu' : '👻 Hiện chữ mẫu'; btn.classList.toggle('off', !wrShowGuide); }
-  wrDrawGuide();
-}
-
-function wrUndo() { wrStrokes.pop(); wrRedrawStrokes(); }
-function wrClear() { wrStrokes=[]; wrClearCanvasOnly(); }
-
-function wrNext() { wrIdx=(wrIdx+1)%wrWords.length; wrUpdate(); }
-function wrPrev() { wrIdx=(wrIdx-1+wrWords.length)%wrWords.length; wrUpdate(); }
-
-function wrMark(ok) {
-  recordAnswer(wrWords[wrIdx].hz, ok);
-  if (ok) playDing(); else playBuzz();
-  wrNext();
-}
-
-// ════════════════════════════════════════════════════
 // LISTEN (sentence-based)
 // ════════════════════════════════════════════════════
 let lsItems=[], lsIdx=0, lsScore=0;
@@ -2769,7 +2627,7 @@ function renderStats() {
   const known=all.filter(w=>d[w.hz]&&d[w.hz].step>=3).length;
   const rate=total?Math.round(correct/total*100):0;
   const bookLabel = BOOKS.find(b=>b.id===selectedBook).name;
-  const bookBtns = BOOKS.map(b => `<button class="lbtn${selectedBook===b.id?' sel':''}" style="${selectedBook===b.id?`background:var(--active);border-color:var(--active);color:#fff;`:`border-color:var(--active);color:var(--active);`}" onclick="setBook(${b.id});render()">${b.name}</button>`).join('');
+  const bookBtns = bookSelectorHtml();
 
   // lesson bars
   const statLessons = isLoggedIn() ? lessonsOfBook(selectedBook) : lessonsOfBook(1).filter(l => l <= GUEST_MAX_LESSON);
