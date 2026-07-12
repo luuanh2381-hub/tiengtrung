@@ -386,12 +386,10 @@
   <button onclick="goTab('type')" id="tab-type">⌨️ Gõ chữ</button>
   <button onclick="goTab('listen')" id="tab-listen">🎧 Nghe – Chọn</button>
   <button onclick="goTab('aitrans')" id="tab-aitrans">🤖 AI Dịch</button>
-  <button onclick="goTab('exam')" id="tab-exam">🏆 Thi thử</button>
   <button onclick="goTab('stats')" id="tab-stats">📊 Thống kê</button>
   <button onclick="goTab('dict')" id="tab-dict">📚 Từ điển</button>
   <button onclick="goTab('compare')" id="tab-compare">🆚 So sánh</button>
   <button onclick="goTab('hsk')" id="tab-hsk">🎯 HSK4</button>
-  <button onclick="goTab('rank')" id="tab-rank">🏅 Xếp hạng</button>
   <button onclick="goTab('admin')" id="tab-admin" style="display:none;">🛠️ Quản trị</button>
 </div>
 
@@ -1547,8 +1545,6 @@ function closeAuthGate() {
   document.getElementById('auth-gate').style.display = 'none';
   updateUserBadge();
   document.getElementById('tab-admin').style.display = (!isGuest && isAdminRole()) ? '' : 'none';
-  const rankTab = document.getElementById('tab-rank');
-  if (rankTab) rankTab.style.display = isGuest ? 'none' : '';
 }
 function updateUserBadge() {
   const badge = document.getElementById('user-badge');
@@ -1808,7 +1804,6 @@ function playBuzz() {
 // GLOBAL STATE
 // ════════════════════════════════════════════════════
 let currentTab = 'home';
-let selectedLessons = new Set(); // rỗng = chọn "Tất cả" các bài trong Quyển hiện tại
 let showPinyin = true;
 let questionCount = 10;
 
@@ -1857,7 +1852,8 @@ function bookOfLesson(l) {
   const b = BOOKS.find(x => l>=x.from && l<=x.to);
   return b ? b.id : 1;
 }
-let selectedBook = 1;
+// Cho phép chọn NHIỀU Quyển/level cùng lúc qua 1 ô droplist (multi-select)
+let selectedBookIds = new Set([1]);
 
 // ── Giới hạn cho khách / chưa đăng nhập: chỉ được học tối đa 5 bài đầu của Quyển 1 ──
 const GUEST_MAX_LESSON = 5;
@@ -1866,33 +1862,37 @@ function guestLimitNotice() {
   openAuthGate();
 }
 
-function setBook(b) {
-  if (!isLoggedIn() && b !== 1) { guestLimitNotice(); return; }
-  selectedBook = b; selectedLessons.clear(); render();
+// Toàn bộ các bài học thuộc những Quyển/level đang được chọn (đã gộp, đã sắp xếp)
+function lessonsOfSelection() {
+  const set = new Set();
+  for (const id of selectedBookIds) for (const l of lessonsOfBook(id)) set.add(l);
+  return [...set].sort((a,b)=>a-b);
 }
 
-// Hiển thị các Quyển/nhóm từ vựng theo từng khối riêng biệt (Giáo trình cơ bản /
-// Từ vựng mở rộng / Luyện thi HSK...) để không bị lẫn lộn giữa các loại nội dung khác nhau.
-function bookSelectorHtml() {
+// Xử lý khi người dùng chọn/bỏ chọn trong ô droplist (hỗ trợ chọn nhiều mục cùng lúc)
+function onLevelSelectChange(sel) {
+  const ids = Array.from(sel.selectedOptions).map(o => parseInt(o.value));
+  if (!isLoggedIn() && ids.some(id => id !== 1)) { guestLimitNotice(); return; }
+  selectedBookIds = new Set(ids.length ? ids : [1]);
+  render();
+}
+
+// Ô droplist chọn Quyển/level, nhóm theo từng loại (Giáo trình cơ bản / Từ vựng mở rộng / Luyện thi HSK...)
+function levelSelectHtml() {
   const loggedIn = isLoggedIn();
   const groups = [];
   for (const b of BOOKS) if (!groups.includes(b.group)) groups.push(b.group);
-  return groups.map(g => {
-    const cards = BOOKS.filter(b => b.group === g).map(b => {
+  const optgroups = groups.map(g => {
+    const opts = BOOKS.filter(b => b.group === g).map(b => {
       const locked = !loggedIn && b.id !== 1;
-      const sel = selectedBook === b.id;
       const count = WORDS.filter(w => w.l >= b.from && w.l <= b.to).length;
-      return `<button class="book-card${sel?' sel':''}${locked?' locked':''}" onclick="setBook(${b.id})">
-        ${locked?'<span class="book-card-lock">🔒</span>':''}
-        <span class="book-card-name">${b.name}</span>
-        <span class="book-card-count">${count} từ</span>
-      </button>`;
+      const sel = selectedBookIds.has(b.id);
+      return `<option value="${b.id}"${sel?' selected':''}${locked?' disabled':''}>${locked?'🔒 ':''}${b.name} (${count} từ)</option>`;
     }).join('');
-    return `<div class="book-group">
-      <div class="book-group-label">${g}</div>
-      <div class="book-grid">${cards}</div>
-    </div>`;
+    return `<optgroup label="${g}">${opts}</optgroup>`;
   }).join('');
+  return `<select id="level-select" multiple size="8" onchange="onLevelSelectChange(this)" style="width:100%;border-radius:12px;border:2px solid var(--border);padding:6px;font-size:.86rem;font-family:inherit;background:#fff;color:var(--ink);">${optgroups}</select>
+    <div style="font-size:.7rem;color:var(--muted);margin:4px 0 8px;">Chạm để chọn/bỏ chọn — có thể chọn nhiều Quyển/level cùng lúc để gộp từ vựng lại với nhau.</div>`;
 }
 
 // ════════════════════════════════════════════════════
@@ -1907,32 +1907,19 @@ function render() {
   else if (currentTab === 'type')  { el.innerHTML = renderType(); bindType(); }
   else if (currentTab === 'listen'){ el.innerHTML = renderListen(); bindListen(); }
   else if (currentTab === 'aitrans'){ el.innerHTML = renderAiTrans(); bindAiTrans(); }
-  else if (currentTab === 'exam')  { el.innerHTML = renderExam(); bindExam(); }
   else if (currentTab === 'stats') { el.innerHTML = renderStats(); }
   else if (currentTab === 'dict')  { el.innerHTML = renderDict(); bindDict(); }
   else if (currentTab === 'compare'){ el.innerHTML = renderCompare(); bindCompare(); }
   else if (currentTab === 'hsk')   { el.innerHTML = renderHSK(); }
-  else if (currentTab === 'rank')  { el.innerHTML = renderRankTab(); bindRankTab(); }
   else if (currentTab === 'admin') { el.innerHTML = renderAdmin(); bindAdmin(); }
 }
 
-// Lesson filter html — cho phép chọn NHIỀU bài cùng lúc (đặc biệt hữu ích khi kiểm tra/ôn tập)
+// Lesson filter html — dùng ô droplist đa lựa chọn, cho phép chọn NHIỀU Quyển/level cùng lúc
 function lessonFilterHtml() {
-  const lessons = lessonsOfBook(selectedBook);
-  const allSelected = selectedLessons.size === 0;
   const loggedIn = isLoggedIn();
-  const bookBtns = bookSelectorHtml();
-  const allBtn = `<button class="lbtn${allSelected?' sel':''}" data-l="0" style="${allSelected ? `border-color:var(--active);background:var(--active);color:#fff;` : `border-color:var(--active);background:${lessonBg(0)};color:var(--active);`}" onclick="toggleLessonAll()">Tất cả</button>`;
-  const lessonBtns = lessons.map(l => {
-    const sel = !allSelected && selectedLessons.has(l);
-    const locked = !loggedIn && l > GUEST_MAX_LESSON;
-    const style = sel
-      ? `border-color:${lessonColor(l)};background:${lessonColor(l)};color:#fff;`
-      : `border-color:${lessonColor(l)};background:${lessonBg(l)};color:${lessonColor(l)};`;
-    return `<button class="lbtn${sel?' sel':''}${locked?' locked':''}" data-l="${l}" style="${style}${locked?'opacity:.5;':''}" onclick="toggleLesson(${l})">${locked?'🔒 ':''}Bài ${l}</button>`;
-  }).join('');
-  const hint = selectedLessons.size > 1
-    ? `<div style="font-size:.72rem;color:var(--muted);margin:2px 0 8px;">Đang chọn ${selectedLessons.size} bài: ${[...selectedLessons].sort((a,b)=>a-b).join(', ')}</div>`
+  const levelSelect = levelSelectHtml();
+  const hint = selectedBookIds.size > 1
+    ? `<div style="font-size:.72rem;color:var(--muted);margin:2px 0 8px;">Đang chọn ${selectedBookIds.size} mục: ${[...selectedBookIds].map(id=>BOOKS.find(b=>b.id===id).name).join(', ')}</div>`
     : '';
   const guestNotice = !loggedIn
     ? `<div style="font-size:.75rem;color:var(--muted);background:${lessonBg(0)};border:1px solid var(--active);border-radius:10px;padding:8px 10px;margin-bottom:8px;">
@@ -1940,54 +1927,27 @@ function lessonFilterHtml() {
         <a href="javascript:void(0)" onclick="openAuthGate()" style="color:var(--active);font-weight:700;">Đăng nhập / Đăng ký</a> để mở khoá toàn bộ và lưu tiến độ.
       </div>`
     : '';
-  return `<div id="book-filter" style="margin-bottom:8px;">${bookBtns}</div>` +
-    `<div id="lesson-filter">${allBtn}${lessonBtns}</div>` + hint + guestNotice;
-}
-// Bấm "Tất cả": chọn hết các bài trong Quyển hiện tại (xoá lựa chọn riêng lẻ)
-function toggleLessonAll() { selectedLessons.clear(); render(); }
-// Bấm 1 nút bài: bật/tắt bài đó trong danh sách đang chọn (chọn được nhiều bài cùng lúc)
-function toggleLesson(l) {
-  if (!isLoggedIn() && l > GUEST_MAX_LESSON) { guestLimitNotice(); return; }
-  if (selectedLessons.has(l)) selectedLessons.delete(l);
-  else selectedLessons.add(l);
-  render();
+  return `<div id="book-filter" style="margin-bottom:8px;">${levelSelect}</div>` + hint + guestNotice;
 }
 
 function getFilteredWords() {
-  let words;
-  if (selectedLessons.size === 0) words = WORDS.filter(w => bookOfLesson(w.l) === selectedBook);
-  else words = WORDS.filter(w => selectedLessons.has(w.l));
+  let words = WORDS.filter(w => selectedBookIds.has(bookOfLesson(w.l)));
   if (!isLoggedIn()) words = words.filter(w => w.l <= GUEST_MAX_LESSON);
   return words;
 }
 // Dùng cho các màn lọc theo bài không phải từ vựng (vd. câu ví dụ ở màn Dịch câu)
 function isLessonInSelection(l) {
-  return selectedLessons.size === 0 ? bookOfLesson(l) === selectedBook : selectedLessons.has(l);
+  return selectedBookIds.has(bookOfLesson(l));
 }
 
 // ════════════════════════════════════════════════════
 // HOME
 // ════════════════════════════════════════════════════
 function renderHome() {
-  const lessons = isLoggedIn() ? lessonsOfBook(selectedBook) : lessonsOfBook(1).filter(l => l <= GUEST_MAX_LESSON);
-  const bars = lessons.map(l => {
-    const all = WORDS.filter(w => w.l === l).length;
-    const known = getKnownCount(l);
-    const pct = all ? Math.round(known/all*100) : 0;
-    return `<div class="prog-row">
-      <div class="prog-label"><span>Bài ${l}</span><span style="color:${lessonColor(l)};font-weight:700">${known}/${all} từ · ${pct}%</span></div>
-      <div class="prog-bar"><div class="prog-fill" style="width:${pct}%;background:${lessonColor(l)}"></div></div>
-    </div>`;
-  }).join('');
-  const bookLabel = BOOKS.find(b=>b.id===selectedBook).name;
-
   return `
   <div class="panel">
     <div class="panel-title">Chọn bài học</div>
     ${lessonFilterHtml()}
-    <div class="sep"></div>
-    <div class="panel-title">Tiến độ · ${bookLabel} (Bài ${lessons[0]}–${lessons[lessons.length-1]})</div>
-    ${bars}
   </div>
   <div class="panel">
     <div class="panel-title">Bắt đầu học nhanh</div>
@@ -2566,90 +2526,21 @@ async function aiGrade(i) {
 }
 
 // ════════════════════════════════════════════════════
-// EXAM
-// ════════════════════════════════════════════════════
-let exWords=[], exIdx=0, exScore=0, exMissed=[], exAnswered=false;
-let exType='漢→Việt';
-
-function renderExam() {
-  return `
-  ${lessonFilterHtml()}
-  <div class="count-row">
-    <label>Số câu:</label>
-    <select onchange="exSetCount(this.value)">${[10,15,20,30].map(n=>`<option value="${n}"${n==questionCount?' selected':''}>${n}</option>`).join('')}</select>
-  </div>
-  <div id="ex-area"></div>`;
-}
-function exSetCount(v){ questionCount=parseInt(v); bindExam(); }
-function bindExam() {
-  exWords = shuffle(getFilteredWords()).slice(0,questionCount);
-  exIdx=0; exScore=0; exMissed=[];
-  exRenderQ();
-}
-function exRenderQ() {
-  const area=document.getElementById('ex-area'); if(!area) return;
-  if(exIdx>=exWords.length){
-    const pct = exScore/exWords.length;
-    const missHtml = exMissed.map(w=>`<div class="exam-miss-item"><span class="weak-hz" style="color:var(--l10a)">${w.hz}</span><span>${w.py} · ${w.vi}</span></div>`).join('');
-    area.innerHTML=`<div class="panel exam-result">
-      <div class="exam-score">${exScore}/${exWords.length}</div>
-      <div class="exam-rank">${qzRank(pct)}</div>
-      <div style="margin:10px 0;font-size:.85rem;color:var(--muted)">${Math.round(pct*100)}% đúng</div>
-      <button class="btn btn-primary" onclick="bindExam()" style="margin-bottom:16px">Thi lại</button>
-      ${exMissed.length?`<div class="exam-miss"><div class="panel-title">Các từ sai:</div>${missHtml}</div>`:''}
-    </div>`; return;
-  }
-  // rotate types
-  const types = ['漢→Việt','Việt→漢','Âm→漢'];
-  exType = types[exIdx % 3];
-  const w = exWords[exIdx];
-  const opts = qzMakeOpts(w);
-  let qHtml, optHtml;
-  if (exType==='漢→Việt') {
-    qHtml=`<div class="fc-hz">${w.hz}</div>${showPinyin?`<div class="fc-py">${w.py}</div>`:''}`;
-    optHtml=opts.map(o=>`<button class="quiz-opt" onclick="exPick(this,'${o.vi}','${w.vi}')">${o.vi}</button>`).join('');
-  } else if (exType==='Việt→漢') {
-    qHtml=`<div class="fc-vi" style="font-size:1.3rem">${w.vi}</div>`;
-    optHtml=opts.map(o=>`<button class="quiz-opt" onclick="exPick(this,'${o.hz}','${w.hz}')">${o.hz}${showPinyin?`<div class="quiz-sub">${o.py}</div>`:''}</button>`).join('');
-  } else {
-    qHtml=`<div class="fc-py" style="font-size:1.4rem;color:var(--ink)">${w.py}</div>`;
-    optHtml=opts.map(o=>`<button class="quiz-opt" onclick="exPick(this,'${o.hz}','${w.hz}')">${o.hz}</button>`).join('');
-  }
-  area.innerHTML=`<div class="panel">
-    <div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">${exIdx+1}/${exWords.length} · ${exType}</div>
-    <div class="quiz-q">${qHtml}</div>
-    <div class="quiz-opts">${optHtml}</div>
-  </div>`;
-}
-function exPick(btn, chosen, correct) {
-  const ok = chosen===correct;
-  const w = exWords[exIdx];
-  document.querySelectorAll('#ex-area .quiz-opt').forEach(b=>{
-    const bv=b.getAttribute('onclick').match(/'([^']+)','[^']+'/)[1];
-    if(bv===correct) b.classList.add('correct');
-    else if(b===btn&&!ok) b.classList.add('wrong');
-    b.disabled=true;
-  });
-  if(ok){playDing();exScore++;}else{playBuzz();exMissed.push(w);}
-  speak(w.hz); recordAnswer(w.hz,ok);
-  setTimeout(()=>{ exIdx++; exRenderQ(); },1400);
-}
-
-// ════════════════════════════════════════════════════
 // STATS
 // ════════════════════════════════════════════════════
 function renderStats() {
   const d=getSRS();
-  const all=WORDS.filter(w => bookOfLesson(w.l) === selectedBook);
+  const all=WORDS.filter(w => selectedBookIds.has(bookOfLesson(w.l)));
   const total=all.reduce((s,w)=>s+(d[w.hz]?.total||0),0);
   const correct=all.reduce((s,w)=>s+(d[w.hz]?.correct||0),0);
   const known=all.filter(w=>d[w.hz]&&d[w.hz].step>=3).length;
   const rate=total?Math.round(correct/total*100):0;
-  const bookLabel = BOOKS.find(b=>b.id===selectedBook).name;
-  const bookBtns = bookSelectorHtml();
+  const bookLabel = [...selectedBookIds].map(id=>BOOKS.find(b=>b.id===id).name).join(', ');
+  const levelSelect = levelSelectHtml();
 
   // lesson bars
-  const statLessons = isLoggedIn() ? lessonsOfBook(selectedBook) : lessonsOfBook(1).filter(l => l <= GUEST_MAX_LESSON);
+  let statLessons = lessonsOfSelection();
+  if (!isLoggedIn()) statLessons = statLessons.filter(l => l <= GUEST_MAX_LESSON);
   const barHtml=statLessons.map(l=>{
     const lw=all.filter(w=>w.l===l);
     const lt=lw.reduce((s,w)=>s+(d[w.hz]?.total||0),0);
@@ -2672,7 +2563,7 @@ function renderStats() {
   </div>`).join('');
 
   return `<div class="panel">
-    <div id="book-filter" style="margin-bottom:8px;">${bookBtns}</div>
+    <div id="book-filter" style="margin-bottom:8px;">${levelSelect}</div>
     <div class="panel-title">Tổng quan · ${bookLabel}</div>
     <div class="stat-grid">
       <div class="stat-box"><div class="stat-num">🔥${getStreak()}</div><div class="stat-lbl">Ngày streak</div></div>
@@ -2860,66 +2751,6 @@ function renderHSK() {
       📌 Danh sách dựa trên bộ từ vựng HSK1-4 phổ biến (~1200 từ, chuẩn HSK 2.0). Một từ tính "đã có" nếu trùng chữ Hán với từ vựng trong app (bất kể bài học nào); "đã thuộc" là từ đã vượt mốc ôn ≥1 ngày trong SRS. Số liệu chỉ mang tính ước lượng tham khảo, không thay thế kết quả thi thật.
     </div>
   </div>`;
-}
-
-// ════════════════════════════════════════════════════
-// TAB: CẤP BẬC CÁ NHÂN + XẾP HẠNG THI ĐUA
-// ════════════════════════════════════════════════════
-function renderRankTab() {
-  if (isGuest) {
-    return `<div class="panel center" style="padding:40px">
-      <div style="font-size:2rem;margin-bottom:8px;">🔒</div>
-      Cấp bậc và xếp hạng chỉ áp dụng cho tài khoản đã đăng nhập.<br>
-      <button class="btn btn-primary" style="margin-top:14px;max-width:220px;" onclick="openAuthGate()">Đăng nhập / Đăng ký</button>
-    </div>`;
-  }
-  const r = currentRank || { name: 'Đang tải...', icon: '⏳', next: null };
-  const nextHtml = r.next
-    ? `Còn <b>${r.next.remain}</b> từ nữa để lên <b>${r.next.icon} ${r.next.name}</b>`
-    : `Bạn đã đạt cấp bậc cao nhất! 🎉`;
-  const myKnown = countKnownLocal();
-  const myPct = Math.min(100, Math.round(myKnown / WORDS.length * 100));
-  return `<div class="panel center" style="padding:24px 18px;">
-    <div style="font-size:3rem;">${r.icon}</div>
-    <div style="font-size:1.3rem;font-weight:900;margin:4px 0;">${r.name}</div>
-    <div style="font-size:.85rem;color:var(--muted);margin-bottom:10px;">${nextHtml}</div>
-    <div style="font-size:1.6rem;font-weight:900;color:var(--l8a);">${myPct}%</div>
-    <div style="font-size:.78rem;color:var(--muted);">tổng từ vựng đã thuộc (${myKnown}/${WORDS.length} từ)</div>
-    <div class="prog-bar" style="margin-top:8px;"><div class="prog-fill" style="width:${myPct}%;background:var(--l8a)"></div></div>
-  </div>
-  <div class="panel">
-    <div class="panel-title">🏅 Bảng xếp hạng (theo % tổng từ vựng đã thuộc)</div>
-    <div id="leaderboard-area" style="text-align:center;padding:20px;color:var(--muted);">Đang tải...</div>
-  </div>`;
-}
-function countKnownLocal() {
-  const d = getSRS();
-  let n = 0;
-  for (const hz in d) { if (d[hz] && d[hz].step >= 3) n++; }
-  return n;
-}
-async function bindRankTab() {
-  if (isGuest) return;
-  const area = document.getElementById('leaderboard-area');
-  try {
-    const res = await fetch('/api/leaderboard', { headers: authHeaders() });
-    const data = await res.json();
-    if (!data.ok) { area.textContent = 'Không tải được bảng xếp hạng.'; return; }
-    const medal = i => i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1)+'.';
-    const total = WORDS.length;
-    area.innerHTML = data.leaderboard.map((u,i) => {
-      const pct = Math.min(100, Math.round(u.known / total * 100));
-      return `
-      <div style="display:flex;align-items:center;gap:10px;padding:9px 6px;border-radius:10px;${u.isMe?'background:var(--l9b);font-weight:800;':''}text-align:left;">
-        <span style="min-width:28px;font-weight:800;">${medal(i)}</span>
-        <span style="flex:1;">${u.username}${u.isMe?' (bạn)':''}<div style="font-size:.72rem;color:var(--muted);font-weight:600;">${u.rank} · ${u.known}/${total} từ</div></span>
-        <span style="font-weight:900;color:var(--l8a);font-size:1.05rem;">${pct}%</span>
-        <span style="font-size:.8rem;">🔥${u.streak}</span>
-      </div>`;
-    }).join('') || '<div style="color:var(--muted);">Chưa có ai học cả.</div>';
-  } catch {
-    area.textContent = 'Không kết nối được máy chủ.';
-  }
 }
 
 // ════════════════════════════════════════════════════
