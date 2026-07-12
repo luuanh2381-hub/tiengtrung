@@ -82,6 +82,20 @@
   /* ── LESSON FILTER ─────────────────────────────────────── */
   #lesson-filter{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;}
   .lbtn{padding:6px 14px;border-radius:20px;border:2px solid;font-size:.82rem;font-weight:700;cursor:pointer;transition:all .15s;}
+
+  /* ── Bảng chọn Quyển/nhóm từ vựng ─────────────────────── */
+  .book-group{margin-bottom:12px;}
+  .book-group-label{font-size:.72rem;color:var(--muted);font-weight:700;margin-bottom:6px;letter-spacing:.02em;}
+  .book-grid{display:flex;flex-wrap:wrap;gap:8px;}
+  .book-card{position:relative;flex:1 1 100px;max-width:170px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:11px 8px;border-radius:14px;border:2px solid var(--border);background:#fff;cursor:pointer;transition:all .15s;}
+  .book-card:active{transform:scale(.96);}
+  .book-card.sel{border-color:var(--active);background:var(--active);box-shadow:0 3px 10px rgba(84,101,212,.35);}
+  .book-card.sel .book-card-name{color:#fff;}
+  .book-card.sel .book-card-count{color:rgba(255,255,255,.85);}
+  .book-card.locked{opacity:.5;}
+  .book-card-name{font-weight:800;font-size:.87rem;color:var(--ink);text-align:center;}
+  .book-card-count{font-size:.68rem;color:var(--muted);font-weight:600;}
+  .book-card-lock{position:absolute;top:6px;right:8px;font-size:.7rem;}
   .lbtn[data-l="0"]{border-color:var(--active);background:var(--l9b);color:var(--l9a);}
   .lbtn[data-l="1"]{border-color:var(--l1a);background:var(--l1b);color:var(--l1a);}
   .lbtn[data-l="2"]{border-color:var(--l2a);background:var(--l2b);color:var(--l2a);}
@@ -1864,14 +1878,19 @@ function bookSelectorHtml() {
   const groups = [];
   for (const b of BOOKS) if (!groups.includes(b.group)) groups.push(b.group);
   return groups.map(g => {
-    const btns = BOOKS.filter(b => b.group === g).map(b => {
+    const cards = BOOKS.filter(b => b.group === g).map(b => {
       const locked = !loggedIn && b.id !== 1;
-      const style = selectedBook===b.id?`background:var(--active);border-color:var(--active);color:#fff;`:`border-color:var(--active);color:var(--active);`;
-      return `<button class="lbtn${selectedBook===b.id?' sel':''}${locked?' locked':''}" style="${style}${locked?'opacity:.55;':''}" onclick="setBook(${b.id})">${locked?'🔒 ':''}${b.name}</button>`;
+      const sel = selectedBook === b.id;
+      const count = WORDS.filter(w => w.l >= b.from && w.l <= b.to).length;
+      return `<button class="book-card${sel?' sel':''}${locked?' locked':''}" onclick="setBook(${b.id})">
+        ${locked?'<span class="book-card-lock">🔒</span>':''}
+        <span class="book-card-name">${b.name}</span>
+        <span class="book-card-count">${count} từ</span>
+      </button>`;
     }).join('');
-    return `<div style="margin-bottom:8px;">
-      <div style="font-size:.72rem;color:var(--muted);font-weight:700;margin-bottom:4px;">${g}</div>
-      <div>${btns}</div>
+    return `<div class="book-group">
+      <div class="book-group-label">${g}</div>
+      <div class="book-grid">${cards}</div>
     </div>`;
   }).join('');
 }
