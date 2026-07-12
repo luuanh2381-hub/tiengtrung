@@ -1,0 +1,15 @@
+{
+  "name": "hoc-tu-vung-trung",
+  "version": "2.0.0",
+  "description": "App học từ vựng tiếng Trung có đăng nhập, lưu tiến độ theo tài khoản (bản deploy Vercel + Postgres)",
+  "main": "api/index.js",
+  "scripts": {
+    "start": "node api/index.js",
+    "dev": "node api/index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "bcryptjs": "^2.4.3",
+    "pg": "^8.12.0"
+  }
+}

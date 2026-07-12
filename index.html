@@ -1,0 +1,3357 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>學中文 · Học Tiếng Trung</title>
+<style>
+  /* ── DESIGN TOKENS ─────────────────────────────────────── */
+  :root {
+    --ink:    #1a1a2e;
+    --paper:  #f7f6f2;
+    --muted:  #8a8a99;
+    --border: #e2e0d8;
+    --radius: 14px;
+    --shadow: 0 2px 12px rgba(0,0,0,.09);
+
+    /* lesson palette */
+    --l7a:#e07b39; --l7b:#fff3eb; --l7c:#fde8d3;
+    --l8a:#3a8c5c; --l8b:#eaf6ef; --l8c:#c8ecd7;
+    --l9a:#5465d4; --l9b:#edf0ff; --l9c:#ccd2f7;
+    --l10a:#c0435e;--l10b:#fff0f3;--l10c:#f7c2cc;
+    --l11a:#8b5cf6;--l11b:#f3eeff;--l11c:#ddccfb;
+    --l12a:#0f9b8e;--l12b:#e8f9f6;--l12c:#bfeee7;
+    --l13a:#b8860b;--l13b:#fdf6e3;--l13c:#f3e2ad;
+    --l1a:#c0392b; --l1b:#fdecea; --l1c:#f8cfc9;
+    --l2a:#d35400; --l2b:#fdf0e4; --l2c:#f9d9b8;
+    --l3a:#c99a06; --l3b:#fef8e7; --l3c:#f2e2a8;
+    --l4a:#27ae60; --l4b:#eafaf1; --l4c:#c8f0da;
+    --l5a:#16a085; --l5b:#e8f8f5; --l5c:#c3ecdf;
+    --l6a:#2980b9; --l6b:#eaf4fb; --l6c:#c6e3f5;
+    --l14a:#7f8c8d;--l14b:#f2f4f4;--l14c:#dbdfdf;
+    --l15a:#34495e;--l15b:#eaedf0;--l15c:#c7cdd3;
+
+    --active:#5465d4;
+    --correct:#3a8c5c;
+    --wrong:#c0435e;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--paper);color:var(--ink);min-height:100vh;overflow-x:hidden;}
+
+  /* ── TOPBAR ────────────────────────────────────────────── */
+  #topbar{position:sticky;top:0;z-index:100;background:#fff;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;padding:10px 14px;box-shadow:0 1px 6px rgba(0,0,0,.06);}
+  #topbar h1{font-size:1.1rem;font-weight:800;letter-spacing:-.5px;flex:1;}
+  #streak-badge{background:var(--l7c);padding:4px 10px;border-radius:20px;font-size:.82rem;font-weight:700;color:var(--l7a);}
+  .pinyin-toggle{background:var(--l9b);color:var(--l9a);border:none;padding:5px 11px;border-radius:20px;font-size:.8rem;font-weight:700;cursor:pointer;}
+  .speed-control{display:flex;align-items:center;gap:5px;background:var(--paper);border-radius:20px;padding:3px 10px;}
+  .speed-control label{font-size:.72rem;font-weight:700;color:var(--muted);}
+  .speed-control input[type=range]{width:60px;accent-color:var(--active);cursor:pointer;}
+  .speed-val{font-size:.72rem;font-weight:700;color:var(--active);min-width:28px;}
+
+  /* ── NAV TABS ──────────────────────────────────────────── */
+  #nav{display:flex;overflow-x:auto;gap:4px;padding:10px 14px 0;background:#fff;border-bottom:1px solid var(--border);}
+  #nav button{flex-shrink:0;padding:7px 13px;border:none;background:none;font-size:.78rem;font-weight:700;color:var(--muted);border-bottom:3px solid transparent;cursor:pointer;transition:all .15s;}
+  #nav button.active{color:var(--active);border-color:var(--active);}
+
+  /* ── MAIN CONTENT ──────────────────────────────────────── */
+  #content{padding:14px;max-width:700px;margin:0 auto;}
+
+  /* ── CARDS / PANELS ────────────────────────────────────── */
+  .panel{background:#fff;border-radius:var(--radius);box-shadow:var(--shadow);padding:18px;margin-bottom:14px;}
+  #auth-gate{position:fixed;inset:0;background:var(--paper);z-index:999;display:flex;align-items:center;justify-content:center;padding:20px;}
+  .auth-box{background:#fff;border-radius:var(--radius);box-shadow:var(--shadow);padding:28px 24px;width:100%;max-width:360px;}
+  .auth-title{font-size:1.3rem;font-weight:900;text-align:center;margin-bottom:4px;}
+  .auth-sub{font-size:.8rem;color:var(--muted);text-align:center;margin-bottom:20px;}
+  .auth-tabs{display:flex;gap:6px;margin-bottom:18px;background:var(--paper);border-radius:10px;padding:4px;}
+  .auth-tab{flex:1;padding:8px;border:none;background:none;border-radius:8px;font-weight:700;font-size:.85rem;color:var(--muted);cursor:pointer;}
+  .auth-tab.active{background:var(--active);color:#fff;}
+  .auth-field{margin-bottom:12px;}
+  .auth-field label{display:block;font-size:.75rem;font-weight:700;color:var(--muted);margin-bottom:5px;}
+  .auth-field input{width:100%;padding:10px 12px;border:1.5px solid #e3e3ec;border-radius:10px;font-size:.95rem;box-sizing:border-box;}
+  .auth-field input:focus{outline:none;border-color:var(--active);}
+  .auth-error{background:#fdecea;color:#c0392b;font-size:.8rem;font-weight:600;padding:8px 10px;border-radius:8px;margin-bottom:12px;display:none;}
+  .auth-error.show{display:block;}
+  .auth-submit{width:100%;padding:11px;border:none;border-radius:10px;background:var(--active);color:#fff;font-weight:800;font-size:.95rem;cursor:pointer;margin-top:4px;}
+  .auth-submit:disabled{opacity:.6;cursor:default;}
+  .auth-guest{width:100%;padding:9px;border:none;background:none;color:var(--muted);font-size:.78rem;font-weight:600;cursor:pointer;margin-top:10px;text-decoration:underline;}
+  #user-badge{background:var(--l11c);padding:4px 10px;border-radius:20px;font-size:.8rem;font-weight:700;color:var(--l11a);cursor:pointer;border:none;}
+  .sync-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#3a8c5c;margin-right:4px;vertical-align:middle;}
+  .sync-dot.offline{background:#c0392b;}
+  .panel-title{font-size:.75rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:12px;}
+
+  /* ── LESSON FILTER ─────────────────────────────────────── */
+  #lesson-filter{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;}
+  .lbtn{padding:6px 14px;border-radius:20px;border:2px solid;font-size:.82rem;font-weight:700;cursor:pointer;transition:all .15s;}
+  .lbtn[data-l="0"]{border-color:var(--active);background:var(--l9b);color:var(--l9a);}
+  .lbtn[data-l="1"]{border-color:var(--l1a);background:var(--l1b);color:var(--l1a);}
+  .lbtn[data-l="2"]{border-color:var(--l2a);background:var(--l2b);color:var(--l2a);}
+  .lbtn[data-l="3"]{border-color:var(--l3a);background:var(--l3b);color:var(--l3a);}
+  .lbtn[data-l="4"]{border-color:var(--l4a);background:var(--l4b);color:var(--l4a);}
+  .lbtn[data-l="5"]{border-color:var(--l5a);background:var(--l5b);color:var(--l5a);}
+  .lbtn[data-l="6"]{border-color:var(--l6a);background:var(--l6b);color:var(--l6a);}
+  .lbtn[data-l="14"]{border-color:var(--l14a);background:var(--l14b);color:var(--l14a);}
+  .lbtn[data-l="15"]{border-color:var(--l15a);background:var(--l15b);color:var(--l15a);}
+  .lbtn[data-l="7"]{border-color:var(--l7a);background:var(--l7b);color:var(--l7a);}
+  .lbtn[data-l="8"]{border-color:var(--l8a);background:var(--l8b);color:var(--l8a);}
+  .lbtn[data-l="9"]{border-color:var(--l9a);background:var(--l9b);color:var(--l9a);}
+  .lbtn[data-l="10"]{border-color:var(--l10a);background:var(--l10b);color:var(--l10a);}
+  .lbtn[data-l="11"]{border-color:var(--l11a);background:var(--l11b);color:var(--l11a);}
+  .lbtn[data-l="12"]{border-color:var(--l12a);background:var(--l12b);color:var(--l12a);}
+  .lbtn[data-l="13"]{border-color:var(--l13a);background:var(--l13b);color:var(--l13a);}
+  .lbtn.sel{color:#fff!important;}
+  .lbtn[data-l="0"].sel{background:var(--active);}
+  .lbtn[data-l="1"].sel{background:var(--l1a);}
+  .lbtn[data-l="2"].sel{background:var(--l2a);}
+  .lbtn[data-l="3"].sel{background:var(--l3a);}
+  .lbtn[data-l="4"].sel{background:var(--l4a);}
+  .lbtn[data-l="5"].sel{background:var(--l5a);}
+  .lbtn[data-l="6"].sel{background:var(--l6a);}
+  .lbtn[data-l="14"].sel{background:var(--l14a);}
+  .lbtn[data-l="15"].sel{background:var(--l15a);}
+  .lbtn[data-l="7"].sel{background:var(--l7a);}
+  .lbtn[data-l="8"].sel{background:var(--l8a);}
+  .lbtn[data-l="9"].sel{background:var(--l9a);}
+  .lbtn[data-l="10"].sel{background:var(--l10a);}
+  .lbtn[data-l="11"].sel{background:var(--l11a);}
+  .lbtn[data-l="12"].sel{background:var(--l12a);}
+  .lbtn[data-l="13"].sel{background:var(--l13a);}
+
+  /* ── PROGRESS BARS ─────────────────────────────────────── */
+  .prog-row{margin-bottom:10px;}
+  .prog-label{display:flex;justify-content:space-between;font-size:.78rem;font-weight:600;margin-bottom:4px;}
+  .prog-bar{height:8px;background:var(--border);border-radius:4px;overflow:hidden;}
+  .prog-fill{height:100%;border-radius:4px;transition:width .4s;}
+  .prog-fill[data-l="1"]{background:var(--l1a);}
+  .prog-fill[data-l="2"]{background:var(--l2a);}
+  .prog-fill[data-l="3"]{background:var(--l3a);}
+  .prog-fill[data-l="4"]{background:var(--l4a);}
+  .prog-fill[data-l="5"]{background:var(--l5a);}
+  .prog-fill[data-l="6"]{background:var(--l6a);}
+  .prog-fill[data-l="14"]{background:var(--l14a);}
+  .prog-fill[data-l="15"]{background:var(--l15a);}
+  .prog-fill[data-l="7"]{background:var(--l7a);}
+  .prog-fill[data-l="8"]{background:var(--l8a);}
+  .prog-fill[data-l="9"]{background:var(--l9a);}
+  .prog-fill[data-l="10"]{background:var(--l10a);}
+  .prog-fill[data-l="11"]{background:var(--l11a);}
+  .prog-fill[data-l="12"]{background:var(--l12a);}
+  .prog-fill[data-l="13"]{background:var(--l13a);}
+
+  /* ── FLASHCARD ─────────────────────────────────────────── */
+  .fc-wrap{perspective:900px;height:290px;cursor:pointer;margin-bottom:16px;}
+  .fc-inner{position:relative;width:100%;height:100%;transform-style:preserve-3d;transition:transform .5s;}
+  .fc-inner.flipped{transform:rotateY(180deg);}
+  .fc-front,.fc-back{position:absolute;inset:0;background:#fff;border-radius:var(--radius);box-shadow:var(--shadow);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;backface-visibility:hidden;}
+  .fc-back{transform:rotateY(180deg);}
+  .fc-hz{font-size:3.2rem;font-weight:900;line-height:1;}
+  .fc-hz-back{font-size:2.1rem;font-weight:900;line-height:1;}
+  .fc-py{font-size:1rem;color:var(--muted);font-style:italic;}
+  .fc-vi{font-size:1.3rem;font-weight:700;text-align:center;padding:0 16px;}
+  .fc-lesson-tag{position:absolute;top:10px;right:10px;font-size:.7rem;font-weight:800;padding:3px 9px;border-radius:12px;}
+  .fc-hint{font-size:.75rem;color:var(--muted);position:absolute;bottom:10px;}
+  .fc-controls{display:flex;gap:10px;justify-content:center;}
+  .fc-btn{padding:10px 24px;border:none;border-radius:10px;font-size:.9rem;font-weight:700;cursor:pointer;}
+  .btn-ok{background:var(--l8c);color:var(--l8a);}
+  .btn-fail{background:var(--l10c);color:var(--l10a);}
+  .btn-sound{background:var(--l9b);color:var(--l9a);padding:8px 14px;}
+  .fc-counter{text-align:center;font-size:.78rem;color:var(--muted);margin-bottom:10px;}
+  .fc-parts-wrap{width:100%;max-height:78px;overflow-y:auto;padding:6px 16px;box-sizing:border-box;}
+  .fc-parts-title{font-size:.66rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;}
+  .fc-parts-row{display:flex;align-items:flex-start;gap:6px;margin-bottom:3px;font-size:.74rem;line-height:1.3;}
+  .fc-parts-char{font-weight:900;font-size:1.05rem;min-width:24px;flex-shrink:0;}
+  .fc-parts-comps{flex:1;color:var(--ink);}
+  .fc-parts-chip{display:inline-block;background:var(--paper);border-radius:6px;padding:1px 6px;margin:0 3px 2px 0;font-weight:700;}
+  .fc-parts-note{color:var(--muted);font-style:italic;}
+
+  /* ── QUIZ ──────────────────────────────────────────────── */
+  .quiz-q{font-size:1.5rem;font-weight:800;text-align:center;padding:24px 16px;min-height:90px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;}
+  .quiz-sub{font-size:.85rem;color:var(--muted);font-weight:400;}
+  .quiz-opts{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;}
+  .quiz-opt{padding:13px 10px;background:var(--paper);border:2px solid var(--border);border-radius:10px;font-size:1rem;font-weight:600;cursor:pointer;transition:all .15s;text-align:center;}
+  .quiz-opt.correct{background:var(--l8c);border-color:var(--l8a);color:var(--l8a);}
+  .quiz-opt.wrong{background:var(--l10c);border-color:var(--l10a);color:var(--l10a);}
+  .quiz-type-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}
+  .quiz-type-btn{padding:5px 12px;border-radius:16px;border:2px solid var(--border);background:#fff;font-size:.78rem;font-weight:700;cursor:pointer;}
+  .quiz-type-btn.active{background:var(--active);color:#fff;border-color:var(--active);}
+
+  /* ── TYPE INPUT ────────────────────────────────────────── */
+  .type-q{text-align:center;padding:20px 16px;}
+  .type-hz-big{font-size:2.2rem;font-weight:900;}
+  .type-input{width:100%;padding:12px;font-size:1.1rem;border:2px solid var(--border);border-radius:10px;outline:none;text-align:center;font-family:inherit;}
+  .type-input:focus{border-color:var(--active);}
+  .type-feedback{padding:12px;border-radius:10px;text-align:center;font-size:.95rem;font-weight:700;margin-top:8px;}
+  .type-feedback.ok{background:var(--l8c);color:var(--l8a);}
+  .type-feedback.bad{background:var(--l10c);color:var(--l10a);}
+
+  /* ── WRITE (tracing practice) ──────────────────────────── */
+  .write-nav{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px;}
+  .write-navbtn{background:var(--paper);border:2px solid var(--border);border-radius:10px;padding:9px 14px;font-size:1rem;font-weight:700;cursor:pointer;}
+  .write-counter{font-size:.82rem;color:var(--muted);font-weight:700;}
+  .write-meaning{text-align:center;margin-bottom:10px;}
+  .write-meaning .vi{font-size:1.15rem;font-weight:800;}
+  .write-meaning .py{font-size:.9rem;color:var(--muted);font-style:italic;}
+  .write-grid-wrap{position:relative;width:100%;max-width:280px;aspect-ratio:1/1;margin:0 auto 14px;border-radius:10px;overflow:hidden;box-shadow:var(--shadow);touch-action:none;}
+  .write-grid-wrap canvas{position:absolute;top:0;left:0;width:100%;height:100%;}
+  #write-canvas-draw{cursor:crosshair;}
+  .write-tools{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:14px;}
+  .write-tool-btn{background:var(--l9b);color:var(--l9a);border:none;border-radius:10px;padding:9px 14px;font-size:.85rem;font-weight:700;cursor:pointer;}
+  .write-tool-btn.off{background:var(--border);color:var(--muted);}
+  .write-mark-row{display:flex;gap:10px;justify-content:center;}
+
+  /* ── LISTEN ────────────────────────────────────────────── */
+  .listen-sentence{font-size:1rem;color:var(--muted);text-align:center;padding:0 16px;margin-bottom:6px;font-style:italic;}
+  .listen-play{font-size:2.5rem;cursor:pointer;text-align:center;padding:18px;display:block;}
+  .listen-opts{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .listen-opt{padding:14px 8px;border:2px solid var(--border);background:var(--paper);border-radius:10px;font-size:1.2rem;font-weight:700;cursor:pointer;text-align:center;}
+  .listen-opt.correct{background:var(--l8c);border-color:var(--l8a);color:var(--l8a);}
+  .listen-opt.wrong{background:var(--l10c);border-color:var(--l10a);color:var(--l10a);}
+
+  /* ── TRANSLATE ─────────────────────────────────────────── */
+  .trans-vi{font-size:1.05rem;font-weight:700;margin-bottom:8px;line-height:1.5;}
+  .trans-hint{font-size:.78rem;color:var(--active);margin-bottom:10px;}
+  .trans-input{width:100%;min-height:60px;padding:10px;font-size:1rem;border:2px solid var(--border);border-radius:10px;outline:none;font-family:inherit;resize:vertical;}
+  .trans-input:focus{border-color:var(--active);}
+  .trans-answer{margin-top:8px;padding:10px;background:var(--l9b);border-radius:8px;font-size:1rem;font-weight:700;color:var(--l9a);display:none;}
+  .trans-self-btns{display:flex;gap:8px;margin-top:8px;}
+
+  /* ── EXAM ──────────────────────────────────────────────── */
+  .exam-result{text-align:center;padding:20px;}
+  .exam-score{font-size:3rem;font-weight:900;color:var(--active);}
+  .exam-rank{font-size:1.2rem;font-weight:700;margin:8px 0;}
+  .exam-miss{margin-top:16px;text-align:left;}
+  .exam-miss-item{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:8px;background:var(--l10b);margin-bottom:6px;font-size:.9rem;}
+
+  /* ── STATS ─────────────────────────────────────────────── */
+  .stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;}
+  .stat-box{background:var(--paper);border-radius:10px;padding:12px;text-align:center;}
+  .stat-num{font-size:1.6rem;font-weight:900;color:var(--active);}
+  .stat-lbl{font-size:.7rem;color:var(--muted);font-weight:600;}
+  .weak-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:var(--paper);margin-bottom:6px;}
+  .weak-hz{font-size:1.3rem;font-weight:900;min-width:40px;}
+  .weak-info{flex:1;font-size:.82rem;color:var(--muted);}
+  .bar-chart{display:flex;align-items:flex-end;gap:8px;height:80px;margin-top:10px;}
+  .bar-col{display:flex;flex-direction:column;align-items:center;flex:1;gap:4px;}
+  .bar-fill{width:100%;border-radius:4px 4px 0 0;}
+  .bar-lbl{font-size:.65rem;font-weight:700;color:var(--muted);}
+  .bar-pct{font-size:.65rem;font-weight:700;}
+
+  /* ── DICTIONARY ────────────────────────────────────────── */
+  .dict-search{width:100%;padding:10px 14px;border:2px solid var(--border);border-radius:10px;font-size:.95rem;outline:none;font-family:inherit;margin-bottom:12px;}
+  .dict-search:focus{border-color:var(--active);}
+  .dict-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;border-bottom:1px solid var(--border);}
+  .dict-hz{font-size:1.6rem;font-weight:900;min-width:52px;}
+  .dict-py{font-size:.82rem;color:var(--muted);font-style:italic;}
+  .dict-vi{font-size:.9rem;font-weight:600;flex:1;}
+  .dict-tag{font-size:.66rem;font-weight:800;padding:2px 7px;border-radius:8px;margin-left:4px;}
+
+  /* ── HSK4 PROGRESS ─────────────────────────────────────── */
+  .hsk-hero{text-align:center;padding:6px 0 14px;}
+  .hsk-hero-num{font-size:2.6rem;font-weight:900;color:var(--active);line-height:1;}
+  .hsk-hero-sub{font-size:.85rem;color:var(--muted);font-weight:600;margin-top:4px;}
+  .hsk-bigbar{height:14px;background:var(--paper);border-radius:8px;overflow:hidden;margin-top:12px;}
+  .hsk-bigbar-fill{height:100%;background:linear-gradient(90deg,var(--active),#8b5cf6);border-radius:8px;transition:width .5s;}
+  .hsk-level-row{margin-bottom:14px;}
+  .hsk-level-label{display:flex;justify-content:space-between;align-items:baseline;font-size:.85rem;font-weight:700;margin-bottom:5px;}
+  .hsk-level-label .lv{color:var(--ink);}
+  .hsk-level-label .ct{color:var(--muted);font-weight:600;font-size:.78rem;}
+  .hsk-note{font-size:.78rem;color:var(--muted);line-height:1.5;margin-top:4px;}
+
+  /* ── GENERIC BUTTONS ───────────────────────────────────── */
+  .btn{padding:11px 22px;border:none;border-radius:10px;font-size:.9rem;font-weight:700;cursor:pointer;transition:all .15s;}
+  .btn-primary{background:var(--active);color:#fff;}
+  .btn-primary:hover{opacity:.88;}
+  .btn-sm{padding:6px 14px;font-size:.8rem;}
+  .btn-sound-sm{background:none;border:none;font-size:1.2rem;cursor:pointer;padding:4px;}
+
+  /* ── COMPARE / CONFUSABLE CHARS ───────────────────────── */
+  .confuse-card{background:var(--paper);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:12px;box-shadow:var(--shadow);}
+  .confuse-row{display:flex;justify-content:center;align-items:flex-start;gap:6px;margin-bottom:10px;flex-wrap:wrap;}
+  .confuse-item{flex:1;min-width:84px;max-width:140px;text-align:center;background:var(--bg);border-radius:10px;padding:10px 6px;border:2px solid var(--border);}
+  .confuse-hz{font-size:2.1rem;font-weight:900;line-height:1;cursor:pointer;}
+  .confuse-py{font-size:.78rem;color:var(--muted);font-style:italic;margin-top:4px;}
+  .confuse-vi{font-size:.8rem;font-weight:700;margin-top:2px;}
+  .confuse-vs{align-self:center;font-size:.85rem;color:var(--muted);font-weight:800;padding:0 2px;}
+  .confuse-tip{font-size:.84rem;color:var(--text);background:var(--l9b);border-radius:8px;padding:9px 11px;line-height:1.45;}
+  .confuse-item.in-vocab{border-color:var(--l8a);}
+  .confuse-badge{display:inline-block;font-size:.62rem;font-weight:800;color:var(--l8a);background:var(--l8c);border-radius:6px;padding:1px 5px;margin-top:3px;}
+  .confuse-test-opt{padding:14px 8px;border:2px solid var(--border);background:var(--paper);border-radius:10px;font-size:1.6rem;font-weight:900;cursor:pointer;text-align:center;min-width:70px;}
+  .confuse-test-opt.correct{background:var(--l8c);border-color:var(--l8a);color:var(--l8a);}
+  .confuse-test-opt.wrong{background:var(--l10c);border-color:var(--l10a);color:var(--l10a);}
+
+  /* ── COUNT SELECTOR ────────────────────────────────────── */
+  .count-row{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap;}
+  .count-row label{font-size:.8rem;color:var(--muted);font-weight:600;}
+  .count-row select{padding:5px 10px;border:1px solid var(--border);border-radius:8px;font-size:.82rem;outline:none;}
+
+  /* ── MISC ──────────────────────────────────────────────── */
+  .lesson-color-7{background:var(--l7b);color:var(--l7a);border-color:var(--l7a);}
+  .lesson-color-8{background:var(--l8b);color:var(--l8a);border-color:var(--l8a);}
+  .lesson-color-9{background:var(--l9b);color:var(--l9a);border-color:var(--l9a);}
+  .lesson-color-10{background:var(--l10b);color:var(--l10a);border-color:var(--l10a);}
+  .lesson-color-11{background:var(--l11b);color:var(--l11a);border-color:var(--l11a);}
+  .lesson-color-12{background:var(--l12b);color:var(--l12a);border-color:var(--l12a);}
+  .lesson-color-13{background:var(--l13b);color:var(--l13a);border-color:var(--l13a);}
+  .tag-l1{background:var(--l1c);color:var(--l1a);}
+  .tag-l2{background:var(--l2c);color:var(--l2a);}
+  .tag-l3{background:var(--l3c);color:var(--l3a);}
+  .tag-l4{background:var(--l4c);color:var(--l4a);}
+  .tag-l5{background:var(--l5c);color:var(--l5a);}
+  .tag-l6{background:var(--l6c);color:var(--l6a);}
+  .tag-l14{background:var(--l14c);color:var(--l14a);}
+  .tag-l15{background:var(--l15c);color:var(--l15a);}
+  .tag-l7{background:var(--l7c);color:var(--l7a);}
+  .tag-l8{background:var(--l8c);color:var(--l8a);}
+  .tag-l9{background:var(--l9c);color:var(--l9a);}
+  .tag-l10{background:var(--l10c);color:var(--l10a);}
+  .tag-l11{background:var(--l11c);color:var(--l11a);}
+  .tag-l12{background:var(--l12c);color:var(--l12a);}
+  .tag-l13{background:var(--l13c);color:var(--l13a);}
+
+  .hidden{display:none!important;}
+  .center{text-align:center;}
+  .row{display:flex;align-items:center;gap:8px;}
+  .sep{height:1px;background:var(--border);margin:14px 0;}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+
+<div id="auth-gate">
+  <div class="auth-box">
+    <div class="auth-title">🀄 學中文</div>
+    <div class="auth-sub">Đăng nhập để lưu tiến độ học riêng của bạn</div>
+    <div class="auth-tabs">
+      <button class="auth-tab active" id="auth-tab-login" onclick="authSwitchTab('login')">Đăng nhập</button>
+      <button class="auth-tab" id="auth-tab-register" onclick="authSwitchTab('register')">Đăng ký</button>
+    </div>
+    <div class="auth-error" id="auth-error"></div>
+    <div class="auth-field">
+      <label>Tên đăng nhập</label>
+      <input type="text" id="auth-username" autocomplete="username" placeholder="vd: minh123">
+    </div>
+    <div class="auth-field">
+      <label>Mật khẩu</label>
+      <input type="password" id="auth-password" autocomplete="current-password" placeholder="••••••">
+    </div>
+    <button class="auth-submit" id="auth-submit" onclick="authSubmit()">Đăng nhập</button>
+    <button class="auth-guest" onclick="authContinueAsGuest()">Dùng thử không cần tài khoản (tiến độ chỉ lưu trên máy này)</button>
+  </div>
+</div>
+
+<div id="account-menu" style="position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:998;display:none;align-items:center;justify-content:center;padding:20px;">
+  <div class="auth-box" style="max-width:320px;">
+    <div class="auth-title" id="account-menu-name">👤</div>
+    <button class="auth-submit" style="margin-top:10px" onclick="closeAccountMenu(); openChangePassword();">🔑 Đổi mật khẩu</button>
+    <button class="auth-submit" style="margin-top:10px;background:var(--fail);" onclick="closeAccountMenu(); if(confirm('Đăng xuất khỏi tài khoản này?')) authLogout();">🚪 Đăng xuất</button>
+    <button class="auth-guest" onclick="closeAccountMenu()">Đóng</button>
+  </div>
+</div>
+
+<div id="pw-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:998;display:none;align-items:center;justify-content:center;padding:20px;">
+  <div class="auth-box" style="max-width:320px;">
+    <div class="auth-title">🔑 Đổi mật khẩu</div>
+    <div class="auth-error" id="pw-error"></div>
+    <div class="auth-field">
+      <label>Mật khẩu hiện tại</label>
+      <input type="password" id="pw-old" autocomplete="current-password" placeholder="••••••">
+    </div>
+    <div class="auth-field">
+      <label>Mật khẩu mới</label>
+      <input type="password" id="pw-new" autocomplete="new-password" placeholder="Tối thiểu 4 ký tự">
+    </div>
+    <div class="auth-field">
+      <label>Nhập lại mật khẩu mới</label>
+      <input type="password" id="pw-new2" autocomplete="new-password" placeholder="••••••">
+    </div>
+    <button class="auth-submit" id="pw-submit" onclick="submitChangePassword()">Đổi mật khẩu</button>
+    <button class="auth-guest" onclick="closeChangePassword()">Huỷ</button>
+  </div>
+</div>
+
+<div id="topbar">
+  <h1>🀄 學中文</h1>
+  <span id="streak-badge">🔥 0 ngày</span>
+  <button id="user-badge" onclick="authOpenMenu()">👤 Khách</button>
+  <div class="speed-control">
+    <label>🐢</label>
+    <input type="range" id="speed-slider" min="0.3" max="1.0" step="0.05" value="0.65" oninput="updateSpeed(this.value)">
+    <span class="speed-val" id="speed-val">0.65</span>
+  </div>
+  <button class="pinyin-toggle" onclick="togglePinyin()" id="py-toggle-btn">Ẩn Pinyin</button>
+</div>
+
+<div id="nav">
+  <button onclick="goTab('home')" class="active" id="tab-home">🏠 Trang chủ</button>
+  <button onclick="goTab('flash')" id="tab-flash">📖 Flashcard</button>
+  <button onclick="goTab('quiz')" id="tab-quiz">📝 Trắc nghiệm</button>
+  <button onclick="goTab('type')" id="tab-type">⌨️ Gõ chữ</button>
+  <button onclick="goTab('write')" id="tab-write">✍️ Tập viết</button>
+  <button onclick="goTab('listen')" id="tab-listen">🎧 Nghe – Chọn</button>
+  <button onclick="goTab('aitrans')" id="tab-aitrans">🤖 AI Dịch</button>
+  <button onclick="goTab('exam')" id="tab-exam">🏆 Thi thử</button>
+  <button onclick="goTab('stats')" id="tab-stats">📊 Thống kê</button>
+  <button onclick="goTab('dict')" id="tab-dict">📚 Từ điển</button>
+  <button onclick="goTab('compare')" id="tab-compare">🆚 So sánh</button>
+  <button onclick="goTab('hsk')" id="tab-hsk">🎯 HSK4</button>
+  <button onclick="goTab('rank')" id="tab-rank">🏅 Xếp hạng</button>
+  <button onclick="goTab('admin')" id="tab-admin" style="display:none;">🛠️ Quản trị</button>
+</div>
+
+<div id="content"></div>
+
+<script>
+// ════════════════════════════════════════════════════
+// DATA
+// ════════════════════════════════════════════════════
+const VOCAB = [
+  // Bài 1
+  {hz:'五',py:'wǔ',vi:'số năm',l:1},
+  {hz:'八',py:'bā',vi:'số tám',l:1},
+  {hz:'白',py:'bái',vi:'trắng',l:1},
+  {hz:'不',py:'bù',vi:'không',l:1},
+  {hz:'大',py:'dà',vi:'to, lớn',l:1},
+  {hz:'好',py:'hǎo',vi:'tốt, đẹp',l:1},
+  {hz:'口',py:'kǒu',vi:'miệng, mồm',l:1},
+  {hz:'马',py:'mǎ',vi:'ngựa',l:1},
+  {hz:'你',py:'nǐ',vi:'anh, bạn',l:1},
+  {hz:'你好',py:'nǐ hǎo',vi:'xin chào',l:1},
+  {hz:'女',py:'nǚ',vi:'con gái, đàn bà',l:1},
+  {hz:'一',py:'yī',vi:'một',l:1},
+  // Bài 2
+  {hz:'爸爸',py:'bàba',vi:'ba, bố',l:2},
+  {hz:'弟弟',py:'dìdi',vi:'em trai',l:2},
+  {hz:'汉语',py:'Hànyǔ',vi:'tiếng Hán',l:2},
+  {hz:'哥哥',py:'gēge',vi:'anh trai',l:2},
+  {hz:'很',py:'hěn',vi:'rất',l:2},
+  {hz:'忙',py:'máng',vi:'bận',l:2},
+  {hz:'妈妈',py:'māma',vi:'mẹ, má',l:2},
+  {hz:'吗',py:'ma',vi:'chưa, không (trợ từ hỏi)',l:2},
+  {hz:'妹妹',py:'mèimei',vi:'em gái',l:2},
+  {hz:'男',py:'nán',vi:'nam',l:2},
+  {hz:'难',py:'nán',vi:'khó',l:2},
+  {hz:'她',py:'tā',vi:'cô ấy',l:2},
+  {hz:'他',py:'tā',vi:'anh ta',l:2},
+  {hz:'太',py:'tài',vi:'lắm, quá',l:2},
+  // Bài 3
+  {hz:'阿拉伯语',py:'Ālābóyǔ',vi:'tiếng Ả Rập',l:3},
+  {hz:'的',py:'de',vi:'(trợ từ)',l:3},
+  {hz:'法语',py:'Fǎyǔ',vi:'tiếng Pháp',l:3},
+  {hz:'俄语',py:'Éyǔ',vi:'tiếng Nga',l:3},
+  {hz:'对',py:'duì',vi:'đúng',l:3},
+  {hz:'韩国语',py:'Hánguóyǔ',vi:'tiếng Hàn',l:3},
+  {hz:'见',py:'jiàn',vi:'gặp',l:3},
+  {hz:'九',py:'jiǔ',vi:'số 9',l:3},
+  {hz:'六',py:'liù',vi:'số 6',l:3},
+  {hz:'明天',py:'míngtiān',vi:'ngày mai',l:3},
+  {hz:'七',py:'qī',vi:'số 7',l:3},
+  {hz:'钱',py:'qián',vi:'tiền',l:3},
+  {hz:'取',py:'qǔ',vi:'nhắc, lấy',l:3},
+  {hz:'去',py:'qù',vi:'đi',l:3},
+  {hz:'日语',py:'Rìyǔ',vi:'tiếng Nhật',l:3},
+  {hz:'寄',py:'jì',vi:'gửi',l:3},
+  {hz:'西班牙语',py:'Xībānyáyǔ',vi:'tiếng Tây Ban Nha',l:3},
+  {hz:'学',py:'xué',vi:'học',l:3},
+  {hz:'英语',py:'Yīngyǔ',vi:'tiếng Anh',l:3},
+  {hz:'银行',py:'yínháng',vi:'ngân hàng',l:3},
+  {hz:'邮局',py:'yóujú',vi:'bưu điện',l:3},
+  // Bài 4
+  {hz:'二',py:'èr',vi:'hai',l:4},
+  {hz:'回',py:'huí',vi:'về',l:4},
+  {hz:'几',py:'jǐ',vi:'mấy',l:4},
+  {hz:'今天',py:'jīntiān',vi:'hôm nay',l:4},
+  {hz:'那儿',py:'nàr',vi:'chỗ đó, nơi đó',l:4},
+  {hz:'哪',py:'nǎ',vi:'nào, cái nào',l:4},
+  {hz:'哪儿',py:'nǎr',vi:'ở đâu, chỗ nào',l:4},
+  {hz:'没关系',py:'méi guānxi',vi:'không sao',l:4},
+  {hz:'三',py:'sān',vi:'số 3',l:4},
+  {hz:'四',py:'sì',vi:'số 4',l:4},
+  {hz:'天',py:'tiān',vi:'ngày',l:4},
+  {hz:'我',py:'wǒ',vi:'tôi',l:4},
+  {hz:'星期',py:'xīngqī',vi:'tuần',l:4},
+  {hz:'星期一',py:'xīngqīyī',vi:'thứ hai',l:4},
+  {hz:'星期二',py:'xīngqī\'èr',vi:'thứ ba',l:4},
+  {hz:'星期三',py:'xīngqīsān',vi:'thứ tư',l:4},
+  {hz:'星期四',py:'xīngqīsì',vi:'thứ năm',l:4},
+  {hz:'星期五',py:'xīngqīwǔ',vi:'thứ sáu',l:4},
+  {hz:'星期六',py:'xīngqīliù',vi:'thứ bảy',l:4},
+  {hz:'星期天',py:'xīngqītiān',vi:'chủ nhật',l:4},
+  {hz:'学校',py:'xuéxiào',vi:'trường học',l:4},
+  {hz:'再见',py:'zàijiàn',vi:'tạm biệt',l:4},
+  {hz:'昨天',py:'zuótiān',vi:'hôm qua',l:4},
+  {hz:'对不起',py:'duì bu qǐ',vi:'xin lỗi',l:4},
+  // Bài 5
+  {hz:'茶',py:'chá',vi:'trà',l:5},
+  {hz:'不客气',py:'bú kèqi',vi:'không có gì',l:5},
+  {hz:'谢谢',py:'xièxie',vi:'cảm ơn',l:5},
+  {hz:'老师',py:'lǎoshī',vi:'thầy giáo',l:5},
+  {hz:'您',py:'nín',vi:'ngài',l:5},
+  {hz:'请',py:'qǐng',vi:'mời',l:5},
+  {hz:'身体',py:'shēntǐ',vi:'thân thể',l:5},
+  {hz:'十',py:'shí',vi:'số mười',l:5},
+  {hz:'是',py:'shì',vi:'là, phải, đúng',l:5},
+  {hz:'喝',py:'hē',vi:'uống',l:5},
+  {hz:'进',py:'jìn',vi:'tiến, vào',l:5},
+  {hz:'客气',py:'kèqi',vi:'khách khí',l:5},
+  {hz:'坐',py:'zuò',vi:'ngồi',l:5},
+  {hz:'这',py:'zhè',vi:'đây, này',l:5},
+  {hz:'工作',py:'gōngzuò',vi:'công việc, làm việc',l:5},
+  {hz:'日',py:'rì',vi:'ngày',l:5},
+  // Bài 6
+  {hz:'贵姓',py:'guìxìng',vi:'quý tính',l:6},
+  {hz:'德国',py:'Déguó',vi:'nước Đức',l:6},
+  {hz:'德语',py:'Déyǔ',vi:'tiếng Đức',l:6},
+  {hz:'俄国',py:'Éguó',vi:'nước Nga',l:6},
+  {hz:'俄文',py:'Éwén',vi:'tiếng Nga',l:6},
+  {hz:'发音',py:'fāyīn',vi:'phát âm',l:6},
+  {hz:'法国',py:'Fǎguó',vi:'nước Pháp',l:6},
+  {hz:'法文',py:'Fǎwén',vi:'tiếng Pháp',l:6},
+  {hz:'韩国',py:'Hánguó',vi:'nước Hàn',l:6},
+  {hz:'韩文',py:'Hánwén',vi:'tiếng Hàn',l:6},
+  {hz:'国',py:'guó',vi:'nước',l:6},
+  {hz:'叫',py:'jiào',vi:'kêu, gọi, tên là',l:6},
+  {hz:'那',py:'nà',vi:'đó, đấy, kia',l:6},
+  {hz:'名字',py:'míngzi',vi:'tên',l:6},
+  {hz:'朋友',py:'péngyou',vi:'bạn bè',l:6},
+  {hz:'人',py:'rén',vi:'người',l:6},
+  {hz:'日本（国）',py:'Rìběn',vi:'Nhật Bản',l:6},
+  {hz:'日文',py:'Rìwén',vi:'tiếng Nhật',l:6},
+  {hz:'什么',py:'shénme',vi:'cái gì',l:6},
+  {hz:'书',py:'shū',vi:'sách',l:6},
+  {hz:'谁',py:'shéi / shuí',vi:'ai',l:6},
+  {hz:'问',py:'wèn',vi:'hỏi',l:6},
+  {hz:'文',py:'wén',vi:'văn',l:6},
+  {hz:'姓',py:'xìng',vi:'họ',l:6},
+  {hz:'学习',py:'xuéxí',vi:'học tập',l:6},
+  {hz:'西班牙文',py:'Xībānyáwén',vi:'tiếng Tây Ban Nha',l:6},
+  {hz:'英国',py:'Yīngguó',vi:'nước Anh',l:6},
+  {hz:'英文',py:'Yīngwén',vi:'Anh văn',l:6},
+  {hz:'邮包',py:'yóubāo',vi:'bưu kiện',l:6},
+  {hz:'杂志',py:'zázhì',vi:'tạp chí',l:6},
+  {hz:'中国',py:'Zhōngguó',vi:'Trung Quốc',l:6},
+  {hz:'中文',py:'Zhōngwén',vi:'Trung văn',l:6},
+  {hz:'美国',py:'Měiguó',vi:'nước Mỹ',l:6},
+  {hz:'请问',py:'qǐngwèn',vi:'xin hỏi',l:6},
+  // Bài 7
+  {hz:'中午',py:'zhōngwǔ',vi:'buổi trưa',l:7},
+  {hz:'吃',py:'chī',vi:'ăn',l:7},
+  {hz:'饭',py:'fàn',vi:'cơm',l:7},
+  {hz:'食堂',py:'shítáng',vi:'nhà ăn',l:7},
+  {hz:'馒头',py:'mántou',vi:'màn thầu',l:7},
+  {hz:'米饭',py:'mǐfàn',vi:'cơm',l:7},
+  {hz:'米',py:'mǐ',vi:'gạo',l:7},
+  {hz:'要',py:'yào',vi:'muốn, cần',l:7},
+  {hz:'个',py:'gè',vi:'cái, chiếc (l.từ chung cho người/vật)',l:7},
+  {hz:'鸡蛋',py:'jīdàn',vi:'trứng gà',l:7},
+  {hz:'鸡',py:'jī',vi:'gà, con gà',l:7},
+  {hz:'蛋',py:'dàn',vi:'trứng',l:7},
+  {hz:'汤',py:'tāng',vi:'canh',l:7},
+  {hz:'啤酒',py:'píjiǔ',vi:'bia',l:7},
+  {hz:'这些',py:'zhèxiē',vi:'những...này',l:7},
+  {hz:'些',py:'xiē',vi:'một vài, một số',l:7},
+  {hz:'一些',py:'yīxiē',vi:'một số',l:7},
+  {hz:'那些',py:'nàxiē',vi:'những...đó',l:7},
+  {hz:'包子',py:'bāozi',vi:'bánh bao',l:7},
+  {hz:'面条儿',py:'miàntiáor',vi:'mì sợi',l:7},
+  {hz:'饺子',py:'jiǎozi',vi:'bánh bột nhân thịt',l:7},
+  {hz:'酒',py:'jiǔ',vi:'rượu',l:7},
+  {hz:'碗',py:'wǎn',vi:'bát',l:7},
+  // Bài 8
+  {hz:'买',py:'mǎi',vi:'mua',l:8},
+  {hz:'水果',py:'shuǐguǒ',vi:'hoa quả',l:8},
+  {hz:'苹果',py:'píngguǒ',vi:'táo',l:8},
+  {hz:'斤',py:'jīn',vi:'cân (1/2 kg)',l:8},
+  {hz:'公斤',py:'gōngjīn',vi:'kg, cân',l:8},
+  {hz:'贵',py:'guì',vi:'đắt, quý',l:8},
+  {hz:'了',py:'le',vi:'(trợ từ)',l:8},
+  {hz:'多少',py:'duōshao',vi:'bao nhiêu',l:8},
+  {hz:'少',py:'shǎo',vi:'ít',l:8},
+  {hz:'块（元）',py:'kuài (yuán)',vi:'đồng',l:8},
+  {hz:'角（毛）',py:'jiǎo (máo)',vi:'hào',l:8},
+  {hz:'分',py:'fēn',vi:'xu',l:8},
+  {hz:'还',py:'hái',vi:'vẫn còn',l:8},
+  {hz:'别的',py:'biéde',vi:'khác',l:8},
+  {hz:'橘子',py:'júzi',vi:'quả quýt',l:8},
+  {hz:'一共',py:'yígòng',vi:'tổng cộng',l:8},
+  {hz:'给',py:'gěi',vi:'đưa',l:8},
+  {hz:'找',py:'zhǎo',vi:'tìm',l:8},
+  {hz:'卖',py:'mài',vi:'bán',l:8},
+  {hz:'两',py:'liǎng',vi:'hai',l:8},
+  {hz:'怎么',py:'zěnme',vi:'thế nào',l:8},
+  {hz:'多',py:'duō',vi:'nhiều',l:8},
+  // Bài 9
+  {hz:'下午',py:'xiàwǔ',vi:'buổi chiều',l:9},
+  {hz:'上午',py:'shàngwǔ',vi:'buổi sáng',l:9},
+  {hz:'图书馆',py:'túshūguǎn',vi:'thư viện',l:9},
+  {hz:'要',py:'yào',vi:'muốn, cần',l:9},
+  {hz:'换',py:'huàn',vi:'đổi',l:9},
+  {hz:'小姐',py:'xiǎojiě',vi:'cô gái',l:9},
+  {hz:'营业员',py:'yíngyèyuán',vi:'nhân viên bán hàng',l:9},
+  {hz:'人民币',py:'rénmínbì',vi:'nhân dân tệ',l:9},
+  {hz:'人民',py:'rénmín',vi:'nhân dân',l:9},
+  {hz:'百',py:'bǎi',vi:'trăm',l:9},
+  {hz:'千',py:'qiān',vi:'nghìn',l:9},
+  {hz:'万',py:'wàn',vi:'vạn',l:9},
+  {hz:'美元',py:'měiyuán',vi:'tiền Mỹ, đô la Mỹ',l:9},
+  {hz:'港币',py:'gǎngbì',vi:'đô la Hồng Kông',l:9},
+  {hz:'日元',py:'rìyuán',vi:'yên Nhật',l:9},
+  {hz:'欧元',py:'ōuyuán',vi:'đồng Euro',l:9},
+  {hz:'等',py:'děng',vi:'đợi, đợi chờ',l:9},
+  {hz:'一会儿',py:'yīhuìr',vi:'một lát',l:9},
+  {hz:'先生',py:'xiānsheng',vi:'tiên sinh, ngài',l:9},
+  {hz:'数',py:'shǔ',vi:'đếm',l:9},
+  // Bài 10
+  {hz:'办公室',py:'bàngōngshì',vi:'phòng làm việc',l:10},
+  {hz:'办公',py:'bàngōng',vi:'làm việc',l:10},
+  {hz:'职员',py:'zhíyuán',vi:'nhân viên',l:10},
+  {hz:'找',py:'zhǎo',vi:'tìm',l:10},
+  {hz:'在',py:'zài',vi:'ở',l:10},
+  {hz:'家',py:'jiā',vi:'nhà',l:10},
+  {hz:'呢',py:'ne',vi:'nhi...? còn...?',l:10},
+  {hz:'住',py:'zhù',vi:'cư trú, ở',l:10},
+  {hz:'楼',py:'lóu',vi:'nhà, lầu',l:10},
+  {hz:'房间',py:'fángjiān',vi:'phòng',l:10},
+  {hz:'号',py:'hào',vi:'số, cỡ',l:10},
+  {hz:'知道',py:'zhīdào',vi:'biết',l:10},
+  {hz:'电话',py:'diànhuà',vi:'điện thoại',l:10},
+  {hz:'电',py:'diàn',vi:'điện',l:10},
+  {hz:'话',py:'huà',vi:'lời nói',l:10},
+  {hz:'号码',py:'hàomǎ',vi:'số hiệu',l:10},
+  {hz:'零',py:'líng',vi:'số không',l:10},
+  {hz:'手机',py:'shǒujī',vi:'điện thoại di động',l:10},
+  {hz:'手',py:'shǒu',vi:'tay',l:10},
+  {hz:'门',py:'mén',vi:'cửa, ngõ, cổng',l:10},
+  // Bài 11
+  {hz:'秘书',py:'mìshū',vi:'thư ký',l:11},
+  {hz:'先',py:'xiān',vi:'trước, trước tiên',l:11},
+  {hz:'介绍',py:'jièshào',vi:'giới thiệu',l:11},
+  {hz:'一下儿',py:'yīxiàr',vi:'một lúc',l:11},
+  {hz:'位',py:'wèi',vi:'vị (l.từ lịch sự đếm người)',l:11},
+  {hz:'教授',py:'jiàoshòu',vi:'giáo sư',l:11},
+  {hz:'校长',py:'xiàozhǎng',vi:'hiệu trưởng',l:11},
+  {hz:'欢迎',py:'huānyíng',vi:'hoan nghênh',l:11},
+  {hz:'留学生',py:'liúxuéshēng',vi:'lưu học sinh',l:11},
+  {hz:'留学',py:'liúxué',vi:'du học',l:11},
+  {hz:'也',py:'yě',vi:'cũng',l:11},
+  {hz:'我们',py:'wǒmen',vi:'chúng tôi',l:11},
+  {hz:'你们',py:'nǐmen',vi:'các anh',l:11},
+  {hz:'他们',py:'tāmen',vi:'họ',l:11},
+  {hz:'都',py:'dōu',vi:'đều',l:11},
+  {hz:'俩',py:'liǎ',vi:'hai (người)',l:11},
+  {hz:'学生',py:'xuésheng',vi:'học sinh',l:11},
+  {hz:'没什么',py:'méi shénme',vi:'không có gì',l:11},
+  {hz:'和',py:'hé',vi:'và, với',l:11},
+  // Bài 12
+  {hz:'语言',py:'yǔyán',vi:'ngôn ngữ',l:12},
+  {hz:'大学',py:'dàxué',vi:'đại học',l:12},
+  {hz:'怎么样',py:'zěnmeyàng',vi:'như thế nào',l:12},
+  {hz:'觉得',py:'juéde',vi:'cảm giác',l:12},
+  {hz:'语法',py:'yǔfǎ',vi:'ngữ pháp',l:12},
+  {hz:'听',py:'tīng',vi:'nghe',l:12},
+  {hz:'说',py:'shuō',vi:'nói',l:12},
+  {hz:'比较',py:'bǐjiào',vi:'so sánh',l:12},
+  {hz:'容易',py:'róngyì',vi:'dễ, dễ dàng',l:12},
+  {hz:'读',py:'dú',vi:'đọc',l:12},
+  {hz:'写',py:'xiě',vi:'viết',l:12},
+  {hz:'但是',py:'dànshì',vi:'nhưng',l:12},
+  {hz:'给',py:'gěi',vi:'cho, đưa cho',l:12},
+  {hz:'新',py:'xīn',vi:'mới',l:12},
+  {hz:'同学',py:'tóngxué',vi:'bạn học',l:12},
+  {hz:'同屋',py:'tóngwū',vi:'bạn cùng phòng',l:12},
+  {hz:'班',py:'bān',vi:'lớp',l:12},
+  // Bài 13
+  {hz:'没（有）',py:'méi (yǒu)',vi:'không có',l:13},
+  {hz:'箱子',py:'xiāngzi',vi:'cái hòm, vali',l:13},
+  {hz:'有',py:'yǒu',vi:'có',l:13},
+  {hz:'这儿',py:'zhèr',vi:'ở đây',l:13},
+  {hz:'重',py:'zhòng',vi:'nặng',l:13},
+  {hz:'黑',py:'hēi',vi:'đen',l:13},
+  {hz:'红',py:'hóng',vi:'đỏ, hồng',l:13},
+  {hz:'轻',py:'qīng',vi:'nhẹ',l:13},
+  {hz:'药',py:'yào',vi:'thuốc',l:13},
+  {hz:'西药',py:'xīyào',vi:'thuốc tây',l:13},
+  {hz:'茶叶',py:'cháyè',vi:'lá chè, trà',l:13},
+  {hz:'里',py:'lǐ',vi:'trong, bên trong',l:13},
+  {hz:'日用品',py:'rìyòngpǐn',vi:'đồ dùng hàng ngày',l:13},
+  {hz:'件',py:'jiàn',vi:'kiện, cái',l:13},
+  {hz:'雨伞',py:'yǔsǎn',vi:'ô, dù',l:13},
+  {hz:'雨',py:'yǔ',vi:'mưa',l:13},
+  {hz:'香水',py:'xiāngshuǐ',vi:'nước hoa',l:13},
+  {hz:'水',py:'shuǐ',vi:'nước',l:13},
+  {hz:'本',py:'běn',vi:'cuốn, quyển (l.từ đếm sách, vở)',l:13},
+  {hz:'词典',py:'cídiǎn',vi:'từ điển',l:13},
+  {hz:'张',py:'zhāng',vi:'tờ, tấm (l.từ đếm vật phẳng)',l:13},
+  {hz:'光盘',py:'guāngpán',vi:'đĩa CD',l:13},
+  {hz:'支',py:'zhī',vi:'cây, chiếc (l.từ đếm vật dài như bút)',l:13},
+  {hz:'笔',py:'bǐ',vi:'bút',l:13},
+  {hz:'旧',py:'jiù',vi:'cũ',l:13},
+  {hz:'瓶',py:'píng',vi:'chai, bình',l:13},
+  {hz:'中药',py:'zhōngyào',vi:'thuốc Đông y',l:13},
+  {hz:'椅子',py:'yǐzi',vi:'cái ghế',l:13},
+  // Bài 14
+  {hz:'颜色',py:'yánsè',vi:'màu sắc',l:14},
+  {hz:'刚',py:'gāng',vi:'vừa',l:14},
+  {hz:'还是',py:'háishì',vi:'hay là',l:14},
+  {hz:'好久',py:'hǎojiǔ',vi:'lâu lắm rồi',l:14},
+  {hz:'咖啡',py:'kāfēi',vi:'cà phê',l:14},
+  {hz:'开',py:'kāi',vi:'mở',l:14},
+  {hz:'开学',py:'kāixué',vi:'khai giảng',l:14},
+  {hz:'啊',py:'à',vi:'a, á',l:14},
+  {hz:'杯',py:'bēi',vi:'cốc',l:14},
+  {hz:'车',py:'chē',vi:'xe',l:14},
+  {hz:'出租车',py:'chūzūchē',vi:'xe taxi',l:14},
+  {hz:'点儿',py:'diǎnr',vi:'một chút',l:14},
+  {hz:'有（一）点儿',py:'yǒu (yì) diǎnr',vi:'có một chút',l:14},
+  {hz:'来',py:'lái',vi:'đến',l:14},
+  {hz:'蓝',py:'lán',vi:'màu xanh lam',l:14},
+  {hz:'辆',py:'liàng',vi:'chiếc (l.từ đếm xe cộ)',l:14},
+  {hz:'马马虎虎',py:'mǎmahūhū',vi:'tạm, bình thường',l:14},
+  {hz:'摩托车',py:'mótuōchē',vi:'xe máy',l:14},
+  {hz:'汽车',py:'qìchē',vi:'xe ô tô',l:14},
+  {hz:'自行车',py:'zìxíngchē',vi:'xe đạp',l:14},
+  {hz:'最近',py:'zuìjìn',vi:'gần đây',l:14},
+  // Bài 15
+  {hz:'全',py:'quán',vi:'toàn',l:15},
+  {hz:'商店',py:'shāngdiàn',vi:'cửa hàng',l:15},
+  {hz:'外国',py:'wàiguó',vi:'ngoại quốc',l:15},
+  {hz:'外贸',py:'wàimào',vi:'mậu dịch, thương mại quốc tế',l:15},
+  {hz:'小',py:'xiǎo',vi:'nhỏ',l:15},
+  {hz:'医院',py:'yīyuàn',vi:'bệnh viện',l:15},
+  {hz:'照片',py:'zhàopiàn',vi:'cái ảnh',l:15},
+  {hz:'只',py:'zhǐ',vi:'chỉ',l:15},
+  {hz:'做',py:'zuò',vi:'làm',l:15},
+  {hz:'姐姐',py:'jiějie',vi:'chị gái',l:15},
+  {hz:'大概',py:'dàgài',vi:'đại khái',l:15},
+  {hz:'大夫',py:'dàifu',vi:'bác sĩ',l:15},
+  {hz:'多',py:'duō',vi:'hơn',l:15},
+  {hz:'律师',py:'lǜshī',vi:'luật sư',l:15},
+  {hz:'公司',py:'gōngsī',vi:'công ty',l:15},
+  {hz:'看',py:'kàn',vi:'nhìn',l:15},
+  // ===== QUYỂN 2 =====
+  // Bài 16
+  {hz:'安静',py:'ānjìng',vi:'yên lặng',l:16},
+  {hz:'超市',py:'chāoshì',vi:'siêu thị',l:16},
+  {hz:'常（常）',py:'cháng(cháng)',vi:'thường',l:16},
+  {hz:'查',py:'chá',vi:'kiểm tra',l:16},
+  {hz:'复习',py:'fùxí',vi:'ôn tập',l:16},
+  {hz:'东西',py:'dōngxi',vi:'đồ vật',l:16},
+  {hz:'发',py:'fā',vi:'gửi',l:16},
+  {hz:'借',py:'jiè',vi:'mượn',l:16},
+  {hz:'课文',py:'kèwén',vi:'học bài đọc',l:16},
+  {hz:'练习',py:'liànxí',vi:'luyện tập, bài tập',l:16},
+  {hz:'聊天儿',py:'liáo tiānr',vi:'nói chuyện',l:16},
+  {hz:'跟',py:'gēn',vi:'cùng',l:16},
+  {hz:'公园',py:'gōngyuán',vi:'công viên',l:16},
+  {hz:'或者',py:'huòzhě',vi:'hoặc là',l:16},
+  {hz:'电视',py:'diànshì',vi:'ti vi',l:16},
+  {hz:'电视剧',py:'diànshìjù',vi:'phim truyền hình',l:16},
+  {hz:'电影',py:'diànyǐng',vi:'phim',l:16},
+  {hz:'上网',py:'shàng wǎng',vi:'lên mạng',l:16},
+  {hz:'生词',py:'shēngcí',vi:'từ mới',l:16},
+  {hz:'收',py:'shōu',vi:'thu',l:16},
+  {hz:'收发',py:'shōufā',vi:'thu phát',l:16},
+  {hz:'时候',py:'shíhou',vi:'lúc',l:16},
+  {hz:'宿舍',py:'sùshè',vi:'ký túc xá',l:16},
+  {hz:'网',py:'wǎng',vi:'mạng',l:16},
+  {hz:'晚上',py:'wǎnshang',vi:'buổi tối',l:16},
+  {hz:'现在',py:'xiànzài',vi:'bây giờ',l:16},
+  {hz:'一起',py:'yìqǐ',vi:'cùng nhau',l:16},
+  {hz:'伊妹儿',py:'yīmèir',vi:'email',l:16},
+  {hz:'休息',py:'xiūxi',vi:'nghỉ ngơi',l:16},
+  {hz:'有时候',py:'yǒu shíhou',vi:'có lúc',l:16},
+  {hz:'预习',py:'yùxí',vi:'ôn tập (bài mới)',l:16},
+  {hz:'咱们',py:'zánmen',vi:'chúng tôi',l:16},
+  {hz:'资料',py:'zīliào',vi:'tư liệu',l:16},
+  {hz:'总（是）',py:'zǒng(shì)',vi:'tổng, luôn luôn',l:16},
+  {hz:'走',py:'zǒu',vi:'đi',l:16},
+  // Bài 17
+  {hz:'出来',py:'chūlai',vi:'đi ra',l:17},
+  {hz:'行',py:'xíng',vi:'được',l:17},
+  {hz:'音乐',py:'yīnyuè',vi:'âm nhạc',l:17},
+  {hz:'阅读',py:'yuèdú',vi:'đọc',l:17},
+  {hz:'在',py:'zài',vi:'ở',l:17},
+  {hz:'正',py:'zhèng',vi:'đang',l:17},
+  {hz:'正在',py:'zhèngzài',vi:'đang',l:17},
+  {hz:'想',py:'xiǎng',vi:'nghĩ',l:17},
+  {hz:'课',py:'kè',vi:'bài',l:17},
+  {hz:'口语',py:'kǒuyǔ',vi:'khẩu ngữ',l:17},
+  {hz:'来',py:'lái',vi:'đến',l:17},
+  {hz:'录音',py:'lùyīn',vi:'ghi âm',l:17},
+  {hz:'没有',py:'méiyǒu',vi:'không có',l:17},
+  {hz:'门',py:'mén',vi:'môn (l.từ đếm môn học)',l:17},
+  {hz:'挤',py:'jǐ',vi:'chật, chen',l:17},
+  {hz:'教',py:'jiāo',vi:'dạy',l:17},
+  {hz:'汉英',py:'Hàn-Yīng',vi:'Hán Anh',l:17},
+  {hz:'体育',py:'tǐyù',vi:'thể dục',l:17},
+  {hz:'听力',py:'tīnglì',vi:'năng lực nghe',l:17},
+  {hz:'文化',py:'wénhuà',vi:'văn hóa',l:17},
+  {hz:'事',py:'shì',vi:'việc',l:17},
+  {hz:'书店',py:'shūdiàn',vi:'hiệu sách',l:17},
+  {hz:'骑',py:'qí',vi:'cưỡi, đi (xe)',l:17},
+  // Bài 18
+  {hz:'用',py:'yòng',vi:'dùng',l:18},
+  {hz:'邮票',py:'yóupiào',vi:'tem',l:18},
+  {hz:'旅行',py:'lǚxíng',vi:'du lịch',l:18},
+  {hz:'代表',py:'dàibiǎo',vi:'đại biểu',l:18},
+  {hz:'当',py:'dāng',vi:'làm',l:18},
+  {hz:'翻译',py:'fānyì',vi:'phiên dịch',l:18},
+  {hz:'飞',py:'fēi',vi:'bay',l:18},
+  {hz:'飞机',py:'fēijī',vi:'máy bay',l:18},
+  {hz:'份',py:'fèn',vi:'phần',l:18},
+  {hz:'办',py:'bàn',vi:'làm',l:18},
+  {hz:'帮',py:'bāng',vi:'giúp',l:18},
+  {hz:'包裹',py:'bāoguǒ',vi:'bưu kiện',l:18},
+  {hz:'报',py:'bào',vi:'báo',l:18},
+  {hz:'不用',py:'búyòng',vi:'không cần',l:18},
+  {hz:'参观',py:'cānguān',vi:'thăm quan',l:18},
+  {hz:'花',py:'huā',vi:'hoa',l:18},
+  {hz:'回来',py:'huílái',vi:'quay về',l:18},
+  {hz:'火车',py:'huǒchē',vi:'tàu hỏa',l:18},
+  {hz:'浇',py:'jiāo',vi:'tưới',l:18},
+  {hz:'问题',py:'wèntí',vi:'vấn đề',l:18},
+  {hz:'顺便',py:'shùnbiàn',vi:'thuận tiện',l:18},
+  {hz:'替',py:'tì',vi:'thay thế',l:18},
+  {hz:'团',py:'tuán',vi:'đoàn',l:18},
+  {hz:'青年',py:'qīngnián',vi:'thanh niên',l:18},
+  // Bài 19
+  {hz:'一点儿',py:'yìdiǎnr',vi:'một chút',l:19},
+  {hz:'应该',py:'yīnggāi',vi:'nên',l:19},
+  {hz:'羽绒服',py:'yǔróngfú',vi:'áo lông vũ',l:19},
+  {hz:'又…又…',py:'yòu…yòu…',vi:'vừa...vừa...',l:19},
+  {hz:'打折',py:'dǎ zhé',vi:'giảm giá',l:19},
+  {hz:'当然',py:'dāngrán',vi:'đương nhiên',l:19},
+  {hz:'肥',py:'féi',vi:'béo',l:19},
+  {hz:'好看',py:'hǎokàn',vi:'đẹp, ưa nhìn',l:19},
+  {hz:'合适',py:'héshì',vi:'thích hợp',l:19},
+  {hz:'可以',py:'kěyǐ',vi:'có thể',l:19},
+  {hz:'浅',py:'qiǎn',vi:'nhạt',l:19},
+  {hz:'便宜',py:'piányi',vi:'rẻ',l:19},
+  {hz:'胖',py:'pàng',vi:'béo',l:19},
+  {hz:'深',py:'shēn',vi:'sâu',l:19},
+  {hz:'瘦',py:'shòu',vi:'gầy',l:19},
+  {hz:'毛衣',py:'máoyī',vi:'áo len',l:19},
+  {hz:'长',py:'cháng',vi:'dài',l:19},
+  {hz:'种',py:'zhǒng',vi:'chủng, loại',l:19},
+  {hz:'试',py:'shì',vi:'thử',l:19},
+  // Bài 20
+  {hz:'一定',py:'yídìng',vi:'nhất định',l:20},
+  {hz:'月',py:'yuè',vi:'tháng',l:20},
+  {hz:'正好',py:'zhènghǎo',vi:'vừa phải',l:20},
+  {hz:'就',py:'jiù',vi:'thì, liền',l:20},
+  {hz:'今年',py:'jīnnián',vi:'năm nay',l:20},
+  {hz:'举行',py:'jǔxíng',vi:'cử hành, tổ chức',l:20},
+  {hz:'快',py:'kuài',vi:'nhanh',l:20},
+  {hz:'快乐',py:'kuàilè',vi:'vui vẻ',l:20},
+  {hz:'明年',py:'míngnián',vi:'sang năm',l:20},
+  {hz:'去年',py:'qùnián',vi:'năm ngoái',l:20},
+  {hz:'毕业',py:'bì yè',vi:'tốt nghiệp',l:20},
+  {hz:'狗',py:'gǒu',vi:'chó',l:20},
+  {hz:'过',py:'guò',vi:'qua',l:20},
+  {hz:'号',py:'hào',vi:'số',l:20},
+  {hz:'后年',py:'hòunián',vi:'sang năm nữa',l:20},
+  {hz:'年',py:'nián',vi:'năm',l:20},
+  {hz:'生日',py:'shēngrì',vi:'sinh nhật',l:20},
+  {hz:'时间',py:'shíjiān',vi:'thời gian',l:20},
+  {hz:'准备',py:'zhǔnbèi',vi:'chuẩn bị',l:20},
+  {hz:'祝',py:'zhù',vi:'chúc',l:20},
+  {hz:'点（钟）',py:'diǎn(zhōng)',vi:'giờ',l:20},
+  {hz:'多',py:'duō',vi:'nhiều',l:20},
+  {hz:'多大',py:'duō dà',vi:'bao nhiêu (tuổi)',l:20},
+  {hz:'晚会',py:'wǎnhuì',vi:'dạ hội',l:20},
+  {hz:'岁',py:'suì',vi:'tuổi',l:20},
+  {hz:'属',py:'shǔ',vi:'thuộc (tuổi con giáp)',l:20},
+  // Bài 21
+  {hz:'以后',py:'yǐhòu',vi:'sau này',l:21},
+  {hz:'早饭',py:'zǎofàn',vi:'cơm sáng',l:21},
+  {hz:'早上',py:'zǎoshang',vi:'buổi sáng',l:21},
+  {hz:'床',py:'chuáng',vi:'giường',l:21},
+  {hz:'带',py:'dài',vi:'mang',l:21},
+  {hz:'灯',py:'dēng',vi:'đèn',l:21},
+  {hz:'点',py:'diǎn',vi:'điểm',l:21},
+  {hz:'分（钟）',py:'fēn(zhōng)',vi:'phút',l:21},
+  {hz:'操场',py:'cāochǎng',vi:'sân tập thể dục',l:21},
+  {hz:'半',py:'bàn',vi:'nửa',l:21},
+  {hz:'集合',py:'jíhé',vi:'tập hợp',l:21},
+  {hz:'教室',py:'jiàoshì',vi:'phòng học',l:21},
+  {hz:'准时',py:'zhǔnshí',vi:'đúng giờ',l:21},
+  {hz:'年级',py:'niánjí',vi:'lớp, năm cấp',l:21},
+  {hz:'爬',py:'pá',vi:'trèo, leo',l:21},
+  {hz:'起床',py:'qǐ chuáng',vi:'ngủ dậy',l:21},
+  {hz:'前',py:'qián',vi:'trước, phía trước',l:21},
+  {hz:'山',py:'shān',vi:'núi',l:21},
+  {hz:'上车',py:'shàng chē',vi:'lên xe',l:21},
+  {hz:'上课',py:'shàng kè',vi:'lên lớp',l:21},
+  {hz:'洗',py:'xǐ',vi:'rửa',l:21},
+  {hz:'洗澡',py:'xǐ zǎo',vi:'tắm',l:21},
+  {hz:'下车',py:'xià chē',vi:'xuống xe',l:21},
+  {hz:'晚饭',py:'wǎnfàn',vi:'cơm tối',l:21},
+  {hz:'午饭',py:'wǔfàn',vi:'cơm trưa',l:21},
+  {hz:'锻炼',py:'duànliàn',vi:'luyện tập, rèn luyện',l:21},
+  {hz:'每',py:'měi',vi:'mỗi',l:21},
+  {hz:'们',py:'men',vi:'chỉ số nhiều',l:21},
+  {hz:'睡觉',py:'shuì jiào',vi:'ngủ',l:21},
+  // Bài 22
+  {hz:'以前',py:'yǐqián',vi:'phía trước, trước đây',l:22},
+  {hz:'兴趣',py:'xìngqù',vi:'hứng thú',l:22},
+  {hz:'心情',py:'xīnqíng',vi:'tâm trạng',l:22},
+  {hz:'业余',py:'yèyú',vi:'ngoài chuyên môn',l:22},
+  {hz:'爱好',py:'àihào',vi:'sở thích',l:22},
+  {hz:'唱',py:'chàng',vi:'hát',l:22},
+  {hz:'大家',py:'dàjiā',vi:'mọi người',l:22},
+  {hz:'对',py:'duì',vi:'đối với',l:22},
+  {hz:'非常',py:'fēicháng',vi:'rất, vô cùng',l:22},
+  {hz:'感到',py:'gǎndào',vi:'cảm nhận',l:22},
+  {hz:'感兴趣',py:'gǎn xìngqù',vi:'có hứng thú (với)',l:22},
+  {hz:'高兴',py:'gāoxìng',vi:'vui vẻ',l:22},
+  {hz:'画',py:'huà',vi:'vẽ',l:22},
+  {hz:'画儿',py:'huàr',vi:'bức tranh',l:22},
+  {hz:'叫',py:'jiào',vi:'gọi',l:22},
+  {hz:'让',py:'ràng',vi:'nhường',l:22},
+  {hz:'派',py:'pài',vi:'phái',l:22},
+  {hz:'特别',py:'tèbié',vi:'đặc biệt',l:22},
+  {hz:'谈',py:'tán',vi:'nói',l:22},
+  {hz:'喜欢',py:'xǐhuan',vi:'thích',l:22},
+  {hz:'下课',py:'xià kè',vi:'tan học',l:22},
+  {hz:'玩',py:'wán',vi:'chơi',l:22},
+  {hz:'京剧',py:'jīngjù',vi:'kinh kịch',l:22},
+  {hz:'书法',py:'shūfǎ',vi:'thư pháp',l:22},
+  {hz:'自己',py:'zìjǐ',vi:'tự mình',l:22},
+  {hz:'愉快',py:'yúkuài',vi:'vui vẻ',l:22},
+  // Bài 23
+  {hz:'一直',py:'yìzhí',vi:'thẳng, liên tục',l:23},
+  {hz:'右',py:'yòu',vi:'phải',l:23},
+  {hz:'右边',py:'yòubian',vi:'bên phải',l:23},
+  {hz:'远',py:'yuǎn',vi:'xa',l:23},
+  {hz:'中间',py:'zhōngjiān',vi:'ở giữa',l:23},
+  {hz:'白色',py:'báisè',vi:'màu trắng',l:23},
+  {hz:'北边',py:'běibian',vi:'phía bắc',l:23},
+  {hz:'…边',py:'…biān',vi:'... bên, phía',l:23},
+  {hz:'博物馆',py:'bówùguǎn',vi:'viện bảo tàng',l:23},
+  {hz:'打听',py:'dǎting',vi:'nghe ngóng',l:23},
+  {hz:'从',py:'cóng',vi:'từ (khi)',l:23},
+  {hz:'东边',py:'dōngbian',vi:'phía đông',l:23},
+  {hz:'地方',py:'dìfang',vi:'địa phương',l:23},
+  {hz:'拐',py:'guǎi',vi:'rẽ',l:23},
+  {hz:'广场',py:'guǎngchǎng',vi:'quảng trường',l:23},
+  {hz:'和平',py:'hépíng',vi:'hòa bình',l:23},
+  {hz:'红绿灯',py:'hónglǜdēng',vi:'đèn xanh đèn đỏ',l:23},
+  {hz:'后边',py:'hòubian',vi:'phía sau',l:23},
+  {hz:'里边',py:'lǐbian',vi:'bên trong',l:23},
+  {hz:'劳驾',py:'láojià',vi:'làm phiền, cảm phiền',l:23},
+  {hz:'离',py:'lí',vi:'rời, cách',l:23},
+  {hz:'路',py:'lù',vi:'đường',l:23},
+  {hz:'绿',py:'lǜ',vi:'xanh',l:23},
+  {hz:'马路',py:'mǎlù',vi:'đường cái',l:23},
+  {hz:'米',py:'mǐ',vi:'mét',l:23},
+  {hz:'南边',py:'nánbian',vi:'phía nam',l:23},
+  {hz:'前边',py:'qiánbian',vi:'phía trước',l:23},
+  {hz:'往',py:'wǎng',vi:'hướng về',l:23},
+  {hz:'西边',py:'xībian',vi:'phía tây',l:23},
+  {hz:'下边',py:'xiàbian',vi:'phía dưới',l:23},
+  {hz:'足球',py:'zúqiú',vi:'đá bóng, bóng đá',l:23},
+  {hz:'足球场',py:'zúqiúchǎng',vi:'sân bóng',l:23},
+  {hz:'左',py:'zuǒ',vi:'trái',l:23},
+  {hz:'左边',py:'zuǒbian',vi:'bên trái',l:23},
+  {hz:'座',py:'zuò',vi:'tòa, ngọn (l.từ đếm núi, công trình lớn)',l:23},
+  // Bài 24
+  {hz:'小时',py:'xiǎoshí',vi:'giờ',l:24},
+  {hz:'意思',py:'yìsi',vi:'ý nghĩa',l:24},
+  {hz:'再',py:'zài',vi:'tái, lại',l:24},
+  {hz:'病',py:'bìng',vi:'bệnh',l:24},
+  {hz:'报名',py:'bào míng',vi:'ghi tên, báo danh',l:24},
+  {hz:'遍',py:'biàn',vi:'lượt, lần (đếm trọn vẹn 1 hành động)',l:24},
+  {hz:'次',py:'cì',vi:'lần',l:24},
+  {hz:'打',py:'dǎ',vi:'đánh',l:24},
+  {hz:'发烧',py:'fā shāo',vi:'phát sốt',l:24},
+  {hz:'懂',py:'dǒng',vi:'hiểu',l:24},
+  {hz:'会',py:'huì',vi:'biết',l:24},
+  {hz:'开始',py:'kāishǐ',vi:'bắt đầu',l:24},
+  {hz:'看病',py:'kàn bìng',vi:'khám bệnh',l:24},
+  {hz:'可能',py:'kěnéng',vi:'khả năng',l:24},
+  {hz:'咳嗽',py:'késou',vi:'ho',l:24},
+  {hz:'听说',py:'tīngshuō',vi:'nghe nói',l:24},
+  {hz:'下',py:'xià',vi:'hạ',l:24},
+  {hz:'感冒',py:'gǎnmào',vi:'cảm (bệnh)',l:24},
+  {hz:'疼',py:'téng',vi:'đau',l:24},
+  {hz:'头',py:'tóu',vi:'đầu',l:24},
+  {hz:'头疼',py:'tóu téng',vi:'đau đầu',l:24},
+  {hz:'舒服',py:'shūfu',vi:'dễ chịu',l:24},
+  {hz:'太极拳',py:'tàijíquán',vi:'thái cực quyền',l:24},
+  {hz:'请假',py:'qǐng jià',vi:'xin nghỉ phép',l:24},
+  {hz:'能',py:'néng',vi:'có thể',l:24},
+  // Bài 25
+  {hz:'因为',py:'yīnwèi',vi:'bởi vì',l:25},
+  {hz:'愿意',py:'yuànyì',vi:'nguyện, mong',l:25},
+  {hz:'运动',py:'yùndòng',vi:'vận động',l:25},
+  {hz:'早',py:'zǎo',vi:'sớm',l:25},
+  {hz:'这么',py:'zhème',vi:'như thế này',l:25},
+  {hz:'表演',py:'biǎoyǎn',vi:'biểu diễn',l:25},
+  {hz:'错',py:'cuò',vi:'sai',l:25},
+  {hz:'得',py:'de',vi:'(trợ từ)',l:25},
+  {hz:'电视台',py:'diànshìtái',vi:'đài truyền hình',l:25},
+  {hz:'节目',py:'jiémù',vi:'tiết mục',l:25},
+  {hz:'进步',py:'jìnbù',vi:'tiến bộ',l:25},
+  {hz:'看',py:'kàn',vi:'nhìn',l:25},
+  {hz:'流利',py:'liúlì',vi:'lưu loát',l:25},
+  {hz:'台',py:'tái',vi:'đài',l:25},
+  {hz:'提高',py:'tígāo',vi:'nâng cao',l:25},
+  {hz:'晚',py:'wǎn',vi:'tối',l:25},
+  {hz:'为',py:'wèi',vi:'vì',l:25},
+  {hz:'为什么',py:'wèi shénme',vi:'tại sao',l:25},
+  {hz:'坚持',py:'jiānchí',vi:'kiên trì',l:25},
+  {hz:'刚才',py:'gāngcái',vi:'vừa mới',l:25},
+  {hz:'哪里',py:'nǎli',vi:'ở đâu (khiêm từ: không dám)',l:25},
+  {hz:'那么',py:'nàme',vi:'thế này, vậy thì',l:25},
+  {hz:'努力',py:'nǔlì',vi:'cố gắng',l:25},
+  {hz:'跑',py:'pǎo',vi:'chạy',l:25},
+  {hz:'跑步',py:'pǎobù',vi:'chạy bộ',l:25},
+  {hz:'认真',py:'rènzhēn',vi:'chăm chỉ',l:25},
+  {hz:'球',py:'qiú',vi:'cầu, bóng',l:25},
+  {hz:'不错',py:'búcuò',vi:'không tồi',l:25},
+  // Bài 26
+  {hz:'已经',py:'yǐjīng',vi:'đã',l:26},
+  {hz:'赢',py:'yíng',vi:'thắng',l:26},
+  {hz:'又',py:'yòu',vi:'lại',l:26},
+  {hz:'阿姨',py:'āyí',vi:'dì, cô',l:26},
+  {hz:'哎',py:'āi',vi:'a, á',l:26},
+  {hz:'比',py:'bǐ',vi:'so, so với',l:26},
+  {hz:'比赛',py:'bǐsài',vi:'thi đấu',l:26},
+  {hz:'出国',py:'chū guó',vi:'ra nước ngoài',l:26},
+  {hz:'出',py:'chū',vi:'xuất',l:26},
+  {hz:'陪',py:'péi',vi:'cùng, với',l:26},
+  {hz:'打（电话）',py:'dǎ (diànhuà)',vi:'gọi (điện thoại)',l:26},
+  {hz:'对了',py:'duì le',vi:'đúng rồi',l:26},
+  {hz:'队',py:'duì',vi:'đội',l:26},
+  {hz:'关',py:'guān',vi:'đóng',l:26},
+  {hz:'关机',py:'guān jī',vi:'đóng máy, tắt máy',l:26},
+  {hz:'接',py:'jiē',vi:'tiếp, đón',l:26},
+  {hz:'响',py:'xiǎng',vi:'kêu, rung (chuông)',l:26},
+  {hz:'忘',py:'wàng',vi:'quên',l:26},
+  {hz:'喂',py:'wèi',vi:'a lô (thán từ)',l:26},
+  {hz:'踢',py:'tī',vi:'đá',l:26},
+  {hz:'输',py:'shū',vi:'thua',l:26},
+  {hz:'托福',py:'Tuōfú',vi:'TOEFL',l:26},
+  {hz:'祝贺',py:'zhùhè',vi:'chúc mừng',l:26},
+  {hz:'中学',py:'zhōngxué',vi:'trung học',l:26},
+  {hz:'考',py:'kǎo',vi:'thi, kiểm tra',l:26},
+  {hz:'开',py:'kāi',vi:'mở',l:26},
+  {hz:'开机',py:'kāi jī',vi:'mở máy',l:26},
+  // Bài 27
+  {hz:'消化',py:'xiāohuà',vi:'tiêu hóa',l:27},
+  {hz:'小便',py:'xiǎobiàn',vi:'tiểu tiện',l:27},
+  {hz:'鱼',py:'yú',vi:'cá',l:27},
+  {hz:'别',py:'bié',vi:'đừng',l:27},
+  {hz:'病人',py:'bìngrén',vi:'bệnh nhân',l:27},
+  {hz:'肠炎',py:'chángyán',vi:'viêm ruột',l:27},
+  {hz:'结果',py:'jiéguǒ',vi:'kết quả',l:27},
+  {hz:'哭',py:'kū',vi:'khóc',l:27},
+  {hz:'拉肚子',py:'lā dùzi',vi:'đau bụng',l:27},
+  {hz:'厉害',py:'lìhai',vi:'lợi hại',l:27},
+  {hz:'礼堂',py:'lǐtáng',vi:'hội trường lớn',l:27},
+  {hz:'难过',py:'nánguò',vi:'khó chịu',l:27},
+  {hz:'牛肉',py:'niúròu',vi:'thịt bò',l:27},
+  {hz:'片',py:'piàn',vi:'phiến, viên (thuốc)',l:27},
+  {hz:'然后',py:'ránhòu',vi:'sau đó',l:27},
+  {hz:'所以',py:'suǒyǐ',vi:'vì vậy',l:27},
+  {hz:'舞会',py:'wǔhuì',vi:'vũ hội',l:27},
+  {hz:'跳舞',py:'tiàowǔ',vi:'nhảy múa',l:27},
+  {hz:'后',py:'hòu',vi:'sau',l:27},
+  {hz:'化验',py:'huàyàn',vi:'hóa nghiệm',l:27},
+  {hz:'检查',py:'jiǎnchá',vi:'kiểm tra',l:27},
+  {hz:'寂寞',py:'jìmò',vi:'cô đơn',l:27},
+  {hz:'打针',py:'dǎ zhēn',vi:'tiêm',l:27},
+  {hz:'大便',py:'dàbiàn',vi:'đại tiện',l:27},
+  {hz:'得',py:'dé',vi:'được',l:27},
+  {hz:'出来',py:'chūlai',vi:'ra',l:27},
+  // Bài 28
+  {hz:'阳光',py:'yángguāng',vi:'ánh mặt trời',l:28},
+  {hz:'要是',py:'yàoshì',vi:'nếu',l:28},
+  {hz:'有的',py:'yǒude',vi:'có cái, có người',l:28},
+  {hz:'站',py:'zhàn',vi:'đứng',l:28},
+  {hz:'真',py:'zhēn',vi:'thật',l:28},
+  {hz:'车站',py:'chēzhàn',vi:'bến xe',l:28},
+  {hz:'层',py:'céng',vi:'tầng',l:28},
+  {hz:'才',py:'cái',vi:'vừa, mới',l:28},
+  {hz:'赶',py:'gǎn',vi:'vội, đuổi theo',l:28},
+  {hz:'公共汽车',py:'gònggòng qìchē',vi:'xe buýt',l:28},
+  {hz:'河',py:'hé',vi:'sông',l:28},
+  {hz:'交通',py:'jiāotōng',vi:'giao thông',l:28},
+  {hz:'环境',py:'huánjìng',vi:'hoàn cảnh',l:28},
+  {hz:'坏处',py:'huàichù',vi:'điểm xấu',l:28},
+  {hz:'情况',py:'qíngkuàng',vi:'tình hình',l:28},
+  {hz:'方便',py:'fāngbiàn',vi:'thuận tiện',l:28},
+  {hz:'房子',py:'fángzi',vi:'nhà',l:28},
+  {hz:'房租',py:'fángzū',vi:'tiền thuê phòng',l:28},
+  {hz:'附近',py:'fùjìn',vi:'gần, lân cận',l:28},
+  {hz:'地铁',py:'dìtiě',vi:'tàu điện ngầm',l:28},
+  {hz:'面积',py:'miànjī',vi:'diện tích',l:28},
+  {hz:'平（方）米',py:'píng(fāng)mǐ',vi:'mét vuông',l:28},
+  {hz:'妻子',py:'qīzi',vi:'vợ',l:28},
+  {hz:'旁边',py:'pángbiān',vi:'bên cạnh',l:28},
+  {hz:'套',py:'tào',vi:'bộ',l:28},
+  {hz:'体育馆',py:'tǐyùguǎn',vi:'phòng thể dục',l:28},
+  {hz:'卧室',py:'wòshì',vi:'phòng ngủ',l:28},
+  {hz:'虽然',py:'suīrán',vi:'tuy, mặc dù',l:28},
+  {hz:'上去',py:'shàngqu',vi:'lên',l:28},
+  {hz:'租',py:'zū',vi:'thuê',l:28},
+  {hz:'周围',py:'zhōuwéi',vi:'xung quanh',l:28},
+  {hz:'客厅',py:'kètīng',vi:'phòng khách',l:28},
+  {hz:'还是',py:'háishi',vi:'hay là',l:28},
+  {hz:'堵车',py:'dǔ chē',vi:'tắc đường',l:28},
+  // Bài 29
+  {hz:'会话',py:'huìhuà',vi:'đàm thoại',l:29},
+  {hz:'见',py:'jiàn',vi:'gặp',l:29},
+  {hz:'句子',py:'jùzi',vi:'câu',l:29},
+  {hz:'看见',py:'kàn jiàn',vi:'nhìn thấy',l:29},
+  {hz:'考试',py:'kǎoshì',vi:'thi',l:29},
+  {hz:'打开',py:'dǎ kāi',vi:'mở (ra)',l:29},
+  {hz:'笑',py:'xiào',vi:'cười',l:29},
+  {hz:'页',py:'yè',vi:'trang',l:29},
+  {hz:'有意思',py:'yǒu yìsi',vi:'có ý nghĩa, hay',l:29},
+  {hz:'糟糕',py:'zāogāo',vi:'chết rồi, thôi rồi',l:29},
+  {hz:'作业',py:'zuòyè',vi:'bài tập',l:29},
+  {hz:'词',py:'cí',vi:'từ',l:29},
+  {hz:'答',py:'dá',vi:'trả lời',l:29},
+  {hz:'道',py:'dào',vi:'câu, món (l.từ đếm câu hỏi, món ăn)',l:29},
+  {hz:'合上',py:'hé shàng',vi:'gấp, đóng (sách)',l:29},
+  {hz:'回信',py:'huí xìn',vi:'trả lời thư',l:29},
+  {hz:'完',py:'wán',vi:'hết, xong',l:29},
+  {hz:'念',py:'niàn',vi:'đọc',l:29},
+  {hz:'成',py:'chéng',vi:'thành',l:29},
+  {hz:'成绩',py:'chéngjì',vi:'thành tích',l:29},
+  {hz:'题',py:'tí',vi:'đề',l:29},
+  {hz:'听见',py:'tīngjiàn',vi:'nghe thấy',l:29},
+  {hz:'故事',py:'gùshi',vi:'câu chuyện',l:29},
+  {hz:'干',py:'gàn',vi:'làm',l:29},
+  {hz:'干什么',py:'gàn shénme',vi:'làm cái gì',l:29},
+  {hz:'熟',py:'shú',vi:'chín, quen',l:29},
+  // Bài 30
+  {hz:'一般',py:'yìbān',vi:'bình thường',l:30},
+  {hz:'原来',py:'yuánlái',vi:'hóa ra, vốn dĩ',l:30},
+  {hz:'延长',py:'yáncháng',vi:'kéo dài',l:30},
+  {hz:'游泳',py:'yóu yǒng',vi:'bơi',l:30},
+  {hz:'油腻',py:'yóunì',vi:'dầu mỡ',l:30},
+  {hz:'效果',py:'xiàoguǒ',vi:'hiệu quả',l:30},
+  {hz:'从来',py:'cónglái',vi:'từ trước tới nay',l:30},
+  {hz:'打鱼',py:'dǎ yú',vi:'câu cá',l:30},
+  {hz:'点心',py:'diǎnxin',vi:'điểm tâm',l:30},
+  {hz:'父母',py:'fùmǔ',vi:'bố mẹ',l:30},
+  {hz:'感谢',py:'gǎnxiè',vi:'cảm tạ',l:30},
+  {hz:'干净',py:'gānjìng',vi:'sạch sẽ',l:30},
+  {hz:'干燥',py:'gānzào',vi:'khô ráo',l:30},
+  {hz:'高血压',py:'gāoxuèyā',vi:'cao huyết áp',l:30},
+  {hz:'功课',py:'gōngkè',vi:'bài học',l:30},
+  {hz:'好',py:'hǎo',vi:'tốt',l:30},
+  {hz:'好处',py:'hǎochù',vi:'có ích, ích lợi',l:30},
+  {hz:'机会',py:'jīhuì',vi:'cơ hội',l:30},
+  {hz:'记',py:'jì',vi:'ghi',l:30},
+  {hz:'记住',py:'jì zhù',vi:'ghi nhớ',l:30},
+  {hz:'课间',py:'kèjiān',vi:'giữa các giờ học',l:30},
+  {hz:'块',py:'kuài',vi:'khối, miếng',l:30},
+  {hz:'练',py:'liàn',vi:'luyện',l:30},
+  {hz:'满意',py:'mǎnyì',vi:'vừa ý',l:30},
+  {hz:'慢性病',py:'mànxìngbìng',vi:'bệnh mãn tính',l:30},
+  {hz:'必须',py:'bìxū',vi:'cần thiết, phải',l:30},
+  {hz:'不过',py:'búguò',vi:'nhưng',l:30},
+  {hz:'不一定',py:'bù yídìng',vi:'không nhất định',l:30},
+  {hz:'差不多',py:'chàbuduō',vi:'xấp xỉ',l:30},
+  {hz:'菜',py:'cài',vi:'rau, món ăn',l:30},
+  {hz:'牛奶',py:'niúnǎi',vi:'sữa bò',l:30},
+  {hz:'气功',py:'qìgōng',vi:'khí công',l:30},
+  {hz:'气候',py:'qìhòu',vi:'khí hậu',l:30},
+  {hz:'散步',py:'sàn bù',vi:'tản bộ, đi dạo',l:30},
+  {hz:'晒',py:'shài',vi:'phơi',l:30},
+  {hz:'失眠',py:'shī mián',vi:'mất ngủ',l:30},
+  {hz:'生活',py:'shēnghuó',vi:'sinh hoạt',l:30},
+  {hz:'习惯',py:'xíguàn',vi:'thói quen',l:30},
+  {hz:'午觉',py:'wǔjiào',vi:'ngủ trưa',l:30},
+  {hz:'挺',py:'tǐng',vi:'khá, rất',l:30},
+  {hz:'钟头',py:'zhōngtóu',vi:'giờ (đồng hồ)',l:30},
+];
+
+// Remove duplicate entries (same hz + same lesson)
+const seen = new Set();
+const WORDS = VOCAB.filter(w => {
+  const k = w.hz + '-' + w.l;
+  if (seen.has(k)) return false;
+  seen.add(k); return true;
+});
+
+const SENTENCES = [
+  {vi:'Buổi sáng tôi ăn bánh bao và uống súp.',hz:'早上我吃包子，喝汤。',hint:'早上、包子、汤',l:7},
+  {vi:'Bạn muốn ăn cơm hay mì sợi?',hz:'你要吃米饭还是面条？',hint:'米饭、还是、面条',l:7},
+  {vi:'Căng-tin của trường có cơm trắng và trứng gà.',hz:'学校的食堂有米饭和鸡蛋。',hint:'食堂、米饭、鸡蛋',l:7},
+  {vi:'Buổi tối tôi thường uống một ít bia.',hz:'晚上我常常喝一些啤酒。',hint:'晚上、一些、啤酒',l:7},
+  {vi:'Buổi sáng sớm anh ấy ăn mì sợi và uống sữa.',hz:'早上他吃面条，喝牛奶。',hint:'早上、面条',l:7},
+  {vi:'Một cân táo bao nhiêu tiền?',hz:'苹果一斤多少钱？',hint:'苹果、斤、多少钱',l:8},
+  {vi:'Hoa quả này không đắt, tất cả chỉ mười lăm đồng.',hz:'这些水果不贵，一共十五块。',hint:'水果、不贵、一共',l:8},
+  {vi:'Chị ấy muốn mua quýt và táo.',hz:'她要买橘子和苹果。',hint:'橘子、苹果',l:8},
+  {vi:'Tôi đưa cho anh một trăm đồng, anh thối lại tôi nhé.',hz:'我给你一百块，你找我钱吧。',hint:'给、找、吧',l:8},
+  {vi:'Anh còn muốn mua gì khác không?',hz:'你还要买别的东西吗？',hint:'还、别的',l:8},
+  {vi:'Buổi chiều tôi muốn đổi đô la Mỹ sang nhân dân tệ.',hz:'下午我要换美元成人民币。',hint:'下午、换、美元、人民币',l:9},
+  {vi:'Thư viện đổi một nghìn yên Nhật được bao nhiêu nhân dân tệ?',hz:'图书馆换一千日元多少人民币？',hint:'图书馆、千、日元、人民币',l:9},
+  {vi:'Ông ơi, một lúc nữa ông quay lại nhé, nhân viên đi ăn cơm rồi.',hz:'先生，一会儿您回来吧，营业员去吃饭了。',hint:'先生、一会儿、营业员',l:9},
+  {vi:'Nhân viên văn phòng đó đang ở phòng 305 tòa nhà B.',hz:'那个办公室职员在B楼305号房间。',hint:'办公室、职员、楼、号、房间',l:10},
+  {vi:'Bạn có biết số điện thoại di động của cô ấy không?',hz:'你知道她的手机号码吗？',hint:'知道、手机、号码',l:10},
+  {vi:'Anh ấy không ở nhà, anh ấy đang làm việc ở văn phòng.',hz:'他不在家，他在办公室办公。',hint:'在家、办公室、办公',l:10},
+  {vi:'Buổi sáng hôm nay, tôi trước tiên đi làm, sau đó cùng bạn bè đi nhà hàng Trung Quốc ăn cơm.',hz:'今天早上，我先去上班，然后跟朋友去中国餐厅吃饭。',hint:'先、然后、跟',l:11},
+  {vi:'Để tôi giới thiệu một chút, vị này là giáo sư của chúng tôi.',hz:'我来介绍一下儿，这位是我们的教授。',hint:'介绍、一下儿、位、教授',l:11},
+  {vi:'Hiệu trưởng nhiệt liệt hoan nghênh các bạn lưu học sinh mới đến trường.',hz:'校长热烈欢迎新来的留学生。',hint:'校长、欢迎、留学生',l:11},
+  {vi:'Chúng tôi và họ đều là lưu học sinh, các bạn cũng là lưu học sinh phải không?',hz:'我们和他们都是留学生，你们也是留学生吧？',hint:'我们、他们、都、你们、也',l:11},
+  {vi:'Hai người họ đều đang học tiếng Trung ở trường đại học này.',hz:'他们俩都在这所大学学习汉语。',hint:'俩、都、大学、学习',l:11},
+  {vi:'Bạn cảm thấy ngữ pháp tiếng Hán thế nào, có khó không?',hz:'你觉得汉语语法怎么样，难不难？',hint:'觉得、语法、怎么样',l:12},
+  {vi:'Nghe và nói tương đối dễ, nhưng đọc và viết khá khó.',hz:'听和说比较容易，但是读和写比较难。',hint:'听、说、比较、容易、但是、读、写',l:12},
+  {vi:'Bạn cùng phòng mới của tôi là một du học sinh, anh ấy nói ngôn ngữ này rất tốt.',hz:'我的新同屋是留学生，他说这种语言说得很好。',hint:'新、同屋、留学生、语言',l:12},
+  {vi:'Thầy giáo cho chúng tôi rất nhiều bài tập ngữ pháp.',hz:'老师给我们很多语法练习。',hint:'给、语法',l:12},
+  {vi:'Bạn học của tôi nói rằng học ở trường đại học này rất vui.',hz:'我的同学说在这所大学学习很愉快。',hint:'同学、大学、学习',l:12},
+];
+
+// ════════════════════════════════════════════════════
+// CÁC NHÓM CHỮ DỄ NHẦM (hình dạng giống nhau / đồng âm)
+// ════════════════════════════════════════════════════
+const CONFUSE_GROUPS = [
+  {chars:[{hz:'买',py:'mǎi',vi:'mua'},{hz:'卖',py:'mài',vi:'bán'}],
+   tip:'卖 = 买 + thêm nét sổ-ngang (士) ở trên đầu. Nhớ: "bán" thì phải có thêm hàng (nét thêm) ở trên so với "mua".'},
+  {chars:[{hz:'在',py:'zài',vi:'ở, đang'},{hz:'再',py:'zài',vi:'lại, nữa'}],
+   tip:'Phát âm giống nhau hoàn toàn! 在 có bộ 土 (đất) bên trái → chỉ vị trí "ở". 再 không có 土, mang nghĩa thời gian "lần nữa".'},
+  {chars:[{hz:'那',py:'nà',vi:'kia, đó'},{hz:'哪',py:'nǎ',vi:'nào'}],
+   tip:'Giống nhau gần như hoàn toàn, chỉ khác 哪 có thêm bộ 口 (miệng) bên trái vì nó dùng để hỏi.'},
+  {chars:[{hz:'找',py:'zhǎo',vi:'tìm'},{hz:'我',py:'wǒ',vi:'tôi'},{hz:'钱',py:'qián',vi:'tiền'}],
+   tip:'Cả ba đều có nét móc xiên giống 戈 bên phải nên rất dễ lẫn. Phân biệt bằng phần bên trái: 找=扌(tay, "tìm"), 我=một chữ riêng, 钱=钅(kim loại, "tiền").'},
+  {chars:[{hz:'做',py:'zuò',vi:'làm (việc cụ thể)'},{hz:'作',py:'zuò',vi:'làm (trừu tượng/văn bản)'}],
+   tip:'Cùng âm zuò! 做 thường đi với hành động cụ thể (做饭, 做作业), 作 thường đi với từ ghép trừu tượng (工作, 作业, 作者).'},
+  {chars:[{hz:'你',py:'nǐ',vi:'bạn'},{hz:'您',py:'nín',vi:'ngài, bạn (lịch sự)'}],
+   tip:'您 = 你 + 心 (tâm) ở dưới → thêm "tấm lòng" để thể hiện sự lịch sự, tôn trọng.'},
+  {chars:[{hz:'人',py:'rén',vi:'người'},{hz:'入',py:'rù',vi:'vào'},{hz:'八',py:'bā',vi:'tám'}],
+   tip:'Ba chữ chỉ gồm 2 nét xiên nhưng độ giao nhau khác: 人 hai nét chéo nhau ở trên, 入 nét phải dài chạm xuống, 八 hai nét tách rời không chạm.'},
+  {chars:[{hz:'太',py:'tài',vi:'quá'},{hz:'大',py:'dà',vi:'to, lớn'}],
+   tip:'太 = 大 + thêm 1 chấm nhỏ bên dưới. Có chấm thì là "太" (quá), không chấm là "大" (to).'},
+  {chars:[{hz:'已',py:'yǐ',vi:'đã'},{hz:'己',py:'jǐ',vi:'mình, bản thân'}],
+   tip:'已 nét trên hơi hở (không chạm), 己 nét trên khép kín hơn. Câu nhớ: "已 hở miệng đã xong việc, 己 kín đáo là bản thân mình".'},
+  {chars:[{hz:'士',py:'shì',vi:'sĩ (học vị, quân sĩ)'},{hz:'土',py:'tǔ',vi:'đất'}],
+   tip:'Chỉ khác độ dài 2 nét ngang: 士 nét trên ngắn hơn nét dưới, 土 nét trên dài hơn nét dưới.'},
+  {chars:[{hz:'未',py:'wèi',vi:'chưa'},{hz:'末',py:'mò',vi:'cuối, ngọn'}],
+   tip:'未 nét ngang trên ngắn hơn nét dưới; 末 nét ngang trên dài hơn nét dưới (giống chữ 木 + nét trên cùng).'},
+  {chars:[{hz:'因',py:'yīn',vi:'vì, nguyên nhân'},{hz:'困',py:'kùn',vi:'buồn ngủ, khó khăn'}],
+   tip:'因 = 囗 + 大 bên trong. 困 = 囗 + 木 bên trong. Nhìn kỹ phần giữa: 大 (người dang tay) hay 木 (cây).'},
+  {chars:[{hz:'自',py:'zì',vi:'tự, bản thân'},{hz:'白',py:'bái',vi:'trắng'}],
+   tip:'Gần giống nhau, khác ở nét đầu tiên: 自 có nét xiên ngắn nhô lên trên, 白 nét đầu là một gạch ngang/chấm nằm ngay trên 日.'},
+  {chars:[{hz:'力',py:'lì',vi:'sức, lực'},{hz:'刀',py:'dāo',vi:'dao'}],
+   tip:'力 nét móc nằm bên trong góc trên, 刀 có thêm 1 nét chấm nhỏ (mũi dao) ở góc phải.'},
+  {chars:[{hz:'千',py:'qiān',vi:'nghìn'},{hz:'干',py:'gān',vi:'khô, làm'}],
+   tip:'千 nét xiên ở trên cắt qua nét ngang; 干 hai nét ngang song song, không có nét xiên.'},
+  {chars:[{hz:'住',py:'zhù',vi:'ở, sống'},{hz:'往',py:'wǎng',vi:'hướng về, đến'}],
+   tip:'Cả hai có phần 主 bên phải. Khác bộ thủ bên trái: 住=亻(người, "ở"), 往=彳(bước đi, "hướng về").'},
+  {chars:[{hz:'看',py:'kàn',vi:'xem, nhìn'},{hz:'着',py:'zhe',vi:'đang (trợ từ)'}],
+   tip:'Cả hai có 目 ở dưới. Phần trên khác: 看 là 手 (tay che mắt để nhìn), 着 là dạng biến thể của 羊.'},
+  {chars:[{hz:'汤',py:'tāng',vi:'canh, súp'},{hz:'场',py:'chǎng',vi:'sân, trường (bãi)'}],
+   tip:'Hai chữ có phần bên phải khá giống nhau (氵 vs 土 + phần phải tương tự). Nhìn bộ thủ bên trái để phân biệt: 汤=氵(nước, "canh"), 场=土(đất, "sân bãi").'},
+  {chars:[{hz:'即',py:'jí',vi:'tức thì, lập tức (即使)'},{hz:'既',py:'jì',vi:'đã, vốn (既然)'}],
+   tip:'即 bên trái là 卩 đơn giản. 既 bên trái có thêm nét ngang/chéo phức tạp hơn (trông như "无" cách điệu). Đây là cặp rất dễ nhầm khi viết nhanh.'},
+  {chars:[{hz:'哥',py:'gē',vi:'anh trai'},{hz:'歌',py:'gē',vi:'hát, bài hát'}],
+   tip:'Đồng âm! 歌 = 哥 + 欠 (bộ "khiếm", liên quan đến miệng/hơi) → "hát" cần dùng hơi từ miệng.'},
+  {chars:[{hz:'张',py:'zhāng',vi:'tờ, tấm (l.từ đếm vật phẳng)'},{hz:'长',py:'cháng / zhǎng',vi:'dài / trưởng, lớn lên'}],
+   tip:'张 = 弓 (cây cung) + 长. Nhớ: có thêm bộ 弓 bên trái thì là lượng từ "tờ/tấm" (张), không có là "dài/trưởng" (长).'},
+  {chars:[{hz:'早',py:'zǎo',vi:'sớm'},{hz:'草',py:'cǎo',vi:'cỏ'}],
+   tip:'草 = 艹 (bộ cỏ) + 早. Có bộ cỏ ở trên thì là "cỏ", không có thì là "sớm".'},
+  {chars:[{hz:'比',py:'bǐ',vi:'so với'},{hz:'北',py:'běi',vi:'phía bắc'}],
+   tip:'Cả hai gồm 2 nét giống hình người quay lưng nhau. 北 nét bên phải có thêm móc/cong rõ hơn so với 比.'},
+  {chars:[{hz:'今',py:'jīn',vi:'nay, hiện tại'},{hz:'令',py:'lìng',vi:'lệnh, khiến cho'}],
+   tip:'Hai chữ gần giống, 令 có thêm 1 nét chấm nhỏ ở phía dưới so với 今.'},
+];
+
+
+const HANZI_PARTS = {
+  '一': "Chữ cơ bản: 1 nét ngang, biểu thị số 1.",
+  '万': "Giản thể cổ, khó tách bộ phận rõ ràng.",
+  '上': [['卜','chỉ vị trí, hướng lên'],['一','nét ngang, mặt nền']],
+  '下': [['一','nét ngang, mặt nền'],['卜','chỉ vị trí, hướng xuống']],
+  '业': "Giản thể, gốc hình cái giá/khung, khó tách bộ phận.",
+  '个': [['人','người'],['丨','nét đứng']],
+  '中': [['口','khung, vật chứa'],['丨','nét xuyên giữa']],
+  '么': "Biến thể của 幺, chữ đơn khó tách bộ phận.",
+  '也': "Chữ tượng hình cổ, khó tách bộ phận rõ ràng.",
+  '书': "Giản thể của 書, khó tách bộ phận rõ ràng.",
+  '买': "Giản thể của 買, khó tách bộ phận rõ ràng.",
+  '了': "Chữ đơn, khó tách bộ phận rõ ràng.",
+  '些': [['此','này, đây'],['二','hai, chỉ số nhiều']],
+  '人': "Tượng hình: hình người đứng nghiêng (2 nét chân).",
+  '介': [['人','người'],['八','ngăn cách, biên giới']],
+  '他': [['亻','người'],['也','(thành phần âm: tā)']],
+  '们': [['亻','người'],['门','cửa (âm: men)']],
+  '会': [['人','người'],['云','nói, mây (hợp lại để nói)']],
+  '但': [['亻','người'],['旦','rạng sáng (âm: dàn)']],
+  '位': [['亻','người'],['立','đứng']],
+  '住': [['亻','người'],['主','chủ (âm: zhù)']],
+  '你': [['亻','người'],['尔','(thành phần âm: nǐ)']],
+  '俩': [['亻','người'],['两','hai']],
+  '借': [['亻','người'],['昔','ngày xưa (âm: jiè)']],
+  '儿': "Tượng hình: hình đứa trẻ/người (gốc của 兒).",
+  '元': [['二','hai'],['儿','người']],
+  '先': [['𠂉','bước chân (biến thể)'],['儿','người']],
+  '公': [['八','chia, tách'],['厶','riêng tư']],
+  '共': [['廿','hai mươi, nhiều'],['八','chia sẻ']],
+  '写': [['冖','mái che'],['与','(thành phần âm, giản thể)']],
+  '分': [['八','chia'],['刀','dao, cắt']],
+  '别': [['另','riêng, khác'],['刂','dao (cắt rời)']],
+  '办': [['力','sức lực'],['八','hai chấm (giản thể của 辦)']],
+  '包': [['勹','bao bọc'],['巳','(thành phần âm: bāo)']],
+  '千': [['丿','nét phẩy'],['十','mười']],
+  '午': "Chữ tượng hình/biểu ý cổ, chỉ giờ giữa ngày (giờ Ngọ).",
+  '卖': [['十','mười'],['买','mua (bán = trên mười, dưới mua)']],
+  '号': [['口','miệng, kêu'],['丂','(thành phần âm)']],
+  '吃': [['口','miệng'],['乞','xin, cầu (âm: chī)']],
+  '同': [['冂','khung bao'],['一','một'],['口','miệng']],
+  '吧': [['口','miệng'],['巴','(thành phần âm: bā)']],
+  '听': [['口','miệng'],['斤','cái búa (âm: jīn → tīng)']],
+  '员': [['口','miệng'],['贝','tiền, của (giản thể)']],
+  '呢': [['口','miệng'],['尼','ni cô (âm: ní → ne)']],
+  '和': [['禾','lúa'],['口','miệng']],
+  '啤': [['口','miệng'],['卑','thấp, hèn (âm: bēi → pí)']],
+  '图': [['囗','bao quanh'],['冬','mùa đông (giản thể, bên trong)']],
+  '在': [['ナ','tay (biến thể của 才)'],['土','đất']],
+  '块': [['土','đất'],['夬','(thành phần âm: kuài)']],
+  '堂': [['尚','còn, vẫn'],['土','đất, nền nhà']],
+  '多': [['夕','buổi tối'],['夕','buổi tối (2 lần = nhiều)']],
+  '大': "Tượng hình: hình người dang tay (to lớn).",
+  '头': "Giản thể của 頭, khó tách bộ phận rõ ràng.",
+  '姐': [['女','nữ'],['且','hơn nữa (âm: qiě → jiě)']],
+  '子': "Tượng hình: hình hài đứa trẻ/bào thai.",
+  '学': [['冖','mái che (giản thể)'],['子','con, trẻ em']],
+  '室': [['宀','mái nhà'],['至','đến nơi']],
+  '家': [['宀','mái nhà'],['豕','con heo']],
+  '容': [['宀','mái nhà'],['谷','khe núi, hang']],
+  '小': "Tượng hình: 3 nét nhỏ, biểu thị vật nhỏ.",
+  '少': [['小','nhỏ'],['丿','một nét thêm (ít hơn nhỏ)']],
+  '屋': [['尸','thân người, mái'],['至','đến nơi']],
+  '币': [['一','nét ngang'],['巾','khăn, vải']],
+  '得': [['彳','bước đi'],['㝵','nắm được (gồm 旦+寸)']],
+  '怎': [['乍','chợt, lần đầu'],['心','tim, lòng']],
+  '我': "Tượng hình: hình vũ khí cổ, mượn làm đại từ \"tôi\".",
+  '房': [['户','cửa nhà'],['方','phương hướng, vuông']],
+  '手': "Tượng hình: hình bàn tay và các ngón.",
+  '找': [['扌','tay'],['戈','vũ khí (âm: zhǎo)']],
+  '换': [['扌','tay'],['奂','(thành phần âm: huàn)']],
+  '授': [['扌','tay'],['受','nhận lấy']],
+  '教': [['孝','hiếu thảo'],['攵','đánh nhẹ, dạy dỗ']],
+  '数': [['娄','(thành phần âm)'],['攵','đánh nhẹ, hành động']],
+  '斤': "Tượng hình: hình cái búa/rìu, đơn vị cân.",
+  '新': [['亲','gần gũi, thân'],['斤','cái búa, rìu']],
+  '日': "Tượng hình: hình mặt trời.",
+  '早': [['日','mặt trời'],['十','mười']],
+  '易': [['日','mặt trời'],['勿','đừng, không']],
+  '是': [['日','mặt trời'],['正(biến thể)','ngay, đúng']],
+  '晚': [['日','mặt trời'],['免','tránh, miễn (âm: miǎn → wǎn)']],
+  '机': [['木','cây, gỗ'],['几','cái bàn nhỏ (âm: jī)']],
+  '条': [['夊','bước đi (biến thể)'],['木','cây, gỗ']],
+  '果': "Tượng hình: hình quả trên cây (trên là quả, dưới 木 là cây).",
+  '校': [['木','cây, gỗ'],['交','giao, gặp nhau']],
+  '样': [['木','cây, gỗ'],['羊','con dê (âm: yáng → yàng)']],
+  '楼': [['木','cây, gỗ'],['娄','(thành phần âm: lóu)']],
+  '橘': [['木','cây, gỗ'],['矞','(thành phần âm: jú)']],
+  '欢': [['又','tay phải, lại'],['欠','thiếu, ngáp (giản thể của 歡)']],
+  '欧': [['区','khu vực'],['欠','thiếu, ngáp (giản thể của 歐)']],
+  '比': "Biểu ý: hai người (匕+匕 biến thể) đứng cạnh để so sánh.",
+  '民': "Chữ tượng hình cổ, khó tách bộ phận rõ ràng trong chữ hiện đại.",
+  '水': "Tượng hình: hình dòng nước chảy.",
+  '汤': [['氵','nước'],['昜','(thành phần âm, giản thể)']],
+  '法': [['氵','nước'],['去','đi, rời khỏi']],
+  '港': [['氵','nước'],['巷','con hẻm, ngõ']],
+  '生': "Tượng hình: hình cây mầm mọc lên từ đất (sinh ra, sống).",
+  '电': "Giản thể của 電, gốc hình tia chớp.",
+  '留': [['卯(biến thể)','phần trên'],['田','ruộng']],
+  '百': [['一','một'],['白','trắng (âm: bái → bǎi)']],
+  '的': [['白','trắng'],['勺','cái thìa (âm: sháo → de)']],
+  '看': [['𠂉','tay (biến thể, che mắt)'],['目','mắt']],
+  '知': [['矢','mũi tên'],['口','miệng']],
+  '码': [['石','đá'],['马','con ngựa (giản thể)']],
+  '秘': [['禾','lúa'],['必','chắc chắn, phải (âm: bì → mì)']],
+  '等': [['⺮','tre'],['寺','chùa, cơ quan (âm: sì → děng)']],
+  '米': "Tượng hình: hình hạt gạo.",
+  '绍': [['纟','tơ, sợi'],['召','gọi, triệu (âm: zhào → shào)']],
+  '给': [['纟','tơ, sợi'],['合','hợp lại (âm: hé → gěi)']],
+  '美': [['羊','con dê'],['大','to lớn (dê lớn = đẹp)']],
+  '职': [['耳','tai'],['只','chỉ, duy (giản thể của 職)']],
+  '苹': [['艹','cỏ'],['平','bằng, phẳng (âm: píng)']],
+  '营': [['艹','cỏ, lửa (biến thể)'],['营(phần dưới)','doanh trại (giản thể)']],
+  '蛋': [['疍','hình quả trứng'],['虫','con sâu, côn trùng']],
+  '要': [['覀','biến thể của 西'],['女','nữ']],
+  '觉': [['⺍⺌(phần trên)','biến thể, giống phần trên của 学'],['见','nhìn thấy']],
+  '角': "Tượng hình: hình cái sừng động vật.",
+  '言': "Tượng hình/biểu ý: miệng phát ra âm thanh (lời nói).",
+  '话': [['讠','lời nói'],['舌','cái lưỡi']],
+  '语': [['讠','lời nói'],['吾','tôi, ta (âm: wú → yǔ)']],
+  '说': [['讠','lời nói'],['兑','đổi, trao (âm: duì → shuō)']],
+  '读': [['讠','lời nói'],['卖','bán (âm: mài → dú)']],
+  '贵': [['中(biến thể)','phần trên'],['贝','tiền, của quý']],
+  '较': [['车','xe'],['交','giao, gặp nhau']],
+  '迎': [['辶','đi'],['卬','ngẩng lên, nghênh (âm)']],
+  '还': [['辶','đi'],['不(biến thể)','phần trên, giản thể của 還']],
+  '这': [['辶','đi'],['文','văn, chữ (giản thể của 這)']],
+  '道': [['辶','đi'],['首','đầu, đứng đầu']],
+  '那': [['⺄(biến thể)','phần trái, thành phần âm'],['阝','vùng, làng (bên phải)']],
+  '都': [['者','người, kẻ (âm: zhě → dū)'],['阝','vùng, đô thị (bên phải)']],
+  '酒': [['氵','nước'],['酉','bình rượu']],
+  '长': "Giản thể của 長, gốc hình tượng người tóc dài.",
+  '间': [['门','cửa'],['日','mặt trời, ánh sáng lọt qua']],
+  '零': [['雨','mưa'],['令','lệnh, ra lệnh (âm: lìng → líng)']],
+  '面': "Tượng hình: hình khuôn mặt người.",
+  '食': "Tượng hình: hình bát cơm có nắp đậy.",
+  '饭': [['饣','ăn, cơm'],['反','đảo, lật (âm: fǎn → fàn)']],
+  '馆': [['饣','ăn, nhà ăn'],['官','quan, công sở (âm: guān → guǎn)']],
+  '馒': [['饣','ăn'],['曼','dài, mềm (âm: màn → mán)']],
+  '鸡': [['又(biến thể)','thành phần âm, giản thể'],['鸟','con chim']],
+};
+
+
+const HSK_OFFICIAL = {
+  1: ['我','我们','你','他','她','这','那','哪','哪儿','谁','什么','多少','几','怎么','怎么样','一','二','三','四','五','六','七','八','九','十','个','岁','本','些','块','不','没','很','太','都','一点儿','和','在','的','了','吗','呢','喂','家','学校','饭店','商店','医院','中国','北京','上','下','前面','后面','里面','今天','明天','昨天','上午','中午','下午','年','月','号','星期','点','分钟','现在','时候','爸爸','妈妈','儿子','女儿','老师','学生','同学','朋友','医生','先生','小姐','衣服','水','菜','米饭','水果','苹果','茶','杯子','钱','飞机','出租车','电视','电脑','电影','天气','猫','狗','东西','人','名字','书','汉语','字','桌子','椅子','谢谢','不客气','再见','请','对不起','没关系','是','有','看','听','说','读','写','看见','叫','来','回','去','吃','喝','睡觉','打电话','做','买','开','坐','住','学习','工作','下雨','爱','喜欢','想','认识','会','能','好','大','小','多','少','冷','热','高兴','漂亮'],
+  2: ['您','它','大家','每','为什么','零','两','百','千','第一','次','件','别','非常','也','还','最','真','正在','已经','一起','再','就','因为所以','虽然但是','从','比','往','离','得','着','过','吧','机场','教室','房间','路','左边','右边','外','旁边','一下','早上','晚上','小时','时间','去年','日','生日','哥哥','姐姐','弟弟','妹妹','丈夫','妻子','孩子','男人','女人','服务员','鱼','羊肉','牛奶','鸡蛋','西瓜','咖啡','雪','药','手机','手表','眼睛','身体','公共汽车','报纸','门','题','课','姓','问题','事情','考试','票','意思','颜色','铅笔','面条','火车站','公司','宾馆','说话','卖','问','走','进','出','跑步','到','穿','洗','给','找','懂','笑','告诉','准备','开始','介绍','帮助','玩','送','等','让','起床','唱歌','跳舞','旅游','上班','生病','休息','运动','游泳','踢足球','打篮球','完','觉得','知道','希望','可以','要','可能','高','红','白','黑','忙','快','慢','远','近','好吃','累','长','新','贵','便宜','晴','阴','错','快乐','对'],
+  3: ['阿姨','啊','矮','爱好','安静','把','班','搬','半','办法','办公室','帮忙','包','饱','北方','被','鼻子','比较','比赛','笔记本','必须','变化','别人','冰箱','菜单','参加','草','层','差','超市','衬衫','成绩','城市','迟到','除了','船','春','词典','聪明','打扫','打算','带','担心','蛋糕','当然','地','灯','地方','地铁','地图','电梯','电子邮件','东','冬','动物','短','段','锻炼','多么','饿','不但而且','耳朵','发','发烧','发现','方便','放','放心','分','附近','复习','干净','感兴趣','感冒','刚才','个子','跟','根据','更','公斤','公园','故事','刮风','关','关系','关心','关于','国家','过去','过','还是','害怕','黑板','后来','护照','花','画','坏','欢迎','还','环境','换','黄河','回答','会议','或者','几乎','机会','极','记得','季节','检查','简单','健康','见面','讲','教','角','脚','接','街道','结婚','结束','节目','节日','解决','借','经常','经过','经理','久','旧','句子','决定','渴','可爱','刻','客人','空调','口','哭','裤子','筷子','蓝','老','离开','礼物','历史','脸','聊天','练习','辆','了解','邻居','留学','楼','绿','马','马上','满意','帽子','米','面包','明白','拿','奶奶','南','难','难过','年级','年轻','鸟','努力','爬山','盘子','胖','啤酒','皮鞋','瓶子','其实','其他','骑','奇怪','起来','起飞','清楚','请假','秋','裙子','然后','热情','认为','认真','容易','如果','伞','上网','生气','声音','试','世界','瘦','舒服','叔叔','树','数学','刷牙','双','水平','司机','太阳','特别','疼','提高','体育','甜','条','同事','同意','头发','突然','图书馆','腿','完成','碗','万','忘记','为','为了','位','文化','西','习惯','洗手间','洗澡','夏','先','香蕉','相信','向','像','小心','校长','新闻','新鲜','信用卡','行李箱','熊猫','需要','选择','要求','爷爷','一定','一共','一会儿','一样','以前','一般','一边','一直','音乐','银行','饮料','应该','影响','用','游戏','有名','又','遇到','元','愿意','月亮','越','站','张','长','着急','照顾','照片','照相机','只','只有才','中文','中间','终于','种','重要','周末','主要','注意','自己','自行车','总是','嘴','最后','最近','作业'],
+  4: ['爱情','安排','安全','按时','按照','百分之','棒','包子','保护','保证','抱','抱歉','报名','倍','本来','笨','比如','毕业','遍','标准','表格','表示','表演','表扬','饼干','并且','博士','不过','不得不','不管','不仅','部分','擦','猜','材料','参观','餐厅','差不多','尝','长城','长江','场','超过','厕所','成功','成为','诚实','乘坐','吃惊','重新','抽烟','出差','出发','出生','出现','厨房','传真','窗户','词语','从来','粗心','存','错误','答案','打招呼','打扮','打扰','打印','打折','打针','大概','大使馆','大约','戴','大夫','当','当时','刀','导游','倒','到处','到底','道歉','得意','地点','得','登机牌','等','低','底','地球','地址','掉','调查','丢','动作','堵车','肚子','短信','对于','对话','对面','而','儿童','发生','发展','法律','翻译','烦恼','反对','方法','方面','方向','房东','放弃','放暑假','放松','份','丰富','否则','符合','富','付款','父亲','复印','复杂','负责','改变','干杯','赶','敢','感动','感觉','感情','感谢','干','刚','高速公路','胳膊','各','公里','工资','功夫','共同','够','购物','估计','鼓励','顾客','故意','挂','关键','观众','管理','光','广播','广告','逛','规定','国际','国籍','果汁','过程','海洋','害羞','寒假','汗','航班','好处','好像','号码','合格','合适','盒子','厚','后悔','护士','互联网','互相','怀疑','回忆','活动','活泼','火','获得','基础','激动','积极','积累','及时','即使','寄','记者','计划','既然','技术','继续','家具','加班','加油站','假','价格','坚持','减肥','减少','建议','将来','奖金','降低','降落','交','交流','交通','郊区','骄傲','饺子','教授','教育','接受','接着','结果','节','节约','解释','尽管','紧张','进行','禁止','精彩','经济','经历','经验','京剧','警察','景色','竟然','竞争','镜子','究竟','举','举办','举行','拒绝','距离','聚会','开玩笑','开心','看法','考虑','烤鸭','棵','科学','咳嗽','可怜','可是','可惜','客厅','肯定','空','空气','恐怕','苦','矿泉水','困','困难','拉','垃圾桶','辣','来自','来不及','来得及','懒','浪费','浪漫','老虎','冷静','理发','理解','理想','礼貌','礼拜天','厉害','力气','例如','俩','连','联系','凉快','零钱','另外','留','流利','流行','乱','旅行','律师','麻烦','马虎','满','毛','毛巾','美丽','梦','迷路','密码','免费','秒','民族','母亲','目的','耐心','难道','难受','内','内容','能力','年龄','弄','暖和','偶尔','排队','排列','判断','陪','批评','皮肤','脾气','篇','骗','乒乓球','平时','破','葡萄','普遍','普通话','其次','其中','气候','千万','签证','敲','桥','巧克力','亲戚','轻','轻松','情况','穷','区别','取','全部','缺点','缺少','却','确实','然而','热闹','任何','任务','扔','仍然','日记','入口','散步','森林','沙发','商量','伤心','稍微','勺子','社会','深','申请','甚至','生活','生命','生意','省','剩','失败','失望','师傅','十分','实际','实在','使','使用','是否','适合','适应','世纪','收','收入','收拾','首都','首先','受不了','受到','售货员','输','熟悉','数量','数字','帅','顺便','顺利','顺序','说明','硕士','死','速度','塑料袋','酸','随便','随着','孙子','所有','台','抬','态度','谈','弹钢琴','汤','糖','躺','趟','讨论','讨厌','特点','提','提供','提前','提醒','填空','条件','停','挺','通过','通知','同时','同情','推','推迟','脱','袜子','完全','往往','网球','网站','危险','味道','卫生间','温度','文章','污染','无','无聊','无论','误会','西红柿','吸引','咸','现金','羡慕','香','相反','相同','详细','响','橡皮','消息','小吃','小伙子','小说','笑话','效果','辛苦','心情','信封','信息','信心','兴奋','行','醒','性别','性格','幸福','修理','许多','学期','压力','牙膏','亚洲','呀','盐','严格','严重','研究','演出','演员','眼镜','阳光','养成','样子','邀请','要是','钥匙','也许','页','叶子','一切','以','以为','意见','艺术','因此','引起','印象','应聘','赢','勇敢','永远','优点','优秀','幽默','由','由于','邮局','尤其','有趣','友好','友谊','愉快','于是','与','语法','语言','羽毛球','预习','原来','原谅','原因','约会','阅读','云','允许','杂志','咱们','暂时','脏','责任','增加','占线','招聘','照','真正','整理','正常','正好','正确','正式','证明','之','支持','知识','值得','直接','植物','职业','指','只好','只要','质量','至少','重','重点','重视','周围','主意','祝贺','著名','专门','专业','转','赚','准确','准时','仔细','自然','自信','总结','租','最好','尊重','左右','座','作家','座位','作用','作者'],
+};
+
+// ════════════════════════════════════════════════════
+// TÀI KHOẢN / ĐỒNG BỘ TIẾN ĐỘ VỚI SERVER
+// ════════════════════════════════════════════════════
+let authToken = localStorage.getItem('authToken') || null;
+let authUsername = localStorage.getItem('authUsername') || null;
+let isGuest = localStorage.getItem('authGuest') === '1';
+let progressState = { srs: {}, streak: 0, lastDate: null };
+let authMode = 'login'; // 'login' | 'register'
+let syncTimer = null;
+let syncOk = true;
+let currentRole = 'user';   // 'user' | 'admin' | 'superadmin'
+let currentRank = null;     // {name, icon, next:{name,icon,remain}|null}
+function isAdminRole() { return currentRole === 'admin' || currentRole === 'superadmin'; }
+
+function authHeaders() {
+  return authToken ? { 'Authorization': 'Bearer ' + authToken } : {};
+}
+
+function authSwitchTab(mode) {
+  authMode = mode;
+  document.getElementById('auth-tab-login').classList.toggle('active', mode === 'login');
+  document.getElementById('auth-tab-register').classList.toggle('active', mode === 'register');
+  document.getElementById('auth-submit').textContent = mode === 'login' ? 'Đăng nhập' : 'Đăng ký';
+  document.getElementById('auth-error').classList.remove('show');
+}
+
+function authShowError(msg) {
+  const el = document.getElementById('auth-error');
+  el.textContent = msg;
+  el.classList.add('show');
+}
+
+async function authSubmit() {
+  const username = document.getElementById('auth-username').value.trim();
+  const password = document.getElementById('auth-password').value;
+  const btn = document.getElementById('auth-submit');
+  if (!username || !password) { authShowError('Vui lòng nhập đầy đủ thông tin'); return; }
+  btn.disabled = true;
+  const oldLabel = btn.textContent; btn.textContent = 'Đang xử lý...';
+  try {
+    const res = await fetch('/api/' + authMode, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await res.json();
+    if (!data.ok) { authShowError(data.error || 'Có lỗi xảy ra'); return; }
+    authToken = data.token; authUsername = data.username; isGuest = false;
+    localStorage.setItem('authToken', authToken);
+    localStorage.setItem('authUsername', authUsername);
+    localStorage.removeItem('authGuest');
+    progressState = data.progress || { srs: {}, streak: 0, lastDate: null };
+    currentRole = data.role || 'user';
+    currentRank = data.rank || null;
+    cacheProgressLocally();
+    closeAuthGate();
+    render();
+  } catch (e) {
+    authShowError('Không kết nối được máy chủ. Kiểm tra mạng và thử lại.');
+  } finally {
+    btn.disabled = false; btn.textContent = oldLabel;
+  }
+}
+
+function authContinueAsGuest() {
+  isGuest = true;
+  localStorage.setItem('authGuest', '1');
+  authToken = null; authUsername = null;
+  currentRole = 'user'; currentRank = null;
+  localStorage.removeItem('authToken'); localStorage.removeItem('authUsername');
+  progressState = loadGuestProgressLocally();
+  closeAuthGate();
+  render();
+}
+
+function authOpenMenu() {
+  if (isGuest || !authUsername) { openAuthGate(); return; }
+  document.getElementById('account-menu-name').textContent = '👤 ' + authUsername;
+  document.getElementById('account-menu').style.display = 'flex';
+}
+function closeAccountMenu() { document.getElementById('account-menu').style.display = 'none'; }
+
+function openChangePassword() {
+  document.getElementById('pw-old').value = '';
+  document.getElementById('pw-new').value = '';
+  document.getElementById('pw-new2').value = '';
+  document.getElementById('pw-error').classList.remove('show');
+  document.getElementById('pw-modal').style.display = 'flex';
+}
+function closeChangePassword() { document.getElementById('pw-modal').style.display = 'none'; }
+
+async function submitChangePassword() {
+  const oldPassword = document.getElementById('pw-old').value;
+  const newPassword = document.getElementById('pw-new').value;
+  const newPassword2 = document.getElementById('pw-new2').value;
+  const errEl = document.getElementById('pw-error');
+  const showErr = (msg) => { errEl.textContent = msg; errEl.classList.add('show'); };
+  if (!oldPassword || !newPassword) return showErr('Vui lòng nhập đủ thông tin.');
+  if (newPassword.length < 4) return showErr('Mật khẩu mới cần tối thiểu 4 ký tự.');
+  if (newPassword !== newPassword2) return showErr('Mật khẩu mới nhập lại không khớp.');
+  const btn = document.getElementById('pw-submit');
+  btn.disabled = true; btn.textContent = 'Đang xử lý...';
+  try {
+    const res = await fetch('/api/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ oldPassword, newPassword }),
+    });
+    const data = await res.json();
+    if (!data.ok) { showErr(data.error || 'Đổi mật khẩu thất bại.'); return; }
+    closeChangePassword();
+    alert('✅ Đổi mật khẩu thành công!');
+  } catch (e) {
+    showErr('Lỗi kết nối: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Đổi mật khẩu';
+  }
+}
+
+async function authLogout() {
+  try { await fetch('/api/logout', { method: 'POST', headers: authHeaders() }); } catch {}
+  authToken = null; authUsername = null; isGuest = false;
+  currentRole = 'user'; currentRank = null;
+  localStorage.removeItem('authToken'); localStorage.removeItem('authUsername'); localStorage.removeItem('authGuest');
+  progressState = { srs: {}, streak: 0, lastDate: null };
+  openAuthGate();
+}
+
+function openAuthGate() {
+  document.getElementById('auth-gate').style.display = 'flex';
+  document.getElementById('auth-username').value = '';
+  document.getElementById('auth-password').value = '';
+  document.getElementById('auth-error').classList.remove('show');
+  document.getElementById('tab-admin').style.display = 'none';
+}
+function closeAuthGate() {
+  document.getElementById('auth-gate').style.display = 'none';
+  updateUserBadge();
+  document.getElementById('tab-admin').style.display = (!isGuest && isAdminRole()) ? '' : 'none';
+  const rankTab = document.getElementById('tab-rank');
+  if (rankTab) rankTab.style.display = isGuest ? 'none' : '';
+}
+function updateUserBadge() {
+  const badge = document.getElementById('user-badge');
+  if (!badge) return;
+  if (isGuest) { badge.innerHTML = '👤 Khách (chỉ lưu máy này)'; return; }
+  const rankIcon = currentRank ? currentRank.icon + ' ' : '';
+  badge.innerHTML = rankIcon + '👤 ' + authUsername + (currentRole === 'superadmin' ? ' 👑🛠️' : currentRole === 'admin' ? ' 🛠️' : '');
+}
+
+// Khách (không đăng nhập): vẫn lưu localStorage như trước, riêng theo trình duyệt
+function loadGuestProgressLocally() {
+  try { return JSON.parse(localStorage.getItem('guestProgress') || 'null') || { srs: {}, streak: 0, lastDate: null }; }
+  catch { return { srs: {}, streak: 0, lastDate: null }; }
+}
+function cacheProgressLocally() {
+  if (isGuest) { localStorage.setItem('guestProgress', JSON.stringify(progressState)); return; }
+  if (authUsername) localStorage.setItem('progressCache_' + authUsername, JSON.stringify(progressState));
+}
+
+// Đồng bộ lên server (gộp các lần lưu liên tiếp trong 700ms để đỡ tốn request)
+function scheduleSync() {
+  if (isGuest || !authToken) return;
+  syncOk = null; updateSyncIndicator();
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(async () => {
+    try {
+      const res = await fetch('/api/progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify(progressState),
+      });
+      const data = await res.json();
+      syncOk = !!data.ok;
+      if (data.rank) { currentRank = data.rank; updateUserBadge(); }
+    } catch { syncOk = false; }
+    updateSyncIndicator();
+  }, 700);
+}
+function updateSyncIndicator() {
+  const badge = document.getElementById('user-badge');
+  if (!badge || isGuest || !authUsername) return;
+  const dot = syncOk === false ? '<span class="sync-dot offline"></span>' : (syncOk === null ? '' : '<span class="sync-dot"></span>');
+  const rankIcon = currentRank ? currentRank.icon + ' ' : '';
+  badge.innerHTML = dot + rankIcon + '👤 ' + authUsername + (currentRole === 'superadmin' ? ' 👑🛠️' : currentRole === 'admin' ? ' 🛠️' : '');
+}
+
+// Khởi động: kiểm tra token còn hiệu lực không, hoặc dùng chế độ khách
+async function bootAuth() {
+  if (isGuest) {
+    progressState = loadGuestProgressLocally();
+    closeAuthGate();
+    return;
+  }
+  if (authToken && authUsername) {
+    try {
+      const res = await fetch('/api/progress', { headers: authHeaders() });
+      const data = await res.json();
+      if (data.ok) {
+        progressState = data.progress || { srs: {}, streak: 0, lastDate: null };
+        currentRole = data.role || 'user';
+        currentRank = data.rank || null;
+        cacheProgressLocally();
+        closeAuthGate();
+        return;
+      }
+    } catch {
+      // Server không phản hồi được nhưng vẫn còn cache local -> cho vào tạm bằng cache, có thể đồng bộ lại sau
+      const cached = localStorage.getItem('progressCache_' + authUsername);
+      if (cached) {
+        try { progressState = JSON.parse(cached); closeAuthGate(); syncOk = false; return; } catch {}
+      }
+    }
+  }
+  openAuthGate();
+}
+
+// ════════════════════════════════════════════════════
+// SRS (đọc/ghi qua progressState, tự đồng bộ server theo tài khoản)
+// ════════════════════════════════════════════════════
+function getSRS() { return progressState.srs || (progressState.srs = {}); }
+function saveSRS(d) { progressState.srs = d; cacheProgressLocally(); scheduleSync(); }
+
+function getWordSRS(hz) {
+  const d = getSRS(); return d[hz] || {correct:0, total:0, step:0, nextReview:0};
+}
+
+function recordAnswer(hz, isCorrect) {
+  const d = getSRS();
+  if (!d[hz]) d[hz] = {correct:0, total:0, step:0, nextReview:0};
+  const w = d[hz];
+  w.total++;
+  if (isCorrect) {
+    w.correct++;
+    const steps = [10*60,60*60,24*60*60,3*24*60*60,7*24*60*60];
+    w.step = Math.min(w.step + 1, steps.length);
+    w.nextReview = Date.now() + (steps[w.step - 1] || steps[steps.length-1]) * 1000;
+  } else {
+    w.step = 0;
+    w.nextReview = Date.now() + 60*1000;
+  }
+  d[hz] = w; saveSRS(d);
+  updateStreak();
+}
+
+function updateStreak() {
+  const today = new Date().toDateString();
+  const last = progressState.lastDate;
+  let streak = progressState.streak || 0;
+  if (last === today) return streak;
+  const yesterday = new Date(Date.now() - 86400000).toDateString();
+  if (last === yesterday) { streak++; }
+  else { streak = 1; }
+  progressState.streak = streak;
+  progressState.lastDate = today;
+  cacheProgressLocally();
+  scheduleSync();
+  return streak;
+}
+
+function getStreak() { return progressState.streak || 0; }
+
+function sortByPriority(words) {
+  const now = Date.now();
+  const d = getSRS();
+  return [...words].sort((a, b) => {
+    const wa = d[a.hz] || {nextReview:0, correct:0, total:1};
+    const wb = d[b.hz] || {nextReview:0, correct:0, total:1};
+    const aDue = wa.nextReview <= now ? 1 : 0;
+    const bDue = wb.nextReview <= now ? 1 : 0;
+    if (aDue !== bDue) return bDue - aDue;
+    const ar = wa.total ? wa.correct/wa.total : 1;
+    const br = wb.total ? wb.correct/wb.total : 1;
+    return ar - br;
+  });
+}
+
+function getKnownCount(lesson) {
+  const d = getSRS();
+  const words = lesson === 0 ? WORDS : WORDS.filter(w => w.l === lesson);
+  return words.filter(w => {
+    const s = d[w.hz]; return s && s.step >= 3;
+  }).length;
+}
+
+// ════════════════════════════════════════════════════
+// TTS / AUDIO
+// ════════════════════════════════════════════════════
+let ttsVoice = null;
+let ttsRate = 0.65;
+
+function initTTS() {
+  const load = () => {
+    const voices = speechSynthesis.getVoices();
+    // Priority: female zh-CN voices
+    const femaleKeywords = ['female','woman','girl','Xiaoyi','Xiaoxiao','HuiHui','Yaoyao','Tracy','Meijia','Tingting','Hanhan'];
+    const zhVoices = voices.filter(v => v.lang.startsWith('zh'));
+    // Try to find a female voice
+    let pick = null;
+    for (const kw of femaleKeywords) {
+      pick = zhVoices.find(v => v.name.toLowerCase().includes(kw.toLowerCase()));
+      if (pick) break;
+    }
+    // Fallback: any zh voice, prefer name containing 'CN'
+    if (!pick) pick = zhVoices.find(v => v.lang === 'zh-CN') || zhVoices[0] || null;
+    ttsVoice = pick;
+    console.log('[TTS] selected voice:', ttsVoice ? ttsVoice.name : 'none', '| all zh voices:', zhVoices.map(v=>v.name));
+  };
+  speechSynthesis.onvoiceschanged = load;
+  load();
+}
+initTTS();
+
+function updateSpeed(val) {
+  ttsRate = parseFloat(val);
+  const el = document.getElementById('speed-val');
+  if (el) el.textContent = ttsRate.toFixed(2);
+}
+
+// Split text into natural phrase chunks at Chinese punctuation + commas
+function splitPhrases(text) {
+  // Split at：，。！？、；— keep delimiter with preceding chunk
+  const parts = [];
+  let buf = '';
+  for (let i = 0; i < text.length; i++) {
+    buf += text[i];
+    if ('，。！？、；…—,!?;'.includes(text[i])) {
+      parts.push(buf.trim());
+      buf = '';
+    }
+  }
+  if (buf.trim()) parts.push(buf.trim());
+  return parts.filter(Boolean);
+}
+
+// Speak with natural phrasing: queue utterances with micro-pauses between chunks
+function speak(text) {
+  if (!('speechSynthesis' in window)) return;
+  speechSynthesis.cancel();
+
+  const phrases = splitPhrases(text);
+
+  // If single short word, just speak directly
+  if (phrases.length <= 1) {
+    const utt = new SpeechSynthesisUtterance(text);
+    utt.lang = 'zh-CN';
+    utt.rate = ttsRate;
+    utt.pitch = 1.05;
+    if (ttsVoice) utt.voice = ttsVoice;
+    speechSynthesis.speak(utt);
+    return;
+  }
+
+  // Queue each phrase; insert a tiny silent utterance as pause between phrases
+  phrases.forEach((phrase, i) => {
+    const utt = new SpeechSynthesisUtterance(phrase);
+    utt.lang = 'zh-CN';
+    utt.rate = ttsRate;
+    utt.pitch = 1.05;
+    if (ttsVoice) utt.voice = ttsVoice;
+    speechSynthesis.speak(utt);
+
+    // Insert micro-pause after each phrase except last
+    if (i < phrases.length - 1) {
+      const pause = new SpeechSynthesisUtterance(' ');
+      pause.lang = 'zh-CN';
+      pause.rate = ttsRate;
+      pause.volume = 0;
+      if (ttsVoice) pause.voice = ttsVoice;
+      speechSynthesis.speak(pause);
+    }
+  });
+}
+
+const AC = new (window.AudioContext || window.webkitAudioContext || function(){})();
+function playDing() {
+  try {
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.connect(g); g.connect(AC.destination);
+    o.type='sine'; o.frequency.value=880;
+    g.gain.setValueAtTime(.3,AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(.001,AC.currentTime+.4);
+    o.start(); o.stop(AC.currentTime+.4);
+  } catch {}
+}
+function playBuzz() {
+  try {
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.connect(g); g.connect(AC.destination);
+    o.type='sawtooth'; o.frequency.value=140;
+    g.gain.setValueAtTime(.25,AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(.001,AC.currentTime+.35);
+    o.start(); o.stop(AC.currentTime+.35);
+  } catch {}
+}
+
+// ════════════════════════════════════════════════════
+// GLOBAL STATE
+// ════════════════════════════════════════════════════
+let currentTab = 'home';
+let selectedLessons = new Set(); // rỗng = chọn "Tất cả" các bài trong Quyển hiện tại
+let showPinyin = true;
+let questionCount = 10;
+
+function togglePinyin() {
+  showPinyin = !showPinyin;
+  document.getElementById('py-toggle-btn').textContent = showPinyin ? 'Ẩn Pinyin' : 'Hiện Pinyin';
+  render();
+}
+
+function goTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('#nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  render();
+}
+
+// Sinh màu theo công thức (golden-angle hue) để hỗ trợ mọi số bài học (1..30+) một cách nhất quán
+function lessonHue(l) { return Math.round((l * 137.508) % 360); }
+function lessonColor(l) { return l===0 ? 'var(--active)' : `hsl(${lessonHue(l)},58%,42%)`; }
+function lessonBg(l)    { return l===0 ? 'var(--l9b)'    : `hsl(${lessonHue(l)},65%,95%)`; }
+function lessonTagBg(l) { return `hsl(${lessonHue(l)},58%,86%)`; }
+function tagClass(l) { return 'tag-l'+l; } // giữ để tương thích, không còn dùng để tô màu
+function lessonTagStyle(l) { return `background:${lessonTagBg(l)};color:${lessonColor(l)};`; }
+
+// Quyển (book) — Quyển 1: bài 1-15, Quyển 2: bài 16-30
+const BOOKS = [
+  {id:1, name:'Quyển 1', from:1, to:15},
+  {id:2, name:'Quyển 2', from:16, to:30},
+];
+function lessonsOfBook(bookId) {
+  const b = BOOKS.find(x=>x.id===bookId);
+  const arr = [];
+  for (let i=b.from;i<=b.to;i++) arr.push(i);
+  return arr;
+}
+function bookOfLesson(l) {
+  const b = BOOKS.find(x => l>=x.from && l<=x.to);
+  return b ? b.id : 1;
+}
+let selectedBook = 1;
+
+// ── Giới hạn cho khách / chưa đăng nhập: chỉ được học tối đa 5 bài đầu của Quyển 1 ──
+const GUEST_MAX_LESSON = 5;
+function isLoggedIn() { return !isGuest && !!authToken && !!authUsername; }
+function guestLimitNotice() {
+  openAuthGate();
+}
+
+function setBook(b) {
+  if (!isLoggedIn() && b !== 1) { guestLimitNotice(); return; }
+  selectedBook = b; selectedLessons.clear(); render();
+}
+
+// ════════════════════════════════════════════════════
+// RENDER DISPATCHER
+// ════════════════════════════════════════════════════
+function render() {
+  document.getElementById('streak-badge').textContent = '🔥 ' + getStreak() + ' ngày';
+  const el = document.getElementById('content');
+  if (currentTab === 'home')   { el.innerHTML = renderHome(); bindHome(); }
+  else if (currentTab === 'flash') { el.innerHTML = renderFlash(); bindFlash(); }
+  else if (currentTab === 'quiz')  { el.innerHTML = renderQuiz(); bindQuiz(); }
+  else if (currentTab === 'type')  { el.innerHTML = renderType(); bindType(); }
+  else if (currentTab === 'write') { el.innerHTML = renderWrite(); bindWrite(); }
+  else if (currentTab === 'listen'){ el.innerHTML = renderListen(); bindListen(); }
+  else if (currentTab === 'aitrans'){ el.innerHTML = renderAiTrans(); bindAiTrans(); }
+  else if (currentTab === 'exam')  { el.innerHTML = renderExam(); bindExam(); }
+  else if (currentTab === 'stats') { el.innerHTML = renderStats(); }
+  else if (currentTab === 'dict')  { el.innerHTML = renderDict(); bindDict(); }
+  else if (currentTab === 'compare'){ el.innerHTML = renderCompare(); bindCompare(); }
+  else if (currentTab === 'hsk')   { el.innerHTML = renderHSK(); }
+  else if (currentTab === 'rank')  { el.innerHTML = renderRankTab(); bindRankTab(); }
+  else if (currentTab === 'admin') { el.innerHTML = renderAdmin(); bindAdmin(); }
+}
+
+// Lesson filter html — cho phép chọn NHIỀU bài cùng lúc (đặc biệt hữu ích khi kiểm tra/ôn tập)
+function lessonFilterHtml() {
+  const lessons = lessonsOfBook(selectedBook);
+  const allSelected = selectedLessons.size === 0;
+  const loggedIn = isLoggedIn();
+  const bookBtns = BOOKS.map(b => {
+    const locked = !loggedIn && b.id !== 1;
+    const style = selectedBook===b.id?`background:var(--active);border-color:var(--active);color:#fff;`:`border-color:var(--active);color:var(--active);`;
+    return `<button class="lbtn${selectedBook===b.id?' sel':''}${locked?' locked':''}" style="${style}${locked?'opacity:.55;':''}" onclick="setBook(${b.id})">${locked?'🔒 ':''}${b.name}</button>`;
+  }).join('');
+  const allBtn = `<button class="lbtn${allSelected?' sel':''}" data-l="0" style="${allSelected ? `border-color:var(--active);background:var(--active);color:#fff;` : `border-color:var(--active);background:${lessonBg(0)};color:var(--active);`}" onclick="toggleLessonAll()">Tất cả</button>`;
+  const lessonBtns = lessons.map(l => {
+    const sel = !allSelected && selectedLessons.has(l);
+    const locked = !loggedIn && l > GUEST_MAX_LESSON;
+    const style = sel
+      ? `border-color:${lessonColor(l)};background:${lessonColor(l)};color:#fff;`
+      : `border-color:${lessonColor(l)};background:${lessonBg(l)};color:${lessonColor(l)};`;
+    return `<button class="lbtn${sel?' sel':''}${locked?' locked':''}" data-l="${l}" style="${style}${locked?'opacity:.5;':''}" onclick="toggleLesson(${l})">${locked?'🔒 ':''}Bài ${l}</button>`;
+  }).join('');
+  const hint = selectedLessons.size > 1
+    ? `<div style="font-size:.72rem;color:var(--muted);margin:2px 0 8px;">Đang chọn ${selectedLessons.size} bài: ${[...selectedLessons].sort((a,b)=>a-b).join(', ')}</div>`
+    : '';
+  const guestNotice = !loggedIn
+    ? `<div style="font-size:.75rem;color:var(--muted);background:${lessonBg(0)};border:1px solid var(--active);border-radius:10px;padding:8px 10px;margin-bottom:8px;">
+        🔒 Chưa đăng nhập: bạn chỉ học được <b>Bài 1–${GUEST_MAX_LESSON}</b> của Quyển 1.
+        <a href="javascript:void(0)" onclick="openAuthGate()" style="color:var(--active);font-weight:700;">Đăng nhập / Đăng ký</a> để mở khoá toàn bộ và lưu tiến độ.
+      </div>`
+    : '';
+  return `<div id="book-filter" style="margin-bottom:8px;">${bookBtns}</div>` +
+    `<div id="lesson-filter">${allBtn}${lessonBtns}</div>` + hint + guestNotice;
+}
+// Bấm "Tất cả": chọn hết các bài trong Quyển hiện tại (xoá lựa chọn riêng lẻ)
+function toggleLessonAll() { selectedLessons.clear(); render(); }
+// Bấm 1 nút bài: bật/tắt bài đó trong danh sách đang chọn (chọn được nhiều bài cùng lúc)
+function toggleLesson(l) {
+  if (!isLoggedIn() && l > GUEST_MAX_LESSON) { guestLimitNotice(); return; }
+  if (selectedLessons.has(l)) selectedLessons.delete(l);
+  else selectedLessons.add(l);
+  render();
+}
+
+function getFilteredWords() {
+  let words;
+  if (selectedLessons.size === 0) words = WORDS.filter(w => bookOfLesson(w.l) === selectedBook);
+  else words = WORDS.filter(w => selectedLessons.has(w.l));
+  if (!isLoggedIn()) words = words.filter(w => w.l <= GUEST_MAX_LESSON);
+  return words;
+}
+// Dùng cho các màn lọc theo bài không phải từ vựng (vd. câu ví dụ ở màn Dịch câu)
+function isLessonInSelection(l) {
+  return selectedLessons.size === 0 ? bookOfLesson(l) === selectedBook : selectedLessons.has(l);
+}
+
+// ════════════════════════════════════════════════════
+// HOME
+// ════════════════════════════════════════════════════
+function renderHome() {
+  const lessons = isLoggedIn() ? lessonsOfBook(selectedBook) : lessonsOfBook(1).filter(l => l <= GUEST_MAX_LESSON);
+  const bars = lessons.map(l => {
+    const all = WORDS.filter(w => w.l === l).length;
+    const known = getKnownCount(l);
+    const pct = all ? Math.round(known/all*100) : 0;
+    return `<div class="prog-row">
+      <div class="prog-label"><span>Bài ${l}</span><span style="color:${lessonColor(l)};font-weight:700">${known}/${all} từ · ${pct}%</span></div>
+      <div class="prog-bar"><div class="prog-fill" style="width:${pct}%;background:${lessonColor(l)}"></div></div>
+    </div>`;
+  }).join('');
+  const bookLabel = BOOKS.find(b=>b.id===selectedBook).name;
+
+  return `
+  <div class="panel">
+    <div class="panel-title">Chọn bài học</div>
+    ${lessonFilterHtml()}
+    <div class="sep"></div>
+    <div class="panel-title">Tiến độ · ${bookLabel} (Bài ${lessons[0]}–${lessons[lessons.length-1]})</div>
+    ${bars}
+  </div>
+  <div class="panel">
+    <div class="panel-title">Bắt đầu học nhanh</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      <button class="btn btn-primary" onclick="goTab('flash')">📖 Flashcard</button>
+      <button class="btn" style="background:var(--l8c);color:var(--l8a);" onclick="goTab('quiz')">📝 Trắc nghiệm</button>
+      <button class="btn" style="background:var(--l9c);color:var(--l9a);" onclick="goTab('listen')">🎧 Nghe chọn</button>
+      <button class="btn" style="background:var(--l10c);color:var(--l10a);" onclick="goTab('type')">⌨️ Gõ chữ</button>
+    </div>
+  </div>`;
+}
+function bindHome() {}
+
+// ════════════════════════════════════════════════════
+// FLASHCARD
+// ════════════════════════════════════════════════════
+let fcWords = [], fcIdx = 0, fcFlipped = false;
+
+function renderFlash() {
+  fcWords = sortByPriority(getFilteredWords());
+  if (fcIdx >= fcWords.length) fcIdx = 0;
+  return `
+  ${lessonFilterHtml()}
+  <div class="count-row">
+    <label>Số thẻ:</label>
+    <select onchange="fcChangeCount(this.value)">
+      ${[10,20,30,50,'Tất cả'].map(n=>`<option value="${n}"${n==questionCount||n=='Tất cả'?' selected':''}>${n}</option>`).join('')}
+    </select>
+  </div>
+  <div class="fc-counter" id="fc-counter"></div>
+  <div class="fc-wrap" onclick="fcFlip()" id="fc-wrap">
+    <div class="fc-inner" id="fc-inner">
+      <div class="fc-front" id="fc-front"></div>
+      <div class="fc-back" id="fc-back"></div>
+    </div>
+  </div>
+  <div class="fc-controls" id="fc-btns"></div>`;
+}
+
+function fcChangeCount(v) {
+  questionCount = v === 'Tất cả' ? 9999 : parseInt(v);
+  fcIdx = 0; render();
+}
+
+function bindFlash() {
+  fcFlipped = false;
+  const limit = questionCount === 9999 ? fcWords.length : Math.min(questionCount, fcWords.length);
+  fcWords = fcWords.slice(0, limit);
+  fcUpdate();
+}
+
+function renderHanziParts(hz) {
+  const chars = [...hz];
+  const rows = chars.map(ch => {
+    const entry = HANZI_PARTS[ch];
+    if (!entry) return '';
+    if (Array.isArray(entry)) {
+      const chips = entry.map(([c,m]) => `<span class="fc-parts-chip">${c}</span><span class="fc-parts-note">${m}</span>`).join(' + ');
+      return `<div class="fc-parts-row"><span class="fc-parts-char">${ch}</span><span class="fc-parts-comps">${chips}</span></div>`;
+    }
+    return `<div class="fc-parts-row"><span class="fc-parts-char">${ch}</span><span class="fc-parts-comps fc-parts-note">${entry}</span></div>`;
+  }).join('');
+  if (!rows) return '';
+  return `<div class="fc-parts-wrap" onclick="event.stopPropagation()"><div class="fc-parts-title">🧩 Bộ thủ / thành phần</div>${rows}</div>`;
+}
+
+function fcUpdate() {
+  if (!fcWords.length) { document.getElementById('content').innerHTML = '<div class="panel center" style="padding:40px">Không có từ nào!</div>'; return; }
+  const w = fcWords[fcIdx];
+  const limit = fcWords.length;
+  document.getElementById('fc-counter').textContent = `${fcIdx+1} / ${limit}`;
+  const inner = document.getElementById('fc-inner');
+  inner.classList.remove('flipped'); fcFlipped = false;
+
+  const tagStyle2 = lessonTagStyle(w.l);
+  document.getElementById('fc-front').innerHTML = `
+    <span class="fc-lesson-tag" style="${tagStyle2}">Bài ${w.l}</span>
+    <div class="fc-hz">${w.hz}</div>
+    ${showPinyin ? `<div class="fc-py">${w.py}</div>` : ''}
+    <div class="fc-hint">Nhấn để lật thẻ</div>`;
+  document.getElementById('fc-back').innerHTML = `
+    <span class="fc-lesson-tag" style="${tagStyle2}">Bài ${w.l}</span>
+    <div class="fc-hz-back">${w.hz}</div>
+    ${showPinyin ? `<div class="fc-py">${w.py}</div>` : ''}
+    <div class="fc-vi">${w.vi}</div>
+    <button class="btn btn-sound btn-sm" onclick="event.stopPropagation();speak('${w.hz}')">🔊 Nghe</button>
+    ${renderHanziParts(w.hz)}`;
+  document.getElementById('fc-btns').innerHTML = `
+    <button class="fc-btn btn-fail" onclick="fcAnswer(false)">❌ Chưa nhớ</button>
+    <button class="fc-btn btn-ok" onclick="fcAnswer(true)">✅ Đã nhớ</button>`;
+}
+
+function fcFlip() {
+  const inner = document.getElementById('fc-inner');
+  if (!fcFlipped) { inner.classList.add('flipped'); fcFlipped = true; speak(fcWords[fcIdx].hz); }
+}
+
+function fcAnswer(ok) {
+  recordAnswer(fcWords[fcIdx].hz, ok);
+  fcIdx++;
+  if (fcIdx >= fcWords.length) { fcIdx = 0; }
+  fcFlipped = false;
+  fcUpdate();
+}
+
+// ════════════════════════════════════════════════════
+// QUIZ
+// ════════════════════════════════════════════════════
+let qzWords=[], qzIdx=0, qzType='漢→Việt', qzDone=false, qzScore=0;
+
+function renderQuiz() {
+  return `
+  ${lessonFilterHtml()}
+  <div class="count-row">
+    <label>Số câu:</label>
+    <select onchange="qzSetCount(this.value)">${[5,10,15,20,30].map(n=>`<option value="${n}"${n==questionCount?' selected':''}>${n}</option>`).join('')}</select>
+  </div>
+  <div class="quiz-type-row">
+    ${['漢→Việt','Việt→漢','Âm→漢'].map(t=>`<button class="quiz-type-btn${qzType===t?' active':''}" onclick="qzSetType('${t}')">${t}</button>`).join('')}
+  </div>
+  <div id="qz-area"></div>`;
+}
+
+function qzSetCount(v) { questionCount=parseInt(v); qzIdx=0; qzScore=0; bindQuiz(); }
+function qzSetType(t) { qzType=t; qzIdx=0; qzScore=0; bindQuiz(); }
+
+function bindQuiz() {
+  const base = getFilteredWords();
+  qzWords = shuffle(sortByPriority(base)).slice(0, questionCount);
+  qzIdx = 0; qzScore = 0;
+  qzRenderQ();
+}
+
+function qzRenderQ() {
+  const area = document.getElementById('qz-area');
+  if (!area) return;
+  if (qzIdx >= qzWords.length) {
+    area.innerHTML = `<div class="panel exam-result">
+      <div class="exam-score">${qzScore}/${qzWords.length}</div>
+      <div class="exam-rank">${qzRank(qzScore/qzWords.length)}</div>
+      <button class="btn btn-primary" onclick="bindQuiz()">Làm lại</button>
+    </div>`; return;
+  }
+  const w = qzWords[qzIdx];
+  const opts = qzMakeOpts(w);
+  let qHtml, optHtml;
+  if (qzType === '漢→Việt') {
+    qHtml = `<div class="fc-hz">${w.hz}</div>${showPinyin?`<div class="fc-py">${w.py}</div>`:''}`;
+    optHtml = opts.map(o=>`<button class="quiz-opt" data-v="${o.vi}" onclick="qzPick(this,'${o.hz}')">${o.vi}</button>`).join('');
+  } else if (qzType === 'Việt→漢') {
+    qHtml = `<div class="fc-vi" style="font-size:1.3rem">${w.vi}</div>`;
+    optHtml = opts.map(o=>`<button class="quiz-opt" data-v="${o.hz}" onclick="qzPick(this,'${o.hz}')">${o.hz}${showPinyin?`<div class="quiz-sub">${o.py}</div>`:''}</button>`).join('');
+  } else {
+    qHtml = `<div class="fc-py" style="font-size:1.4rem;font-style:normal;color:var(--ink)">${w.py}</div>`;
+    optHtml = opts.map(o=>`<button class="quiz-opt" data-v="${o.hz}" onclick="qzPick(this,'${o.hz}')">${o.hz}</button>`).join('');
+  }
+  area.innerHTML = `
+    <div class="panel">
+      <div style="font-size:.75rem;color:var(--muted);font-weight:700;margin-bottom:6px">${qzIdx+1}/${qzWords.length} · ${Math.round(qzScore/(qzIdx||1)*100)}% đúng</div>
+      <div class="quiz-q">${qHtml}</div>
+      <div class="quiz-opts" id="qz-opts">${optHtml}</div>
+    </div>`;
+  document.querySelectorAll('#qz-opts .quiz-opt').forEach(b=>{
+    b._correct = (b.dataset.v === (qzType==='漢→Việt' ? w.vi : w.hz));
+  });
+}
+
+function qzPick(btn, hz) {
+  const w = qzWords[qzIdx];
+  const isCorrect = btn._correct;
+  document.querySelectorAll('#qz-opts .quiz-opt').forEach(b=>{
+    if (b._correct) b.classList.add('correct');
+    else if (b === btn && !isCorrect) b.classList.add('wrong');
+    b.disabled=true;
+  });
+  if (isCorrect) { playDing(); qzScore++; } else playBuzz();
+  speak(w.hz);
+  recordAnswer(w.hz, isCorrect);
+  setTimeout(()=>{ qzIdx++; qzRenderQ(); }, 1400);
+}
+
+// Nhóm từ theo chủ đề ngữ nghĩa (cùng phạm trù dễ gây nhầm lẫn khi học, dù chữ Hán không liên quan)
+const SEMANTIC_GROUPS = [
+  ['白','白色','黑','红','绿','蓝'],
+  ['东边','西边','南边','北边','里边','外边','上边','下边','前边','后边','左边','右边','中间','里'],
+  ['星期一','星期二','星期三','星期四','星期五','星期六','星期天','星期'],
+  ['爸爸','妈妈','哥哥','姐姐','弟弟','妹妹'],
+  ['一','二','三','四','五','六','七','八','九','十','百','千','万','零'],
+  ['人民币','美元','港币','日元','欧元'],
+  ['早上','上午','中午','下午','晚上','早','晚'],
+  ['今天','明天','昨天','今年','去年','明年','后年'],
+  ['中国','中文','英国','英文','美国','法国','法文','德国','德语','韩国','韩文','日本（国）','日文','俄国','俄文','西班牙语','西班牙文','阿拉伯语','日语','英语','法语','俄语','韩国语'],
+  ['个','位','本','张','支','辆','件','条','层','座','道','遍','片','斤','公斤','瓶','块'],
+];
+let _semanticMap = null;
+function getSemanticMap() {
+  if (_semanticMap) return _semanticMap;
+  _semanticMap = {};
+  SEMANTIC_GROUPS.forEach(g => {
+    g.forEach(h => {
+      if (!_semanticMap[h]) _semanticMap[h] = new Set();
+      g.forEach(h2 => { if (h2 !== h) _semanticMap[h].add(h2); });
+    });
+  });
+  return _semanticMap;
+}
+
+// Bản đồ tra nhanh: chữ Hán -> tập các chữ Hán "dễ nhầm" cùng nhóm (từ CONFUSE_GROUPS)
+let _confuseMap = null;
+function getConfuseMap() {
+  if (_confuseMap) return _confuseMap;
+  _confuseMap = {};
+  CONFUSE_GROUPS.forEach(g => {
+    const hzs = g.chars.map(c => c.hz);
+    hzs.forEach(h => {
+      if (!_confuseMap[h]) _confuseMap[h] = new Set();
+      hzs.forEach(h2 => { if (h2 !== h) _confuseMap[h].add(h2); });
+    });
+  });
+  return _confuseMap;
+}
+
+// Từ nối/hư từ tiếng Việt hay lặp lại trong bản dịch — bỏ qua để so khớp ngữ nghĩa chính xác hơn
+const VI_STOPWORDS = new Set(['và','là','có','của','một','rất','này','đó','với','hay','cũng','cần','cho','khi','ra','lên','xuống','trong','ngoài','trước','sau','gì','nào','thế','làm','đi','đến','ở','ạ','thì','còn','sẽ','đã','đang','bị','được','như','các','những','vì','nên','mà','nếu','nữa','chỉ','vẫn','phải','không','hoặc']);
+function viTokens(vi) {
+  return (vi || '').toLowerCase()
+    .replace(/[()]/g, '')
+    .split(/[,\/;]|\s+/)
+    .map(t => t.trim())
+    .filter(t => t.length > 1 && !VI_STOPWORDS.has(t));
+}
+
+function qzMakeOpts(w) {
+  const all = getFilteredWords();
+  const confuseSet = getConfuseMap()[w.hz];
+  const wTokens = viTokens(w.vi);
+  // Chấm điểm mức độ "dễ nhầm" của mỗi từ so với từ đang hỏi:
+  // 1) cùng nhóm dễ nhầm đã định nghĩa (hình dạng/âm giống nhau) > 2) trùng ký tự Hán
+  // > 3) trùng từ khoá trong nghĩa (ngữ nghĩa giống nhau) > 4) cùng phân loại/bài học > 5) độ dài giống nhau
+  const scored = all.filter(x => x.hz !== w.hz).map(x => {
+    let s = 0;
+    if (confuseSet && confuseSet.has(x.hz)) s += 12;
+    const semSet = getSemanticMap()[w.hz];
+    if (semSet && semSet.has(x.hz)) s += 8;
+    for (const c of w.hz) { if (x.hz.includes(c)) s += 3; }
+    const xTokens = viTokens(x.vi);
+    s += xTokens.filter(t => wTokens.includes(t)).length * 4;
+    if (w.cat && x.cat === w.cat) s += 3;
+    if (x.l === w.l) s += 1;
+    if (x.hz.length === w.hz.length) s += 0.5;
+    return {x, s};
+  });
+  scored.sort((a,b) => b.s - a.s);
+  // Các từ điểm rất cao (trùng nhóm dễ nhầm đã định nghĩa, hoặc trùng nhiều ký tự/nghĩa) luôn được ưu tiên chọn,
+  // phần còn lại mới xáo trộn ngẫu nhiên để câu hỏi không lặp lại y hệt mỗi lần
+  const mustInclude = scored.filter(p => p.s >= 8).slice(0, 3).map(p => p.x);
+  const restPool = scored.filter(p => p.s < 8).slice(0, 12).map(p => p.x);
+  let distractors = mustInclude.slice(0, 3);
+  if (distractors.length < 3) {
+    distractors = distractors.concat(shuffle(restPool).slice(0, 3 - distractors.length));
+  }
+  return shuffle([w, ...distractors]);
+}
+
+function qzRank(r) {
+  if(r>=.9) return '🏆 Xuất sắc'; if(r>=.7) return '👍 Tốt'; if(r>=.5) return '📚 Cần ôn'; return '🔄 Học lại';
+}
+
+// ════════════════════════════════════════════════════
+// TYPE
+// ════════════════════════════════════════════════════
+let tyWords=[], tyIdx=0, tyScore=0;
+
+function renderType() {
+  return `
+  ${lessonFilterHtml()}
+  <div class="count-row">
+    <label>Số câu:</label>
+    <select onchange="tySetCount(this.value)">${[5,10,15,20].map(n=>`<option value="${n}"${n==questionCount?' selected':''}>${n}</option>`).join('')}</select>
+  </div>
+  <div id="ty-area"></div>`;
+}
+function tySetCount(v) { questionCount=parseInt(v); bindType(); }
+function bindType() {
+  tyWords = shuffle(sortByPriority(getFilteredWords())).slice(0,questionCount);
+  tyIdx=0; tyScore=0; tyRenderQ();
+}
+function tyRenderQ() {
+  const area = document.getElementById('ty-area'); if (!area) return;
+  if (tyIdx >= tyWords.length) {
+    area.innerHTML=`<div class="panel exam-result"><div class="exam-score">${tyScore}/${tyWords.length}</div><div class="exam-rank">${qzRank(tyScore/tyWords.length)}</div><button class="btn btn-primary" onclick="bindType()">Làm lại</button></div>`; return;
+  }
+  const w = tyWords[tyIdx];
+  area.innerHTML=`<div class="panel">
+    <div style="font-size:.75rem;color:var(--muted);margin-bottom:8px">${tyIdx+1}/${tyWords.length}</div>
+    <div class="type-q">
+      <div style="font-size:.9rem;color:var(--muted);margin-bottom:4px">Gõ chữ Hán nghĩa là:</div>
+      <div style="font-size:1.4rem;font-weight:700;margin-bottom:6px">${w.vi}</div>
+      ${showPinyin?`<div class="fc-py" style="margin-bottom:10px">Gợi ý: ${w.py}</div>`:''}
+    </div>
+    <input class="type-input" id="ty-input" placeholder="Gõ chữ Hán..." onkeydown="if(event.key==='Enter')tyCheck()">
+    <div id="ty-fb"></div>
+    <div style="display:flex;gap:8px;margin-top:10px;justify-content:center">
+      <button class="btn btn-primary" onclick="tyCheck()">Kiểm tra</button>
+      <button class="btn" style="background:var(--border)" onclick="tySkip()">Bỏ qua</button>
+    </div>
+  </div>`;
+  setTimeout(()=>{ const i=document.getElementById('ty-input'); if(i)i.focus(); },100);
+}
+function tyCheck() {
+  const inp = document.getElementById('ty-input'); if(!inp) return;
+  const val = inp.value.trim();
+  const w = tyWords[tyIdx];
+  const ok = val === w.hz;
+  const fb = document.getElementById('ty-fb');
+  fb.className='type-feedback '+(ok?'ok':'bad');
+  fb.textContent = ok ? `✅ Đúng! ${w.hz}` : `❌ Sai. Đáp án: ${w.hz} (${w.py})`;
+  if (ok) { playDing(); tyScore++; } else playBuzz();
+  speak(w.hz);
+  recordAnswer(w.hz, ok);
+  inp.disabled=true;
+  setTimeout(()=>{ tyIdx++; tyRenderQ(); }, 1600);
+}
+function tySkip() {
+  const w = tyWords[tyIdx];
+  recordAnswer(w.hz, false);
+  tyIdx++; tyRenderQ();
+}
+
+// ════════════════════════════════════════════════════
+// WRITE (tracing practice on 田字格 grid)
+// ════════════════════════════════════════════════════
+let wrWords=[], wrIdx=0, wrShowGuide=true, wrStrokes=[], wrDrawing=false, wrCurStroke=null;
+let wrGuideCtx=null, wrDrawCtx=null;
+const WR_SIZE = 280;
+
+function renderWrite() {
+  wrWords = sortByPriority(getFilteredWords());
+  if (wrIdx >= wrWords.length) wrIdx = 0;
+  if (!wrWords.length) return `${lessonFilterHtml()}<div class="panel center" style="padding:40px">Không có từ nào!</div>`;
+  return `
+  ${lessonFilterHtml()}
+  <div class="panel">
+    <div class="write-nav">
+      <button class="write-navbtn" onclick="wrPrev()">◀</button>
+      <span class="write-counter" id="wr-counter"></span>
+      <button class="write-navbtn" onclick="wrNext()">▶</button>
+    </div>
+    <div class="write-meaning" id="wr-meaning"></div>
+    <div class="write-grid-wrap">
+      <canvas id="write-canvas-guide" width="${WR_SIZE}" height="${WR_SIZE}"></canvas>
+      <canvas id="write-canvas-draw" width="${WR_SIZE}" height="${WR_SIZE}"></canvas>
+    </div>
+    <div class="write-tools">
+      <button class="write-tool-btn" id="wr-guide-btn" onclick="wrToggleGuide()">👻 Ẩn chữ mẫu</button>
+      <button class="write-tool-btn" onclick="wrUndo()">↩️ Hoàn tác</button>
+      <button class="write-tool-btn" onclick="wrClear()">🗑️ Xoá hết</button>
+      <button class="write-tool-btn" onclick="speak(wrWords[wrIdx].hz)">🔊 Nghe</button>
+    </div>
+    <div class="write-mark-row">
+      <button class="fc-btn btn-fail" onclick="wrMark(false)">❌ Cần luyện thêm</button>
+      <button class="fc-btn btn-ok" onclick="wrMark(true)">✅ Viết được</button>
+    </div>
+  </div>
+  <div class="panel" style="font-size:.8rem;color:var(--muted);text-align:center">
+    ✍️ Đồ theo nét chữ mờ trong khung, sau đó tự đánh giá. Đây là luyện nét bằng tay, chưa kiểm tra thứ tự nét tự động.
+  </div>`;
+}
+
+function bindWrite() {
+  if (!wrWords.length) return;
+  const guideCanvas = document.getElementById('write-canvas-guide');
+  const drawCanvas = document.getElementById('write-canvas-draw');
+  if (!guideCanvas || !drawCanvas) return;
+  wrGuideCtx = guideCanvas.getContext('2d');
+  wrDrawCtx = drawCanvas.getContext('2d');
+  wrUpdate();
+  wrAttachEvents(drawCanvas);
+}
+
+function wrUpdate() {
+  const w = wrWords[wrIdx];
+  document.getElementById('wr-counter').textContent = `${wrIdx+1} / ${wrWords.length}`;
+  document.getElementById('wr-meaning').innerHTML = `
+    <div class="vi">${w.vi}</div>
+    ${showPinyin ? `<div class="py">${w.py}</div>` : ''}`;
+  wrStrokes = [];
+  wrDrawGuide();
+  wrClearCanvasOnly();
+}
+
+function wrDrawGuide() {
+  const ctx = wrGuideCtx; if (!ctx) return;
+  const s = WR_SIZE;
+  ctx.clearRect(0,0,s,s);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0,0,s,s);
+  ctx.strokeStyle = '#b9c4d6';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(1,1,s-2,s-2);
+  ctx.lineWidth = 1;
+  ctx.setLineDash([6,5]);
+  ctx.beginPath();
+  ctx.moveTo(s/2,0); ctx.lineTo(s/2,s);
+  ctx.moveTo(0,s/2); ctx.lineTo(s,s/2);
+  ctx.moveTo(0,0); ctx.lineTo(s,s);
+  ctx.moveTo(s,0); ctx.lineTo(0,s);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  if (wrShowGuide) {
+    const w = wrWords[wrIdx];
+    ctx.font = `${Math.round(s*0.72)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(140,150,175,0.4)';
+    ctx.fillText(w.hz, s/2, s/2 + s*0.03);
+  }
+}
+
+function wrClearCanvasOnly() {
+  const ctx = wrDrawCtx; if (!ctx) return;
+  ctx.clearRect(0,0,WR_SIZE,WR_SIZE);
+}
+
+function wrRedrawStrokes() {
+  const ctx = wrDrawCtx; if (!ctx) return;
+  ctx.clearRect(0,0,WR_SIZE,WR_SIZE);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#c0314f';
+  ctx.lineWidth = 9;
+  wrStrokes.forEach(stroke => {
+    if (stroke.length < 2) return;
+    ctx.beginPath();
+    ctx.moveTo(stroke[0].x, stroke[0].y);
+    for (let i=1;i<stroke.length;i++) ctx.lineTo(stroke[i].x, stroke[i].y);
+    ctx.stroke();
+  });
+}
+
+function wrGetPos(canvas, evt) {
+  const rect = canvas.getBoundingClientRect();
+  const cx = evt.touches && evt.touches.length ? evt.touches[0].clientX : evt.clientX;
+  const cy = evt.touches && evt.touches.length ? evt.touches[0].clientY : evt.clientY;
+  return { x: (cx-rect.left)*(WR_SIZE/rect.width), y: (cy-rect.top)*(WR_SIZE/rect.height) };
+}
+
+function wrAttachEvents(canvas) {
+  const start = (e) => { e.preventDefault(); wrDrawing=true; wrCurStroke=[wrGetPos(canvas,e)]; wrStrokes.push(wrCurStroke); };
+  const move = (e) => { if(!wrDrawing) return; e.preventDefault(); wrCurStroke.push(wrGetPos(canvas,e)); wrRedrawStrokes(); };
+  const end = () => { wrDrawing=false; wrCurStroke=null; };
+  canvas.addEventListener('mousedown', start);
+  canvas.addEventListener('mousemove', move);
+  canvas.addEventListener('mouseup', end);
+  canvas.addEventListener('mouseleave', end);
+  canvas.addEventListener('touchstart', start, {passive:false});
+  canvas.addEventListener('touchmove', move, {passive:false});
+  canvas.addEventListener('touchend', end);
+}
+
+function wrToggleGuide() {
+  wrShowGuide = !wrShowGuide;
+  const btn = document.getElementById('wr-guide-btn');
+  if (btn) { btn.textContent = wrShowGuide ? '👻 Ẩn chữ mẫu' : '👻 Hiện chữ mẫu'; btn.classList.toggle('off', !wrShowGuide); }
+  wrDrawGuide();
+}
+
+function wrUndo() { wrStrokes.pop(); wrRedrawStrokes(); }
+function wrClear() { wrStrokes=[]; wrClearCanvasOnly(); }
+
+function wrNext() { wrIdx=(wrIdx+1)%wrWords.length; wrUpdate(); }
+function wrPrev() { wrIdx=(wrIdx-1+wrWords.length)%wrWords.length; wrUpdate(); }
+
+function wrMark(ok) {
+  recordAnswer(wrWords[wrIdx].hz, ok);
+  if (ok) playDing(); else playBuzz();
+  wrNext();
+}
+
+// ════════════════════════════════════════════════════
+// LISTEN (sentence-based)
+// ════════════════════════════════════════════════════
+let lsItems=[], lsIdx=0, lsScore=0;
+
+function renderListen() {
+  return `
+  ${lessonFilterHtml()}
+  <div class="count-row">
+    <label>Số câu:</label>
+    <select onchange="lsSetCount(this.value)">${[5,10,15].map(n=>`<option value="${n}"${n==questionCount?' selected':''}>${n}</option>`).join('')}</select>
+  </div>
+  <div id="ls-area"></div>`;
+}
+function lsSetCount(v) { questionCount=parseInt(v); bindListen(); }
+
+function bindListen() {
+  // Chỉ dùng TỪ VỰNG của (các) bài đang chọn — không trộn câu ví dụ nữa
+  const baseWords = getFilteredWords();
+  const items = baseWords.map(w => ({ type: 'word', data: w }));
+  lsItems = shuffle(items).slice(0, questionCount);
+  lsIdx=0; lsScore=0; lsRenderQ();
+}
+
+function lsRenderQ() {
+  const area = document.getElementById('ls-area'); if(!area) return;
+  if (lsIdx >= lsItems.length) {
+    area.innerHTML=`<div class="panel exam-result"><div class="exam-score">${lsScore}/${lsItems.length}</div><div class="exam-rank">${qzRank(lsScore/lsItems.length)}</div><button class="btn btn-primary" onclick="bindListen()">Làm lại</button></div>`; return;
+  }
+  const item = lsItems[lsIdx];
+  if (item.type === 'sent') {
+    lsRenderSent(item.data);
+  } else {
+    lsRenderWord(item.data);
+  }
+  // auto-play
+  setTimeout(()=>{
+    const btn = document.getElementById('ls-play');
+    if(btn) btn.click();
+  }, 400);
+}
+
+function lsRenderSent(s) {
+  const area = document.getElementById('ls-area');
+  // Build 4 options: the correct sentence + 3 wrong sentences
+  const pool = SENTENCES.filter(x=>x.hz!==s.hz);
+  const opts = shuffle(pool).slice(0,3);
+  opts.push(s);
+  const shuffled = shuffle(opts);
+  const optHtml = shuffled.map(o=>`
+    <button class="listen-opt" onclick="lsPick(this,'${o.hz.replace(/'/g,"\\'")}','${s.hz.replace(/'/g,"\\'")}')">
+      ${o.hz}${showPinyin?`<div style="font-size:.7rem;color:var(--muted);margin-top:4px">${o.vi.slice(0,30)}...</div>`:''}
+    </button>`).join('');
+  area.innerHTML=`<div class="panel">
+    <div style="font-size:.75rem;color:var(--muted);margin-bottom:10px">${lsIdx+1}/${lsItems.length} · Nghe và chọn câu đúng</div>
+    <div class="listen-sentence">(Bài ${s.l})</div>
+    <button id="ls-play" class="listen-play" onclick="speak('${s.hz.replace(/'/g,"\\'")}')" title="Phát lại">🔊</button>
+    <div style="font-size:.85rem;color:var(--muted);text-align:center;margin-bottom:14px">Nhấn để phát, rồi chọn câu đúng:</div>
+    <div style="display:flex;flex-direction:column;gap:10px">${optHtml}</div>
+  </div>`;
+}
+
+function lsRenderWord(w) {
+  const area = document.getElementById('ls-area');
+  const pool = getFilteredWords().filter(x=>x.hz!==w.hz);
+  const distractors = qzMakeOpts(w).filter(x=>x.hz!==w.hz).slice(0,3);
+  const opts = shuffle([w,...distractors]);
+  const optHtml = opts.map(o=>`
+    <button class="listen-opt" onclick="lsPickWord(this,'${o.hz}','${w.hz}')">${o.hz}${showPinyin?`<div style="font-size:.7rem;color:var(--muted)">${o.py}</div>`:''}</button>`).join('');
+  area.innerHTML=`<div class="panel">
+    <div style="font-size:.75rem;color:var(--muted);margin-bottom:10px">${lsIdx+1}/${lsItems.length} · Nghe và chọn chữ Hán đúng</div>
+    <button id="ls-play" class="listen-play" onclick="speak('${w.hz}')" title="Phát lại">🔊</button>
+    <div class="listen-opts">${optHtml}</div>
+  </div>`;
+}
+
+function lsPick(btn, chosen, correct) {
+  const isCorrect = chosen === correct;
+  document.querySelectorAll('#ls-area .listen-opt').forEach(b=>{
+    const bv = b.getAttribute('onclick').match(/'([^']+)','[^']+'/)[1];
+    if(bv===correct) b.classList.add('correct');
+    else if(b===btn && !isCorrect) b.classList.add('wrong');
+    b.disabled=true;
+  });
+  if(isCorrect){playDing();lsScore++;}else playBuzz();
+  speak(correct);
+  // find the hz for recording
+  const sent = SENTENCES.find(s=>s.hz===correct);
+  setTimeout(()=>{ lsIdx++; lsRenderQ(); }, 1600);
+}
+
+function lsPickWord(btn, chosen, correct) {
+  const isCorrect = chosen === correct;
+  document.querySelectorAll('#ls-area .listen-opt').forEach(b=>{
+    const bv = b.getAttribute('onclick').match(/'([^']+)','[^']+'/)[1];
+    if(bv===correct) b.classList.add('correct');
+    else if(b===btn && !isCorrect) b.classList.add('wrong');
+    b.disabled=true;
+  });
+  if(isCorrect){playDing();lsScore++;}else playBuzz();
+  recordAnswer(correct, isCorrect);
+  setTimeout(()=>{ lsIdx++; lsRenderQ(); }, 1400);
+}
+
+// ════════════════════════════════════════════════════
+// TRANSLATE
+// ════════════════════════════════════════════════════
+let trItems=[], trIdx=0;
+
+function renderTrans() {
+  const filtered = SENTENCES.filter(s=>isLessonInSelection(s.l));
+  trItems = shuffle(filtered);
+  trIdx=0;
+  return `
+  ${lessonFilterHtml()}
+  <div class="count-row">
+    <label>Số câu:</label>
+    <select onchange="trSetCount(this.value)">${[5,10,15].map(n=>`<option value="${n}"${n==questionCount?' selected':''}>${n}</option>`).join('')}</select>
+  </div>
+  <div id="tr-area"></div>`;
+}
+function trSetCount(v) { questionCount=parseInt(v); bindTrans(); }
+function bindTrans() {
+  const filtered = SENTENCES.filter(s=>isLessonInSelection(s.l));
+  trItems = shuffle(filtered).slice(0,questionCount);
+  trIdx=0; trRenderQ();
+}
+function trRenderQ() {
+  const area = document.getElementById('tr-area'); if(!area) return;
+  if(trIdx>=trItems.length){
+    area.innerHTML=`<div class="panel center" style="padding:30px"><div style="font-size:2rem">🎉</div><div style="font-weight:700;margin:10px 0">Hoàn thành ${trItems.length} câu!</div><button class="btn btn-primary" onclick="bindTrans()">Làm lại</button></div>`; return;
+  }
+  const s = trItems[trIdx];
+  area.innerHTML=`<div class="panel">
+    <div style="font-size:.75rem;color:var(--muted);margin-bottom:8px">${trIdx+1}/${trItems.length} · Dịch sang tiếng Trung</div>
+    <div class="trans-vi">${s.vi}</div>
+    <div class="trans-hint">💡 Gợi ý: ${s.hint}</div>
+    <textarea class="trans-input" id="tr-inp" placeholder="Gõ câu tiếng Trung..."></textarea>
+    <div class="trans-answer" id="tr-ans">
+      <div>📖 Đáp án: ${s.hz}</div>
+      ${showPinyin?`<div style="font-size:.8rem;margin-top:4px;color:var(--muted)">(bài ${s.l})</div>`:''}
+      <button class="btn btn-sound btn-sm" style="margin-top:6px" onclick="speak('${s.hz.replace(/'/g,"\\'")}')">🔊 Nghe</button>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+      <button class="btn" style="background:var(--l9b);color:var(--l9a)" onclick="trShowAns()">👁 Xem đáp án</button>
+      <button class="btn btn-ok fc-btn" onclick="trNext(true)">✅ Đúng</button>
+      <button class="btn btn-fail fc-btn" onclick="trNext(false)">❌ Sai</button>
+    </div>
+  </div>`;
+}
+function trShowAns() {
+  const a=document.getElementById('tr-ans'); if(a){ a.style.display='block'; speak(trItems[trIdx].hz); }
+}
+function trNext(ok) { trIdx++; trRenderQ(); }
+
+// ════════════════════════════════════════════════════
+// AI DỊCH — Sinh câu & chấm bài bằng Gemini (yêu cầu đăng nhập để tránh lạm dụng quota free)
+// ════════════════════════════════════════════════════
+let aiExercises = [];
+function renderAiTrans() {
+  if (!isLoggedIn()) {
+    return `<div class="panel center" style="padding:30px">
+      <div style="font-size:2rem">🤖🔒</div>
+      <div style="font-weight:700;margin:10px 0">Cần đăng nhập để dùng AI Dịch</div>
+      <div style="color:var(--muted);font-size:.85rem;margin-bottom:14px">Tính năng này gọi AI để chấm bài, cần tài khoản để tránh bị lạm dụng.</div>
+      <button class="btn btn-primary" onclick="openAuthGate()">Đăng nhập / Đăng ký</button>
+    </div>`;
+  }
+  return `
+  ${lessonFilterHtml()}
+  <div class="count-row">
+    <label>Số câu:</label>
+    <select id="ai-count-sel">${[3,5,8].map(n=>`<option value="${n}"${n===5?' selected':''}>${n}</option>`).join('')}</select>
+    <button class="btn btn-primary btn-sm" style="margin-left:8px" onclick="aiGenerate()">✨ Tạo bài tập mới</button>
+  </div>
+  <div id="ai-area"><div class="panel center" style="padding:20px;color:var(--muted)">Bấm "Tạo bài tập mới" để bắt đầu.</div></div>`;
+}
+function bindAiTrans() { /* chờ người dùng bấm tạo bài tập */ }
+
+async function aiGenerate() {
+  const area = document.getElementById('ai-area');
+  const count = document.getElementById('ai-count-sel').value;
+  const words = getFilteredWords();
+  if (words.length === 0) { area.innerHTML = `<div class="panel center" style="padding:20px">Chưa có từ vựng nào trong phạm vi đã chọn.</div>`; return; }
+  area.innerHTML = `<div class="panel center" style="padding:30px">⏳ Đang nhờ AI soạn bài tập...</div>`;
+  try {
+    const res = await fetch('/api/ai/exercise', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ words: words.map(w => ({ hz: w.hz, py: w.py, vi: w.vi })), count }),
+    });
+    const data = await res.json();
+    if (!data.ok) { area.innerHTML = `<div class="panel center" style="padding:20px;color:var(--fail)">❌ ${escapeHtml(data.error)}</div>`; return; }
+    aiExercises = data.sentences;
+    aiRenderList();
+  } catch (e) {
+    area.innerHTML = `<div class="panel center" style="padding:20px;color:var(--fail)">❌ Lỗi kết nối: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function aiRenderList() {
+  const area = document.getElementById('ai-area');
+  area.innerHTML = aiExercises.map((s, i) => `
+    <div class="panel" id="ai-item-${i}" style="margin-bottom:12px">
+      <div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">Câu ${i+1}/${aiExercises.length}</div>
+      <div class="trans-vi">${escapeHtml(s.vi)}</div>
+      ${s.hint ? `<div class="trans-hint">💡 Gợi ý: ${escapeHtml(s.hint)}</div>` : ''}
+      <textarea class="trans-input" id="ai-inp-${i}" placeholder="Gõ câu tiếng Trung..."></textarea>
+      <button class="btn btn-primary btn-sm" onclick="aiGrade(${i})">📤 Nộp & chấm điểm</button>
+      <div id="ai-result-${i}" style="margin-top:10px"></div>
+    </div>`).join('');
+}
+
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function aiGrade(i) {
+  const inp = document.getElementById('ai-inp-' + i);
+  const resultBox = document.getElementById('ai-result-' + i);
+  const answer = inp.value.trim();
+  if (!answer) { resultBox.innerHTML = `<div style="color:var(--fail);font-size:.85rem">Bạn chưa nhập câu dịch.</div>`; return; }
+  resultBox.innerHTML = `<div style="color:var(--muted);font-size:.85rem">⏳ Đang chấm...</div>`;
+  try {
+    const res = await fetch('/api/ai/grade', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ vietnamese: aiExercises[i].vi, answer }),
+    });
+    const data = await res.json();
+    if (!data.ok) { resultBox.innerHTML = `<div style="color:var(--fail);font-size:.85rem">❌ ${escapeHtml(data.error)}</div>`; return; }
+    const r = data.result;
+    const scoreColor = r.score >= 8 ? 'var(--ok)' : (r.score >= 5 ? '#e0a500' : 'var(--fail)');
+    const errorsHtml = (r.errors && r.errors.length)
+      ? `<ul style="margin:6px 0 0 18px;padding:0;font-size:.85rem">${r.errors.map(e => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`
+      : `<div style="font-size:.85rem;color:var(--ok);margin-top:4px">✅ Không có lỗi!</div>`;
+    resultBox.innerHTML = `
+      <div style="border-top:1px dashed var(--border);padding-top:8px;margin-top:4px">
+        <div style="font-weight:700;color:${scoreColor}">Điểm: ${r.score}/10</div>
+        ${errorsHtml}
+        <div style="margin-top:6px;font-size:.85rem"><b>Câu đúng tham khảo:</b> ${escapeHtml(r.correction)}
+          <button class="btn btn-sound btn-sm" style="margin-left:6px" onclick="speak('${String(r.correction).replace(/'/g,"\\'")}')">🔊</button>
+        </div>
+        <div style="margin-top:6px;font-size:.85rem;color:var(--muted)">💬 ${escapeHtml(r.comment)}</div>
+      </div>`;
+  } catch (e) {
+    resultBox.innerHTML = `<div style="color:var(--fail);font-size:.85rem">❌ Lỗi kết nối: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+// ════════════════════════════════════════════════════
+// EXAM
+// ════════════════════════════════════════════════════
+let exWords=[], exIdx=0, exScore=0, exMissed=[], exAnswered=false;
+let exType='漢→Việt';
+
+function renderExam() {
+  return `
+  ${lessonFilterHtml()}
+  <div class="count-row">
+    <label>Số câu:</label>
+    <select onchange="exSetCount(this.value)">${[10,15,20,30].map(n=>`<option value="${n}"${n==questionCount?' selected':''}>${n}</option>`).join('')}</select>
+  </div>
+  <div id="ex-area"></div>`;
+}
+function exSetCount(v){ questionCount=parseInt(v); bindExam(); }
+function bindExam() {
+  exWords = shuffle(getFilteredWords()).slice(0,questionCount);
+  exIdx=0; exScore=0; exMissed=[];
+  exRenderQ();
+}
+function exRenderQ() {
+  const area=document.getElementById('ex-area'); if(!area) return;
+  if(exIdx>=exWords.length){
+    const pct = exScore/exWords.length;
+    const missHtml = exMissed.map(w=>`<div class="exam-miss-item"><span class="weak-hz" style="color:var(--l10a)">${w.hz}</span><span>${w.py} · ${w.vi}</span></div>`).join('');
+    area.innerHTML=`<div class="panel exam-result">
+      <div class="exam-score">${exScore}/${exWords.length}</div>
+      <div class="exam-rank">${qzRank(pct)}</div>
+      <div style="margin:10px 0;font-size:.85rem;color:var(--muted)">${Math.round(pct*100)}% đúng</div>
+      <button class="btn btn-primary" onclick="bindExam()" style="margin-bottom:16px">Thi lại</button>
+      ${exMissed.length?`<div class="exam-miss"><div class="panel-title">Các từ sai:</div>${missHtml}</div>`:''}
+    </div>`; return;
+  }
+  // rotate types
+  const types = ['漢→Việt','Việt→漢','Âm→漢'];
+  exType = types[exIdx % 3];
+  const w = exWords[exIdx];
+  const opts = qzMakeOpts(w);
+  let qHtml, optHtml;
+  if (exType==='漢→Việt') {
+    qHtml=`<div class="fc-hz">${w.hz}</div>${showPinyin?`<div class="fc-py">${w.py}</div>`:''}`;
+    optHtml=opts.map(o=>`<button class="quiz-opt" onclick="exPick(this,'${o.vi}','${w.vi}')">${o.vi}</button>`).join('');
+  } else if (exType==='Việt→漢') {
+    qHtml=`<div class="fc-vi" style="font-size:1.3rem">${w.vi}</div>`;
+    optHtml=opts.map(o=>`<button class="quiz-opt" onclick="exPick(this,'${o.hz}','${w.hz}')">${o.hz}${showPinyin?`<div class="quiz-sub">${o.py}</div>`:''}</button>`).join('');
+  } else {
+    qHtml=`<div class="fc-py" style="font-size:1.4rem;color:var(--ink)">${w.py}</div>`;
+    optHtml=opts.map(o=>`<button class="quiz-opt" onclick="exPick(this,'${o.hz}','${w.hz}')">${o.hz}</button>`).join('');
+  }
+  area.innerHTML=`<div class="panel">
+    <div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">${exIdx+1}/${exWords.length} · ${exType}</div>
+    <div class="quiz-q">${qHtml}</div>
+    <div class="quiz-opts">${optHtml}</div>
+  </div>`;
+}
+function exPick(btn, chosen, correct) {
+  const ok = chosen===correct;
+  const w = exWords[exIdx];
+  document.querySelectorAll('#ex-area .quiz-opt').forEach(b=>{
+    const bv=b.getAttribute('onclick').match(/'([^']+)','[^']+'/)[1];
+    if(bv===correct) b.classList.add('correct');
+    else if(b===btn&&!ok) b.classList.add('wrong');
+    b.disabled=true;
+  });
+  if(ok){playDing();exScore++;}else{playBuzz();exMissed.push(w);}
+  speak(w.hz); recordAnswer(w.hz,ok);
+  setTimeout(()=>{ exIdx++; exRenderQ(); },1400);
+}
+
+// ════════════════════════════════════════════════════
+// STATS
+// ════════════════════════════════════════════════════
+function renderStats() {
+  const d=getSRS();
+  const all=WORDS.filter(w => bookOfLesson(w.l) === selectedBook);
+  const total=all.reduce((s,w)=>s+(d[w.hz]?.total||0),0);
+  const correct=all.reduce((s,w)=>s+(d[w.hz]?.correct||0),0);
+  const known=all.filter(w=>d[w.hz]&&d[w.hz].step>=3).length;
+  const rate=total?Math.round(correct/total*100):0;
+  const bookLabel = BOOKS.find(b=>b.id===selectedBook).name;
+  const bookBtns = BOOKS.map(b => `<button class="lbtn${selectedBook===b.id?' sel':''}" style="${selectedBook===b.id?`background:var(--active);border-color:var(--active);color:#fff;`:`border-color:var(--active);color:var(--active);`}" onclick="setBook(${b.id});render()">${b.name}</button>`).join('');
+
+  // lesson bars
+  const statLessons = isLoggedIn() ? lessonsOfBook(selectedBook) : lessonsOfBook(1).filter(l => l <= GUEST_MAX_LESSON);
+  const barHtml=statLessons.map(l=>{
+    const lw=all.filter(w=>w.l===l);
+    const lt=lw.reduce((s,w)=>s+(d[w.hz]?.total||0),0);
+    const lc=lw.reduce((s,w)=>s+(d[w.hz]?.correct||0),0);
+    const r=lt?Math.round(lc/lt*100):0;
+    return `<div class="bar-col">
+      <div class="bar-pct" style="color:${lessonColor(l)}">${r}%</div>
+      <div class="bar-fill" style="height:${r*.6}px;background:${lessonColor(l)}"></div>
+      <div class="bar-lbl">B${l}</div>
+    </div>`;
+  }).join('');
+
+  // weak words
+  const weak=all.map(w=>({...w,r:d[w.hz]?.total?(d[w.hz].correct/d[w.hz].total):null}))
+    .filter(w=>w.r!==null).sort((a,b)=>a.r-b.r).slice(0,8);
+  const weakHtml=weak.map(w=>`<div class="weak-item">
+    <span class="weak-hz" style="color:${lessonColor(w.l)}">${w.hz}</span>
+    <span class="weak-info">${w.vi}${showPinyin?` · ${w.py}`:''} · ${Math.round(w.r*100)}% đúng</span>
+    <button class="btn-sound-sm" onclick="speak('${w.hz}')">🔊</button>
+  </div>`).join('');
+
+  return `<div class="panel">
+    <div id="book-filter" style="margin-bottom:8px;">${bookBtns}</div>
+    <div class="panel-title">Tổng quan · ${bookLabel}</div>
+    <div class="stat-grid">
+      <div class="stat-box"><div class="stat-num">🔥${getStreak()}</div><div class="stat-lbl">Ngày streak</div></div>
+      <div class="stat-box"><div class="stat-num" style="color:var(--l8a)">⭐${known}</div><div class="stat-lbl">Từ đã thuộc</div></div>
+      <div class="stat-box"><div class="stat-num">${rate}%</div><div class="stat-lbl">Tỉ lệ đúng</div></div>
+      <div class="stat-box"><div class="stat-num">${total}</div><div class="stat-lbl">Lần trả lời</div></div>
+      <div class="stat-box"><div class="stat-num">${correct}</div><div class="stat-lbl">Câu đúng</div></div>
+      <div class="stat-box"><div class="stat-num">${all.length}</div><div class="stat-lbl">Tổng từ (${bookLabel})</div></div>
+    </div>
+    <div class="sep"></div>
+    <div class="panel-title">Tỉ lệ đúng theo bài</div>
+    <div class="bar-chart">${barHtml}</div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">Top 8 từ yếu nhất · ${bookLabel}</div>
+    ${weakHtml||'<div style="color:var(--muted);font-size:.9rem">Chưa có dữ liệu. Hãy bắt đầu học!</div>'}
+  </div>`;
+}
+
+// ════════════════════════════════════════════════════
+// DICTIONARY
+// ════════════════════════════════════════════════════
+function renderDict() {
+  return `
+  ${lessonFilterHtml()}
+  <input class="dict-search" id="dict-search" placeholder="🔍 Tìm từ..." oninput="dictFilter()">
+  <div id="dict-list" class="panel" style="padding:8px"></div>`;
+}
+function bindDict() { dictFilter(); }
+function dictFilter() {
+  const q=(document.getElementById('dict-search')?.value||'').toLowerCase();
+  const words=getFilteredWords().filter(w=>
+    !q||w.hz.includes(q)||w.py.toLowerCase().includes(q)||w.vi.toLowerCase().includes(q)
+  );
+  document.getElementById('dict-list').innerHTML=words.map(w=>`
+    <div class="dict-item">
+      <span class="dict-hz" style="color:${lessonColor(w.l)}">${w.hz}</span>
+      <span class="dict-vi">${w.vi}${showPinyin?`<div class="dict-py">${w.py}</div>`:''}</span>
+      <span class="dict-tag" style="${lessonTagStyle(w.l)}">Bài ${w.l}</span>
+      <button class="btn-sound-sm" onclick="speak('${w.hz}')">🔊</button>
+    </div>`).join('');
+}
+
+// ════════════════════════════════════════════════════
+// COMPARE / CONFUSABLE CHARACTERS
+// ════════════════════════════════════════════════════
+let cpTestMode = false, cpTestQueue = [], cpTestIdx = 0, cpTestScore = 0;
+
+function renderCompare() {
+  return `
+  <div class="panel" style="margin-bottom:14px">
+    <div style="font-size:.85rem;color:var(--muted);margin-bottom:10px">🆚 Những chữ Hán dễ nhìn nhầm hoặc đồng âm — đặt cạnh nhau để so sánh và ghi nhớ điểm khác biệt.</div>
+    <button class="btn btn-primary" onclick="cpStartTest()">🧠 Kiểm tra nhanh tất cả nhóm</button>
+  </div>
+  <div id="cp-area">${cpRenderList()}</div>`;
+}
+function bindCompare() {}
+
+function cpRenderList() {
+  const appHz = new Set(WORDS.map(w => w.hz));
+  return CONFUSE_GROUPS.map(g => {
+    const itemsHtml = g.chars.map((c,i) => `
+      ${i>0?'<span class="confuse-vs">vs</span>':''}
+      <div class="confuse-item${appHz.has(c.hz)?' in-vocab':''}">
+        <div class="confuse-hz" onclick="speak('${c.hz}')">${c.hz}</div>
+        <div class="confuse-py">${c.py}</div>
+        <div class="confuse-vi">${c.vi}</div>
+        ${appHz.has(c.hz)?'<div class="confuse-badge">✓ trong vốn từ</div>':''}
+      </div>`).join('');
+    return `<div class="confuse-card">
+      <div class="confuse-row">${itemsHtml}</div>
+      <div class="confuse-tip">💡 ${g.tip}</div>
+    </div>`;
+  }).join('');
+}
+
+function cpStartTest() {
+  cpTestMode = true; cpTestScore = 0; cpTestIdx = 0;
+  cpTestQueue = shuffle(CONFUSE_GROUPS.slice());
+  cpRenderTestQ();
+}
+
+function cpRenderTestQ() {
+  const area = document.getElementById('cp-area');
+  if (cpTestIdx >= cpTestQueue.length) {
+    area.innerHTML = `<div class="panel exam-result">
+      <div class="exam-score">${cpTestScore}/${cpTestQueue.length}</div>
+      <div class="exam-rank">${qzRank(cpTestScore/cpTestQueue.length)}</div>
+      <button class="btn btn-primary" onclick="cpStartTest()">Làm lại</button>
+      <button class="btn" onclick="cpExitTest()">Xem danh sách</button>
+    </div>`;
+    return;
+  }
+  const g = cpTestQueue[cpTestIdx];
+  const target = g.chars[Math.floor(Math.random()*g.chars.length)];
+  const opts = shuffle(g.chars.slice());
+  const optHtml = opts.map(o => `<button class="confuse-test-opt" onclick="cpPick(this,'${o.hz}','${target.hz}')">${o.hz}</button>`).join('');
+  area.innerHTML = `<div class="panel">
+    <div style="font-size:.75rem;color:var(--muted);margin-bottom:10px">${cpTestIdx+1}/${cpTestQueue.length} · Chọn đúng chữ Hán</div>
+    <div style="text-align:center;font-size:1.05rem;font-weight:700;margin-bottom:6px">${target.vi}</div>
+    <div style="text-align:center;font-size:.85rem;color:var(--muted);font-style:italic;margin-bottom:14px">${target.py}</div>
+    <div style="display:flex;justify-content:center;gap:12px;flex-wrap:wrap">${optHtml}</div>
+    <div style="margin-top:14px;text-align:center"><button class="btn" onclick="cpExitTest()">✕ Thoát kiểm tra</button></div>
+  </div>`;
+}
+
+function cpPick(btn, hz, correctHz) {
+  document.querySelectorAll('.confuse-test-opt').forEach(b => b.style.pointerEvents = 'none');
+  const isCorrect = hz === correctHz;
+  if (isCorrect) { btn.classList.add('correct'); cpTestScore++; }
+  else {
+    btn.classList.add('wrong');
+    document.querySelectorAll('.confuse-test-opt').forEach(b => { if (b.textContent === correctHz) b.classList.add('correct'); });
+  }
+  speak(correctHz);
+  setTimeout(() => { cpTestIdx++; cpRenderTestQ(); }, 1200);
+}
+
+function cpExitTest() {
+  cpTestMode = false;
+  document.getElementById('cp-area').innerHTML = cpRenderList();
+}
+
+// ════════════════════════════════════════════════════
+// HSK4 PROGRESS TRACKER
+// ════════════════════════════════════════════════════
+function computeHSKCoverage() {
+  const appHz = new Set(WORDS.map(w => w.hz));
+  const srs = getSRS();
+  const result = {};
+  let totalWords = 0, totalCovered = 0, totalKnown = 0;
+  [1,2,3,4].forEach(lvl => {
+    const list = HSK_OFFICIAL[lvl] || [];
+    let covered = 0, known = 0;
+    list.forEach(hz => {
+      if (appHz.has(hz)) {
+        covered++;
+        const s = srs[hz];
+        if (s && s.step >= 3) known++;
+      }
+    });
+    result[lvl] = { total: list.length, covered, known };
+    totalWords += list.length; totalCovered += covered; totalKnown += known;
+  });
+  result.overall = { total: totalWords, covered: totalCovered, known: totalKnown };
+  return result;
+}
+
+function renderHSK() {
+  const cov = computeHSKCoverage();
+  const pct = cov.overall.total ? Math.round(cov.overall.covered/cov.overall.total*100) : 0;
+  const knownPct = cov.overall.total ? Math.round(cov.overall.known/cov.overall.total*100) : 0;
+
+  const levelRows = [1,2,3,4].map(lvl => {
+    const c = cov[lvl];
+    const p = c.total ? Math.round(c.covered/c.total*100) : 0;
+    return `<div class="hsk-level-row">
+      <div class="hsk-level-label">
+        <span class="lv">HSK ${lvl}</span>
+        <span class="ct">${c.covered}/${c.total} từ (${p}%)</span>
+      </div>
+      <div class="prog-bar"><div class="prog-fill" style="width:${p}%;background:${lessonColor(6+lvl)}"></div></div>
+    </div>`;
+  }).join('');
+
+  return `
+  <div class="panel">
+    <div class="hsk-hero">
+      <div class="hsk-hero-num">${cov.overall.covered}/${cov.overall.total}</div>
+      <div class="hsk-hero-sub">từ vựng HSK1-4 đã có trong app (${pct}%)</div>
+      <div class="hsk-bigbar"><div class="hsk-bigbar-fill" style="width:${pct}%"></div></div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">Đã thuộc thật (⭐ qua SRS, ≥1 ngày)</div>
+    <div class="stat-grid" style="grid-template-columns:1fr 1fr;">
+      <div class="stat-box"><div class="stat-num" style="color:var(--l8a)">${cov.overall.known}</div><div class="stat-lbl">Từ đã thuộc</div></div>
+      <div class="stat-box"><div class="stat-num">${knownPct}%</div><div class="stat-lbl">% trên tổng HSK1-4</div></div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">Chi tiết theo cấp độ</div>
+    ${levelRows}
+    <div class="hsk-note">
+      📌 Danh sách dựa trên bộ từ vựng HSK1-4 phổ biến (~1200 từ, chuẩn HSK 2.0). Một từ tính "đã có" nếu trùng chữ Hán với từ vựng trong app (bất kể bài học nào); "đã thuộc" là từ đã vượt mốc ôn ≥1 ngày trong SRS. Số liệu chỉ mang tính ước lượng tham khảo, không thay thế kết quả thi thật.
+    </div>
+  </div>`;
+}
+
+// ════════════════════════════════════════════════════
+// TAB: CẤP BẬC CÁ NHÂN + XẾP HẠNG THI ĐUA
+// ════════════════════════════════════════════════════
+function renderRankTab() {
+  if (isGuest) {
+    return `<div class="panel center" style="padding:40px">
+      <div style="font-size:2rem;margin-bottom:8px;">🔒</div>
+      Cấp bậc và xếp hạng chỉ áp dụng cho tài khoản đã đăng nhập.<br>
+      <button class="btn btn-primary" style="margin-top:14px;max-width:220px;" onclick="openAuthGate()">Đăng nhập / Đăng ký</button>
+    </div>`;
+  }
+  const r = currentRank || { name: 'Đang tải...', icon: '⏳', next: null };
+  const nextHtml = r.next
+    ? `Còn <b>${r.next.remain}</b> từ nữa để lên <b>${r.next.icon} ${r.next.name}</b>`
+    : `Bạn đã đạt cấp bậc cao nhất! 🎉`;
+  const myKnown = countKnownLocal();
+  const myPct = Math.min(100, Math.round(myKnown / WORDS.length * 100));
+  return `<div class="panel center" style="padding:24px 18px;">
+    <div style="font-size:3rem;">${r.icon}</div>
+    <div style="font-size:1.3rem;font-weight:900;margin:4px 0;">${r.name}</div>
+    <div style="font-size:.85rem;color:var(--muted);margin-bottom:10px;">${nextHtml}</div>
+    <div style="font-size:1.6rem;font-weight:900;color:var(--l8a);">${myPct}%</div>
+    <div style="font-size:.78rem;color:var(--muted);">tổng từ vựng đã thuộc (${myKnown}/${WORDS.length} từ)</div>
+    <div class="prog-bar" style="margin-top:8px;"><div class="prog-fill" style="width:${myPct}%;background:var(--l8a)"></div></div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">🏅 Bảng xếp hạng (theo % tổng từ vựng đã thuộc)</div>
+    <div id="leaderboard-area" style="text-align:center;padding:20px;color:var(--muted);">Đang tải...</div>
+  </div>`;
+}
+function countKnownLocal() {
+  const d = getSRS();
+  let n = 0;
+  for (const hz in d) { if (d[hz] && d[hz].step >= 3) n++; }
+  return n;
+}
+async function bindRankTab() {
+  if (isGuest) return;
+  const area = document.getElementById('leaderboard-area');
+  try {
+    const res = await fetch('/api/leaderboard', { headers: authHeaders() });
+    const data = await res.json();
+    if (!data.ok) { area.textContent = 'Không tải được bảng xếp hạng.'; return; }
+    const medal = i => i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1)+'.';
+    const total = WORDS.length;
+    area.innerHTML = data.leaderboard.map((u,i) => {
+      const pct = Math.min(100, Math.round(u.known / total * 100));
+      return `
+      <div style="display:flex;align-items:center;gap:10px;padding:9px 6px;border-radius:10px;${u.isMe?'background:var(--l9b);font-weight:800;':''}text-align:left;">
+        <span style="min-width:28px;font-weight:800;">${medal(i)}</span>
+        <span style="flex:1;">${u.username}${u.isMe?' (bạn)':''}<div style="font-size:.72rem;color:var(--muted);font-weight:600;">${u.rank} · ${u.known}/${total} từ</div></span>
+        <span style="font-weight:900;color:var(--l8a);font-size:1.05rem;">${pct}%</span>
+        <span style="font-size:.8rem;">🔥${u.streak}</span>
+      </div>`;
+    }).join('') || '<div style="color:var(--muted);">Chưa có ai học cả.</div>';
+  } catch {
+    area.textContent = 'Không kết nối được máy chủ.';
+  }
+}
+
+// ════════════════════════════════════════════════════
+// TAB: QUẢN TRỊ (chỉ admin)
+// ════════════════════════════════════════════════════
+function renderAdmin() {
+  if (isGuest || !isAdminRole()) {
+    return `<div class="panel center" style="padding:40px">Bạn không có quyền truy cập mục này.</div>`;
+  }
+  return `<div class="panel">
+    <div class="panel-title">📈 Lượt truy cập</div>
+    <div id="visits-area" style="color:var(--muted);padding:14px 0;text-align:center;">Đang tải...</div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">🛠️ Quản trị tài khoản${currentRole==='superadmin' ? ' <span style="font-size:.7rem;background:var(--l15c);color:var(--l15a);padding:2px 8px;border-radius:8px;">QUẢN TRỊ CAO NHẤT</span>' : ''}</div>
+    <div id="admin-area" style="color:var(--muted);padding:14px 0;text-align:center;">Đang tải danh sách...</div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">✍️ Thêm 1 từ thủ công</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+      <input type="text" id="vocab-manual-hz" placeholder="Chữ Hán (ví dụ 你好)" style="padding:8px;border-radius:8px;border:1.5px solid #ddd;font-size:.9rem;">
+      <input type="text" id="vocab-manual-py" placeholder="Pinyin (ví dụ nǐ hǎo)" style="padding:8px;border-radius:8px;border:1.5px solid #ddd;font-size:.9rem;">
+      <input type="text" id="vocab-manual-vi" placeholder="Nghĩa tiếng Việt (ví dụ xin chào)" style="padding:8px;border-radius:8px;border:1.5px solid #ddd;font-size:.9rem;grid-column:1 / -1;">
+      <input type="number" id="vocab-manual-l" placeholder="Số bài (ví dụ 1)" min="1" style="padding:8px;border-radius:8px;border:1.5px solid #ddd;font-size:.9rem;">
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:.78rem;color:var(--muted);margin-bottom:8px;">
+      <input type="checkbox" id="vocab-manual-overwrite"> Ghi đè nếu chữ Hán + số bài này đã tồn tại (cập nhật lại pinyin/nghĩa)
+    </label>
+    <button class="btn btn-sm" style="background:var(--l11c);color:var(--l11a);" onclick="addVocabManual()">➕ Thêm từ này</button>
+    <div id="vocab-manual-result" style="font-size:.8rem;color:var(--muted);margin-top:8px;"></div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">📥 Thêm từ vựng mới (Excel)</div>
+    <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px;">
+      File Excel (.xlsx) cần có dòng tiêu đề với đúng 4 cột: <b>hz</b> (chữ Hán), <b>py</b> (pinyin), <b>vi</b> (nghĩa tiếng Việt), <b>l</b> (số bài học, ví dụ 1, 2, 3...).
+    </div>
+    <button class="btn btn-sm" style="background:var(--l9c);color:var(--l9a);margin-bottom:10px;" onclick="downloadVocabTemplate()">⬇️ Tải file mẫu</button>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+      <input type="file" id="vocab-file-input" accept=".xlsx,.xls" style="font-size:.8rem;max-width:100%;">
+      <button class="btn btn-sm" style="background:var(--l11c);color:var(--l11a);" onclick="uploadVocabExcel()">📤 Tải lên & nhập</button>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:.78rem;color:var(--muted);margin-bottom:10px;">
+      <input type="checkbox" id="vocab-excel-overwrite"> Ghi đè nếu chữ Hán + số bài đã tồn tại (cập nhật lại pinyin/nghĩa)
+    </label>
+    <div id="vocab-import-result" style="font-size:.8rem;color:var(--muted);margin-bottom:12px;"></div>
+    <div style="border-top:1px solid #eee;padding-top:10px;">
+      <button class="btn btn-sm" style="background:#fdecea;color:#c0392b;" onclick="clearAllVocab()">🗑️ Xoá toàn bộ từ đã thêm (Excel + thủ công)</button>
+      <div style="font-size:.72rem;color:var(--muted);margin-top:6px;">Chỉ xoá các từ được thêm qua Excel/thủ công — không đụng tới bộ từ vựng gốc có sẵn của app.</div>
+    </div>
+  </div>`;
+}
+async function addVocabManual() {
+  const resultEl = document.getElementById('vocab-manual-result');
+  const hz = document.getElementById('vocab-manual-hz').value.trim();
+  const py = document.getElementById('vocab-manual-py').value.trim();
+  const vi = document.getElementById('vocab-manual-vi').value.trim();
+  const l = parseInt(document.getElementById('vocab-manual-l').value, 10);
+  const overwrite = document.getElementById('vocab-manual-overwrite').checked;
+  if (!hz || !vi || !Number.isFinite(l) || l < 1) {
+    resultEl.textContent = 'Vui lòng nhập đủ Chữ Hán, Nghĩa và Số bài (số nguyên ≥ 1).';
+    return;
+  }
+  resultEl.textContent = 'Đang thêm...';
+  try {
+    const res = await fetch('/api/admin/vocab/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ words: [{ hz, py, vi, l }], overwrite }),
+    });
+    const data = await res.json();
+    if (!data.ok) { resultEl.textContent = '❌ ' + (data.error || 'Có lỗi xảy ra'); return; }
+    if (data.added > 0) {
+      resultEl.innerHTML = `✅ Đã thêm từ <b>${hz}</b>. <span style="color:var(--l9a);">Tải lại trang để dùng ngay.</span>`;
+      document.getElementById('vocab-manual-hz').value = '';
+      document.getElementById('vocab-manual-py').value = '';
+      document.getElementById('vocab-manual-vi').value = '';
+      document.getElementById('vocab-manual-l').value = '';
+    } else if (data.updated > 0) {
+      resultEl.innerHTML = `✅ Đã cập nhật lại từ <b>${hz}</b> (bài ${l}). <span style="color:var(--l9a);">Tải lại trang để dùng ngay.</span>`;
+    } else {
+      resultEl.textContent = `⚠️ Từ "${hz}" ở bài ${l} đã tồn tại rồi. Tick ô "Ghi đè" nếu muốn cập nhật lại pinyin/nghĩa.`;
+    }
+  } catch (e) {
+    resultEl.textContent = '❌ Không kết nối được máy chủ: ' + e.message;
+  }
+}
+function downloadVocabTemplate() {
+  const ws = XLSX.utils.json_to_sheet([
+    { hz: '你好', py: 'nǐ hǎo', vi: 'xin chào', l: 1 },
+    { hz: '谢谢', py: 'xièxie', vi: 'cảm ơn', l: 1 },
+  ]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Từ vựng');
+  XLSX.writeFile(wb, 'mau-tu-vung.xlsx');
+}
+async function uploadVocabExcel() {
+  const input = document.getElementById('vocab-file-input');
+  const resultEl = document.getElementById('vocab-import-result');
+  const file = input.files && input.files[0];
+  if (!file) { resultEl.textContent = 'Chưa chọn file.'; return; }
+  resultEl.textContent = 'Đang đọc file...';
+  try {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array' });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+    if (!rows.length) { resultEl.textContent = 'File không có dữ liệu.'; return; }
+    const words = rows.map(r => ({
+      hz: String(r.hz ?? r['Chữ Hán'] ?? '').trim(),
+      py: String(r.py ?? r['Pinyin'] ?? '').trim(),
+      vi: String(r.vi ?? r['Nghĩa'] ?? '').trim(),
+      l: parseInt(r.l ?? r['Bài'], 10),
+    }));
+    resultEl.textContent = `Đang nhập ${words.length} dòng...`;
+    const overwrite = document.getElementById('vocab-excel-overwrite').checked;
+    const res = await fetch('/api/admin/vocab/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ words, overwrite }),
+    });
+    const data = await res.json();
+    if (!data.ok) { resultEl.textContent = '❌ ' + (data.error || 'Có lỗi xảy ra'); return; }
+    resultEl.innerHTML = `✅ Đã thêm <b>${data.added}</b> từ mới, cập nhật <b>${data.updated}</b> từ trùng. Bỏ qua ${data.skipped} từ trùng (chưa tick ghi đè), ${data.invalid} dòng thiếu dữ liệu.<br>Tổng số từ đã thêm qua Excel/thủ công: <b>${data.total}</b>.<br><span style="color:var(--l9a);">Tải lại trang để dùng ngay các từ mới.</span>`;
+    input.value = '';
+  } catch (e) {
+    resultEl.textContent = '❌ Không đọc được file: ' + e.message;
+  }
+}
+async function clearAllVocab() {
+  if (!confirm('Xoá toàn bộ từ vựng đã thêm qua Excel/thủ công? Không thể hoàn tác. Bộ từ vựng gốc có sẵn của app sẽ KHÔNG bị ảnh hưởng.')) return;
+  const resultEl = document.getElementById('vocab-import-result');
+  resultEl.textContent = 'Đang xoá...';
+  try {
+    const res = await fetch('/api/admin/vocab/clear', { method: 'POST', headers: authHeaders() });
+    const data = await res.json();
+    if (!data.ok) { resultEl.textContent = '❌ ' + (data.error || 'Có lỗi xảy ra'); return; }
+    resultEl.innerHTML = `✅ Đã xoá ${data.removed} từ. <span style="color:var(--l9a);">Tải lại trang để cập nhật.</span>`;
+  } catch (e) {
+    resultEl.textContent = '❌ Không kết nối được máy chủ: ' + e.message;
+  }
+}
+async function bindAdmin() {
+  if (isGuest || !isAdminRole()) return;
+  await adminLoadVisits();
+  await adminLoadUsers();
+}
+async function adminLoadVisits() {
+  const area = document.getElementById('visits-area');
+  if (!area) return;
+  try {
+    const res = await fetch('/api/admin/visits', { headers: authHeaders() });
+    const data = await res.json();
+    if (!data.ok) { area.textContent = data.error || 'Không tải được thống kê.'; return; }
+    const maxCount = Math.max(1, ...data.last14.map(d => d.count));
+    const bars = data.last14.map(d => {
+      const h = Math.round(d.count / maxCount * 60);
+      const label = d.date.slice(5); // MM-DD
+      return `<div style="display:flex;flex-direction:column;align-items:center;gap:3px;flex:1;">
+        <div style="font-size:.68rem;font-weight:800;color:var(--l9a);">${d.count}</div>
+        <div style="width:100%;max-width:18px;height:${Math.max(h,2)}px;background:var(--l9a);border-radius:3px 3px 0 0;"></div>
+        <div style="font-size:.62rem;color:var(--muted);">${label}</div>
+      </div>`;
+    }).join('');
+    area.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px;text-align:center;">
+        <div><div style="font-size:1.4rem;font-weight:900;color:var(--l9a);">${data.total}</div><div style="font-size:.72rem;color:var(--muted);">Tổng lượt truy cập</div></div>
+        <div><div style="font-size:1.4rem;font-weight:900;color:var(--l8a);">${data.today}</div><div style="font-size:.72rem;color:var(--muted);">Hôm nay</div></div>
+        <div><div style="font-size:1.4rem;font-weight:900;color:var(--l11a);">${data.totalUsers}</div><div style="font-size:.72rem;color:var(--muted);">Tổng tài khoản</div></div>
+      </div>
+      <div style="font-size:.72rem;color:var(--muted);margin-bottom:6px;">14 ngày gần nhất</div>
+      <div style="display:flex;align-items:flex-end;gap:4px;padding:6px 2px;">${bars}</div>
+    `;
+  } catch {
+    area.textContent = 'Không kết nối được máy chủ.';
+  }
+}
+async function adminLoadUsers() {
+  const area = document.getElementById('admin-area');
+  if (!area) return;
+  area.textContent = 'Đang tải danh sách...';
+  try {
+    const res = await fetch('/api/admin/users', { headers: authHeaders() });
+    const data = await res.json();
+    if (!data.ok) { area.textContent = data.error || 'Không tải được danh sách.'; return; }
+    area.innerHTML = `<div style="font-size:.78rem;color:var(--muted);margin-bottom:10px;">Tổng ${data.users.length} tài khoản</div>` +
+      data.users.map(u => {
+        const roleBadge = u.role === 'superadmin'
+          ? '<span style="background:var(--l15c);color:var(--l15a);font-size:.68rem;font-weight:800;padding:2px 7px;border-radius:8px;margin-left:6px;">👑 SUPERADMIN</span>'
+          : u.role === 'admin'
+          ? '<span style="background:var(--l11c);color:var(--l11a);font-size:.68rem;font-weight:800;padding:2px 7px;border-radius:8px;margin-left:6px;">ADMIN</span>'
+          : '';
+        const canDelete = u.role !== 'superadmin';
+        const canReset = u.role !== 'superadmin' || currentRole === 'superadmin';
+        const canToggleRole = currentRole === 'superadmin' && u.role !== 'superadmin';
+        return `
+      <div style="border:1.5px solid #eee;border-radius:12px;padding:10px 12px;margin-bottom:8px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <b>${u.username}</b>
+            ${roleBadge}
+          </div>
+          <div style="font-size:.8rem;color:var(--muted);">📚 ${Math.round(u.known/WORDS.length*100)}% (${u.known}/${WORDS.length} từ) · 🔥${u.streak}</div>
+        </div>
+        <div style="font-size:.72rem;color:var(--muted);margin:4px 0 8px;">Tạo lúc: ${new Date(u.createdAt).toLocaleString('vi-VN')}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          ${canReset ? `<button class="btn btn-sm" style="background:var(--l9c);color:var(--l9a);" onclick="adminResetUser('${u.key}','${u.username}')">🔄 Reset tiến độ</button>` : ''}
+          ${canToggleRole ? `<button class="btn btn-sm" style="background:var(--l11c);color:var(--l11a);" onclick="adminToggleRole('${u.key}','${u.role}')">${u.role==='admin' ? '⬇️ Bỏ quyền admin' : '⬆️ Cấp quyền admin'}</button>` : ''}
+          ${canDelete ? `<button class="btn btn-sm" style="background:#fdecea;color:#c0392b;" onclick="adminDeleteUser('${u.key}','${u.username}')">🗑️ Xoá tài khoản</button>` : '<span style="font-size:.72rem;color:var(--muted);align-self:center;">🔒 Được bảo vệ</span>'}
+        </div>
+      </div>`;
+      }).join('');
+  } catch {
+    area.textContent = 'Không kết nối được máy chủ.';
+  }
+}
+async function adminResetUser(key, username) {
+  if (!confirm(`Reset toàn bộ tiến độ học của "${username}"? Không thể hoàn tác.`)) return;
+  const res = await fetch(`/api/admin/users/${key}/reset`, { method:'POST', headers: authHeaders() });
+  const data = await res.json();
+  if (!data.ok) alert(data.error || 'Có lỗi xảy ra');
+  adminLoadUsers();
+}
+async function adminDeleteUser(key, username) {
+  if (!confirm(`Xoá vĩnh viễn tài khoản "${username}"? Không thể hoàn tác.`)) return;
+  const res = await fetch(`/api/admin/users/${key}/delete`, { method:'POST', headers: authHeaders() });
+  const data = await res.json();
+  if (!data.ok) alert(data.error || 'Có lỗi xảy ra');
+  adminLoadUsers();
+}
+async function adminToggleRole(key, currentR) {
+  const newRole = currentR === 'admin' ? 'user' : 'admin';
+  const res = await fetch(`/api/admin/users/${key}/role`, {
+    method:'POST',
+    headers: { 'Content-Type':'application/json', ...authHeaders() },
+    body: JSON.stringify({ role: newRole }),
+  });
+  const data = await res.json();
+  if (!data.ok) alert(data.error || 'Có lỗi xảy ra');
+  adminLoadUsers();
+}
+
+// ════════════════════════════════════════════════════
+// UTILS
+// ════════════════════════════════════════════════════
+function shuffle(arr) {
+  const a=[...arr];
+  for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}
+  return a;
+}
+
+// ════════════════════════════════════════════════════
+// BOOT
+// ════════════════════════════════════════════════════
+fetch('/api/visit', { method: 'POST' }).catch(() => {}); // ghi nhận lượt truy cập, không chặn nếu lỗi
+// Nạp thêm các từ vựng được admin thêm qua Excel (nếu có), gộp vào bộ từ có sẵn
+async function loadExtraVocab() {
+  if (isGuest || !authToken) return;
+  try {
+    const res = await fetch('/api/vocab', { headers: authHeaders() });
+    const data = await res.json();
+    if (!data.ok || !Array.isArray(data.vocab)) return;
+    const seen = new Set(WORDS.map(w => w.hz + '-' + w.l));
+    for (const w of data.vocab) {
+      const key = w.hz + '-' + w.l;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      WORDS.push(w);
+    }
+  } catch {
+    // Không tải được từ vựng mở rộng thì vẫn dùng bộ từ có sẵn, không chặn app
+  }
+}
+
+bootAuth().then(() => loadExtraVocab()).then(() => {
+  updateStreak();
+  render();
+});
+
+// ── Widget liên hệ Zalo (nổi góc màn hình) ──
+(function initZaloWidget() {
+  const ZALO_PHONE = '0987086700';
+  if (localStorage.getItem('zaloWidgetHidden') === '1') return; // đã bị người dùng tắt trước đó
+  const wrap = document.createElement('div');
+  wrap.id = 'zalo-widget';
+  wrap.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:500;display:flex;align-items:center;';
+  wrap.innerHTML = `
+    <a href="https://zalo.me/${ZALO_PHONE}" target="_blank" rel="noopener"
+       title="Nhắn Zalo hỗ trợ"
+       style="display:flex;align-items:center;gap:8px;padding:8px 14px 8px 8px;border-radius:999px;
+              background:#0068ff;box-shadow:0 4px 14px rgba(0,0,0,.25);text-decoration:none;">
+      <span style="display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;background:#fff;flex-shrink:0;">
+        <svg width="20" height="20" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <text x="50%" y="58%" text-anchor="middle" font-family="Arial, sans-serif" font-weight="700" font-size="18" fill="#0068ff">Za</text>
+        </svg>
+      </span>
+      <span style="color:#fff;font-weight:700;font-size:.9rem;white-space:nowrap;">Hỗ trợ</span>
+    </a>
+    <button id="zalo-widget-close" title="Ẩn nút này"
+      style="width:20px;height:20px;border-radius:50%;background:#fff;border:1px solid #ccc;color:#666;
+             font-size:12px;line-height:1;cursor:pointer;margin-left:-8px;margin-top:-30px;
+             box-shadow:0 1px 4px rgba(0,0,0,.2);display:flex;align-items:center;justify-content:center;flex-shrink:0;">✕</button>`;
+  document.body.appendChild(wrap);
+  document.getElementById('zalo-widget-close').addEventListener('click', (e) => {
+    e.preventDefault();
+    localStorage.setItem('zaloWidgetHidden', '1');
+    wrap.remove();
+  });
+})();
+
+</script>
+</body>
+</html>
