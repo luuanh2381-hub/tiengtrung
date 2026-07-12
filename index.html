@@ -1854,6 +1854,7 @@ function bookOfLesson(l) {
 }
 // Cho phép chọn NHIỀU Quyển/level cùng lúc qua 1 ô droplist (multi-select)
 let selectedBookIds = new Set([1]);
+let selectedLessons = new Set(); // rỗng = chọn tất cả các bài trong (các) Quyển/level đang chọn
 
 // ── Giới hạn cho khách / chưa đăng nhập: chỉ được học tối đa 5 bài đầu của Quyển 1 ──
 const GUEST_MAX_LESSON = 5;
@@ -1869,15 +1870,40 @@ function lessonsOfSelection() {
   return [...set].sort((a,b)=>a-b);
 }
 
-// Xử lý khi người dùng chọn/bỏ chọn trong ô droplist (hỗ trợ chọn nhiều mục cùng lúc)
+// Xử lý khi người dùng chọn/bỏ chọn Quyển/level trong ô droplist thứ 1 (hỗ trợ chọn nhiều mục cùng lúc)
 function onLevelSelectChange(sel) {
   const ids = Array.from(sel.selectedOptions).map(o => parseInt(o.value));
   if (!isLoggedIn() && ids.some(id => id !== 1)) { guestLimitNotice(); return; }
   selectedBookIds = new Set(ids.length ? ids : [1]);
+  selectedLessons.clear(); // đổi Quyển/level thì reset lựa chọn bài cụ thể trước đó
   render();
 }
 
-// Ô droplist chọn Quyển/level, nhóm theo từng loại (Giáo trình cơ bản / Từ vựng mở rộng / Luyện thi HSK...)
+// Xử lý khi người dùng chọn/bỏ chọn bài cụ thể trong ô droplist thứ 2
+function onLessonSelectChange(sel) {
+  const ids = Array.from(sel.selectedOptions).map(o => parseInt(o.value));
+  if (!isLoggedIn() && ids.some(l => l > GUEST_MAX_LESSON)) { guestLimitNotice(); return; }
+  selectedLessons = new Set(ids);
+  render();
+}
+
+// Ô droplist 1: chọn Quyển/level, nhóm theo từng loại (Giáo trình cơ bản / Từ vựng mở rộng / Luyện thi HSK...)
+// Cache số từ theo từng Quyển/level — tránh phải lọc lại toàn bộ WORDS (có thể hơn 10.000 từ)
+// mỗi lần vẽ lại droplist, vốn là nguyên nhân khiến droplist bị khựng/giật khi chọn.
+let _bookCountCache = { len: -1, counts: {} };
+function bookWordCount(bookId) {
+  if (_bookCountCache.len !== WORDS.length) {
+    const counts = {};
+    for (const b of BOOKS) counts[b.id] = 0;
+    for (const w of WORDS) {
+      const b = BOOKS.find(x => w.l >= x.from && w.l <= x.to);
+      if (b) counts[b.id]++;
+    }
+    _bookCountCache = { len: WORDS.length, counts };
+  }
+  return _bookCountCache.counts[bookId] || 0;
+}
+
 function levelSelectHtml() {
   const loggedIn = isLoggedIn();
   const groups = [];
@@ -1885,14 +1911,36 @@ function levelSelectHtml() {
   const optgroups = groups.map(g => {
     const opts = BOOKS.filter(b => b.group === g).map(b => {
       const locked = !loggedIn && b.id !== 1;
-      const count = WORDS.filter(w => w.l >= b.from && w.l <= b.to).length;
+      const count = bookWordCount(b.id);
       const sel = selectedBookIds.has(b.id);
       return `<option value="${b.id}"${sel?' selected':''}${locked?' disabled':''}>${locked?'🔒 ':''}${b.name} (${count} từ)</option>`;
     }).join('');
     return `<optgroup label="${g}">${opts}</optgroup>`;
   }).join('');
-  return `<select id="level-select" multiple size="8" onchange="onLevelSelectChange(this)" style="width:100%;border-radius:12px;border:2px solid var(--border);padding:6px;font-size:.86rem;font-family:inherit;background:#fff;color:var(--ink);">${optgroups}</select>
+  return `<div style="font-size:.72rem;color:var(--muted);font-weight:700;margin-bottom:4px;">Chọn Quyển / level</div>
+    <select id="level-select" multiple size="8" onchange="onLevelSelectChange(this)" style="width:100%;border-radius:12px;border:2px solid var(--border);padding:6px;font-size:.86rem;font-family:inherit;background:#fff;color:var(--ink);">${optgroups}</select>
     <div style="font-size:.7rem;color:var(--muted);margin:4px 0 8px;">Chạm để chọn/bỏ chọn — có thể chọn nhiều Quyển/level cùng lúc để gộp từ vựng lại với nhau.</div>`;
+}
+
+// Ô droplist 2: chọn bài cụ thể — CHỈ áp dụng cho các Quyển có nhiều hơn 1 bài (Quyển 1, Quyển 2).
+// Chuyên ngành / HSK... mỗi mục chỉ có đúng 1 bài nên không cần (và không hiện) ô chọn thêm này.
+function lessonSelectHtml() {
+  const multiLessonIds = [...selectedBookIds].filter(id => {
+    const b = BOOKS.find(x => x.id === id);
+    return b && (b.to > b.from);
+  });
+  if (multiLessonIds.length === 0) return '';
+  const set = new Set();
+  for (const id of multiLessonIds) for (const l of lessonsOfBook(id)) set.add(l);
+  const lessons = [...set].sort((a,b)=>a-b);
+  const loggedIn = isLoggedIn();
+  const opts = lessons.map(l => {
+    const locked = !loggedIn && l > GUEST_MAX_LESSON;
+    const sel = selectedLessons.has(l);
+    return `<option value="${l}"${sel?' selected':''}${locked?' disabled':''}>${locked?'🔒 ':''}Bài ${l}</option>`;
+  }).join('');
+  return `<div style="font-size:.72rem;color:var(--muted);font-weight:700;margin-bottom:4px;">Chọn bài cụ thể (để trống = tất cả các bài ở trên)</div>
+    <select id="lesson-select" multiple size="6" onchange="onLessonSelectChange(this)" style="width:100%;border-radius:12px;border:2px solid var(--border);padding:6px;font-size:.86rem;font-family:inherit;background:#fff;color:var(--ink);">${opts}</select>`;
 }
 
 // ════════════════════════════════════════════════════
@@ -1914,30 +1962,35 @@ function render() {
   else if (currentTab === 'admin') { el.innerHTML = renderAdmin(); bindAdmin(); }
 }
 
-// Lesson filter html — dùng ô droplist đa lựa chọn, cho phép chọn NHIỀU Quyển/level cùng lúc
+// Lesson filter html — 2 ô droplist đa lựa chọn: chọn Quyển/level, rồi (nếu cần) chọn bài cụ thể
 function lessonFilterHtml() {
   const loggedIn = isLoggedIn();
   const levelSelect = levelSelectHtml();
-  const hint = selectedBookIds.size > 1
-    ? `<div style="font-size:.72rem;color:var(--muted);margin:2px 0 8px;">Đang chọn ${selectedBookIds.size} mục: ${[...selectedBookIds].map(id=>BOOKS.find(b=>b.id===id).name).join(', ')}</div>`
-    : '';
+  const lessonSelect = lessonSelectHtml();
+  const hint = selectedLessons.size > 0
+    ? `<div style="font-size:.72rem;color:var(--muted);margin:2px 0 8px;">Đang chọn ${selectedLessons.size} bài: ${[...selectedLessons].sort((a,b)=>a-b).join(', ')}</div>`
+    : (selectedBookIds.size > 1
+      ? `<div style="font-size:.72rem;color:var(--muted);margin:2px 0 8px;">Đang chọn ${selectedBookIds.size} mục: ${[...selectedBookIds].map(id=>BOOKS.find(b=>b.id===id).name).join(', ')}</div>`
+      : '');
   const guestNotice = !loggedIn
     ? `<div style="font-size:.75rem;color:var(--muted);background:${lessonBg(0)};border:1px solid var(--active);border-radius:10px;padding:8px 10px;margin-bottom:8px;">
         🔒 Chưa đăng nhập: bạn chỉ học được <b>Bài 1–${GUEST_MAX_LESSON}</b> của Quyển 1.
         <a href="javascript:void(0)" onclick="openAuthGate()" style="color:var(--active);font-weight:700;">Đăng nhập / Đăng ký</a> để mở khoá toàn bộ và lưu tiến độ.
       </div>`
     : '';
-  return `<div id="book-filter" style="margin-bottom:8px;">${levelSelect}</div>` + hint + guestNotice;
+  return `<div id="book-filter" style="margin-bottom:8px;">${levelSelect}${lessonSelect}</div>` + hint + guestNotice;
 }
 
 function getFilteredWords() {
-  let words = WORDS.filter(w => selectedBookIds.has(bookOfLesson(w.l)));
+  let words;
+  if (selectedLessons.size === 0) words = WORDS.filter(w => selectedBookIds.has(bookOfLesson(w.l)));
+  else words = WORDS.filter(w => selectedLessons.has(w.l));
   if (!isLoggedIn()) words = words.filter(w => w.l <= GUEST_MAX_LESSON);
   return words;
 }
 // Dùng cho các màn lọc theo bài không phải từ vựng (vd. câu ví dụ ở màn Dịch câu)
 function isLessonInSelection(l) {
-  return selectedBookIds.has(bookOfLesson(l));
+  return selectedLessons.size === 0 ? selectedBookIds.has(bookOfLesson(l)) : selectedLessons.has(l);
 }
 
 // ════════════════════════════════════════════════════
@@ -2530,16 +2583,19 @@ async function aiGrade(i) {
 // ════════════════════════════════════════════════════
 function renderStats() {
   const d=getSRS();
-  const all=WORDS.filter(w => selectedBookIds.has(bookOfLesson(w.l)));
+  const all = selectedLessons.size === 0
+    ? WORDS.filter(w => selectedBookIds.has(bookOfLesson(w.l)))
+    : WORDS.filter(w => selectedLessons.has(w.l));
   const total=all.reduce((s,w)=>s+(d[w.hz]?.total||0),0);
   const correct=all.reduce((s,w)=>s+(d[w.hz]?.correct||0),0);
   const known=all.filter(w=>d[w.hz]&&d[w.hz].step>=3).length;
   const rate=total?Math.round(correct/total*100):0;
   const bookLabel = [...selectedBookIds].map(id=>BOOKS.find(b=>b.id===id).name).join(', ');
   const levelSelect = levelSelectHtml();
+  const lessonSelect = lessonSelectHtml();
 
   // lesson bars
-  let statLessons = lessonsOfSelection();
+  let statLessons = selectedLessons.size === 0 ? lessonsOfSelection() : [...selectedLessons].sort((a,b)=>a-b);
   if (!isLoggedIn()) statLessons = statLessons.filter(l => l <= GUEST_MAX_LESSON);
   const barHtml=statLessons.map(l=>{
     const lw=all.filter(w=>w.l===l);
@@ -2563,7 +2619,7 @@ function renderStats() {
   </div>`).join('');
 
   return `<div class="panel">
-    <div id="book-filter" style="margin-bottom:8px;">${levelSelect}</div>
+    <div id="book-filter" style="margin-bottom:8px;">${levelSelect}${lessonSelect}</div>
     <div class="panel-title">Tổng quan · ${bookLabel}</div>
     <div class="stat-grid">
       <div class="stat-box"><div class="stat-num">🔥${getStreak()}</div><div class="stat-lbl">Ngày streak</div></div>
