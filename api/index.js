@@ -7,7 +7,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
-const { readDB, updateDB } = require('../lib/db');
+const { readDB, updateDB, readVocab, updateVocab } = require('../lib/db');
 
 const app = express();
 
@@ -62,7 +62,7 @@ function fail(res, e, fallbackMsg) {
   res.status(500).json({ ok: false, error: fallbackMsg || ('Lỗi server: ' + (e && e.message)) });
 }
 
-app.use(express.json({ limit: '3mb' }));
+app.use(express.json({ limit: '20mb' }));
 
 // ── Xác thực: kiểm tra token, KHÔNG khoá dữ liệu (chỉ đọc) ──
 async function requireAuth(req, res) {
@@ -319,7 +319,10 @@ app.post('/api/admin/users/:key/role', async (req, res) => {
 app.get('/api/vocab', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
-  res.json({ ok: true, vocab: authed.db.vocab || [] });
+  try {
+    const vocab = await readVocab();
+    res.json({ ok: true, vocab });
+  } catch (e) { fail(res, e); }
 });
 
 // ── [ADMIN] Nhập từ vựng hàng loạt (từ file Excel đã được parse ở trình duyệt, hoặc nhập thủ công 1 từ) ──
@@ -332,9 +335,9 @@ app.post('/api/admin/vocab/import', async (req, res) => {
     return res.json({ ok: false, error: 'Không có dữ liệu từ vựng để nhập' });
   }
   try {
-    const result = await updateDB((db) => {
+    const result = await updateVocab((vocab) => {
       const index = new Map();
-      for (const w of db.vocab) index.set(w.hz + '-' + w.l, w);
+      for (const w of vocab) index.set(w.hz + '-' + w.l, w);
       let added = 0, updated = 0, skipped = 0, invalid = 0;
       for (const raw of words) {
         const hz = String(raw.hz || '').trim();
@@ -350,11 +353,11 @@ app.post('/api/admin/vocab/import', async (req, res) => {
           continue;
         }
         const entry = { hz, py, vi, l };
-        db.vocab.push(entry);
+        vocab.push(entry);
         index.set(key, entry);
         added++;
       }
-      return { added, updated, skipped, invalid, total: db.vocab.length };
+      return { added, updated, skipped, invalid, total: vocab.length };
     });
     res.json({ ok: true, ...result });
   } catch (e) { fail(res, e); }
@@ -366,9 +369,9 @@ app.post('/api/admin/vocab/clear', async (req, res) => {
   if (!authed) return;
   if (!requireAdmin(authed.db.users[authed.username], res)) return;
   try {
-    const result = await updateDB((db) => {
-      const removed = db.vocab.length;
-      db.vocab = [];
+    const result = await updateVocab((vocab) => {
+      const removed = vocab.length;
+      vocab.length = 0;
       return { removed };
     });
     res.json({ ok: true, ...result });
