@@ -7,7 +7,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
-const { readDB, updateDB, readVocab, updateVocab } = require('../lib/db');
+const { readDB, updateDB, getVocabByLessons, getVocabCounts, importVocab, clearVocab } = require('../lib/db');
 
 const app = express();
 
@@ -19,7 +19,7 @@ process.on('unhandledRejection', (err) => {
 });
 
 function emptyProgress() {
-  return { srs: {}, streak: 0, lastDate: null };
+  return { srs: {}, streak: 0, lastDate: null, ui: { lastTab: 'home', selectedBookIds: [1], selectedLessons: [] } };
 }
 
 function makeToken() {
@@ -182,13 +182,21 @@ app.get('/api/progress', async (req, res) => {
 app.post('/api/progress', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
-  const { srs, streak, lastDate } = req.body || {};
+  const { srs, streak, lastDate, ui } = req.body || {};
   try {
     const rank = await updateDB((db) => {
+      const safeUi = (ui && typeof ui === 'object') ? {
+        lastTab: typeof ui.lastTab === 'string' ? ui.lastTab : 'home',
+        selectedBookIds: Array.isArray(ui.selectedBookIds) && ui.selectedBookIds.length
+          ? ui.selectedBookIds.filter(n => Number.isFinite(n)) : [1],
+        selectedLessons: Array.isArray(ui.selectedLessons)
+          ? ui.selectedLessons.filter(n => Number.isFinite(n)) : [],
+      } : { lastTab: 'home', selectedBookIds: [1], selectedLessons: [] };
       db.users[authed.username].progress = {
         srs: (srs && typeof srs === 'object') ? srs : {},
         streak: typeof streak === 'number' ? streak : 0,
         lastDate: lastDate || null,
+        ui: safeUi,
       };
       return getRank(countKnown(db.users[authed.username].progress));
     });
@@ -315,13 +323,27 @@ app.post('/api/admin/users/:key/role', async (req, res) => {
   } catch (e) { fail(res, e); }
 });
 
-// ── Lấy danh sách từ vựng được admin thêm thêm (ngoài bộ từ có sẵn) ──
+// ── Lấy từ vựng THEO ĐÚNG các bài được yêu cầu (?lessons=32,33,34) — không tải cả kho ──
 app.get('/api/vocab', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
   try {
-    const vocab = await readVocab();
+    const raw = String(req.query.lessons || '').trim();
+    if (!raw) return res.json({ ok: true, vocab: [] });
+    const lessons = raw.split(',').map(s => parseInt(s, 10)).filter(Number.isFinite);
+    const vocab = await getVocabByLessons(lessons);
     res.json({ ok: true, vocab });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Đếm nhanh số từ theo từng bài (payload rất nhỏ) — để hiện số từ ở màn chọn Quyển/level
+//     mà không cần tải cả nội dung từ vựng về ──
+app.get('/api/vocab/counts', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const counts = await getVocabCounts();
+    res.json({ ok: true, counts });
   } catch (e) { fail(res, e); }
 });
 
@@ -335,30 +357,7 @@ app.post('/api/admin/vocab/import', async (req, res) => {
     return res.json({ ok: false, error: 'Không có dữ liệu từ vựng để nhập' });
   }
   try {
-    const result = await updateVocab((vocab) => {
-      const index = new Map();
-      for (const w of vocab) index.set(w.hz + '-' + w.l, w);
-      let added = 0, updated = 0, skipped = 0, invalid = 0;
-      for (const raw of words) {
-        const hz = String(raw.hz || '').trim();
-        const py = String(raw.py || '').trim();
-        const vi = String(raw.vi || '').trim();
-        const l = parseInt(raw.l, 10);
-        if (!hz || !vi || !Number.isFinite(l) || l < 1) { invalid++; continue; }
-        const key = hz + '-' + l;
-        const existing = index.get(key);
-        if (existing) {
-          if (overwrite) { existing.py = py; existing.vi = vi; updated++; }
-          else { skipped++; }
-          continue;
-        }
-        const entry = { hz, py, vi, l };
-        vocab.push(entry);
-        index.set(key, entry);
-        added++;
-      }
-      return { added, updated, skipped, invalid, total: vocab.length };
-    });
+    const result = await importVocab(words, !!overwrite);
     res.json({ ok: true, ...result });
   } catch (e) { fail(res, e); }
 });
@@ -369,12 +368,8 @@ app.post('/api/admin/vocab/clear', async (req, res) => {
   if (!authed) return;
   if (!requireAdmin(authed.db.users[authed.username], res)) return;
   try {
-    const result = await updateVocab((vocab) => {
-      const removed = vocab.length;
-      vocab.length = 0;
-      return { removed };
-    });
-    res.json({ ok: true, ...result });
+    const removed = await clearVocab();
+    res.json({ ok: true, removed });
   } catch (e) { fail(res, e); }
 });
 
