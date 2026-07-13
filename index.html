@@ -1412,7 +1412,36 @@ const HSK_OFFICIAL = {
 let authToken = localStorage.getItem('authToken') || null;
 let authUsername = localStorage.getItem('authUsername') || null;
 let isGuest = localStorage.getItem('authGuest') === '1';
-let progressState = { srs: {}, streak: 0, lastDate: null };
+// "ui" lưu lại trạng thái đang thao tác dở (tab đang xem, Quyển/level + bài đang chọn) —
+// được đồng bộ lên server cùng tiến độ học, để mở lại app (kể cả trên máy khác) vẫn đúng chỗ cũ.
+function defaultProgress() {
+  return { srs: {}, streak: 0, lastDate: null, ui: { lastTab: 'home', selectedBookIds: [1], selectedLessons: [] } };
+}
+function normalizeProgress(p) {
+  if (!p || typeof p !== 'object') return defaultProgress();
+  if (!p.srs) p.srs = {};
+  if (typeof p.streak !== 'number') p.streak = 0;
+  if (p.lastDate === undefined) p.lastDate = null;
+  if (!p.ui || typeof p.ui !== 'object') p.ui = defaultProgress().ui;
+  if (!p.ui.lastTab) p.ui.lastTab = 'home';
+  if (!Array.isArray(p.ui.selectedBookIds) || p.ui.selectedBookIds.length === 0) p.ui.selectedBookIds = [1];
+  if (!Array.isArray(p.ui.selectedLessons)) p.ui.selectedLessons = [];
+  return p;
+}
+let progressState = defaultProgress();
+// Áp dụng lại trạng thái đang thao tác dở (tab, Quyển/level, bài đang chọn) từ progressState.ui
+function applyUIState() {
+  normalizeProgress(progressState);
+  const ui = progressState.ui;
+  currentTab = ui.lastTab;
+  selectedBookIds = new Set(ui.selectedBookIds);
+  selectedLessons = new Set(ui.selectedLessons);
+  const navBtn = document.getElementById('tab-' + currentTab);
+  if (navBtn) {
+    document.querySelectorAll('#nav button').forEach(b => b.classList.remove('active'));
+    navBtn.classList.add('active');
+  }
+}
 let authMode = 'login'; // 'login' | 'register'
 let syncTimer = null;
 let syncOk = true;
@@ -1457,9 +1486,10 @@ async function authSubmit() {
     localStorage.setItem('authToken', authToken);
     localStorage.setItem('authUsername', authUsername);
     localStorage.removeItem('authGuest');
-    progressState = data.progress || { srs: {}, streak: 0, lastDate: null };
+    progressState = data.progress || defaultProgress();
     currentRole = data.role || 'user';
     currentRank = data.rank || null;
+    applyUIState();
     cacheProgressLocally();
     closeAuthGate();
     render();
@@ -1477,6 +1507,7 @@ function authContinueAsGuest() {
   currentRole = 'user'; currentRank = null;
   localStorage.removeItem('authToken'); localStorage.removeItem('authUsername');
   progressState = loadGuestProgressLocally();
+  applyUIState();
   closeAuthGate();
   render();
 }
@@ -1530,7 +1561,8 @@ async function authLogout() {
   authToken = null; authUsername = null; isGuest = false;
   currentRole = 'user'; currentRank = null;
   localStorage.removeItem('authToken'); localStorage.removeItem('authUsername'); localStorage.removeItem('authGuest');
-  progressState = { srs: {}, streak: 0, lastDate: null };
+  progressState = defaultProgress();
+  applyUIState();
   openAuthGate();
 }
 
@@ -1561,7 +1593,10 @@ function loadGuestProgressLocally() {
 }
 function cacheProgressLocally() {
   if (isGuest) { localStorage.setItem('guestProgress', JSON.stringify(progressState)); return; }
-  if (authUsername) localStorage.setItem('progressCache_' + authUsername, JSON.stringify(progressState));
+  if (authUsername) {
+    localStorage.setItem('progressCache_' + authUsername, JSON.stringify(progressState));
+    localStorage.setItem('roleCache_' + authUsername, currentRole || 'user');
+  }
 }
 
 // Đồng bộ lên server (gộp các lần lưu liên tiếp trong 700ms để đỡ tốn request)
@@ -1591,32 +1626,54 @@ function updateSyncIndicator() {
   badge.innerHTML = dot + rankIcon + '👤 ' + authUsername + (currentRole === 'superadmin' ? ' 👑🛠️' : currentRole === 'admin' ? ' 🛠️' : '');
 }
 
-// Khởi động: kiểm tra token còn hiệu lực không, hoặc dùng chế độ khách
+// Khởi động: nếu đã đăng nhập trước đó trên máy này, vào thẳng app bằng dữ liệu lưu tạm
+// (không phải đợi mạng phản hồi mới cho vào — đây là nguyên nhân gây ra màn hình đăng nhập
+// hiện thoáng qua vài giây mỗi lần mở app), rồi âm thầm đồng bộ lại với server phía sau.
 async function bootAuth() {
   if (isGuest) {
     progressState = loadGuestProgressLocally();
+    applyUIState();
     closeAuthGate();
     return;
   }
   if (authToken && authUsername) {
+    const cachedRaw = localStorage.getItem('progressCache_' + authUsername);
+    let enteredWithCache = false;
+    if (cachedRaw) {
+      try {
+        progressState = JSON.parse(cachedRaw);
+        currentRole = localStorage.getItem('roleCache_' + authUsername) || 'user';
+        applyUIState();
+        closeAuthGate();
+        render();
+        enteredWithCache = true;
+      } catch {}
+    }
     try {
       const res = await fetch('/api/progress', { headers: authHeaders() });
       const data = await res.json();
       if (data.ok) {
-        progressState = data.progress || { srs: {}, streak: 0, lastDate: null };
+        progressState = data.progress || defaultProgress();
         currentRole = data.role || 'user';
         currentRank = data.rank || null;
+        // Chỉ áp trạng thái tab/lựa chọn nếu đây là lần đầu vào (chưa có cache) — tránh việc
+        // đang xem dở 1 tab rồi tự nhảy sang tab khác khi dữ liệu server về chậm hơn 1 chút.
+        if (!enteredWithCache) applyUIState();
         cacheProgressLocally();
         closeAuthGate();
+        if (enteredWithCache) { syncOk = true; updateSyncIndicator(); render(); }
+        else render();
         return;
       }
+      // Token không còn hợp lệ (vd tài khoản đã bị xoá, hoặc phiên đăng nhập hết hạn)
+      if (!enteredWithCache) openAuthGate();
+      else { syncOk = false; updateSyncIndicator(); }
     } catch {
-      // Server không phản hồi được nhưng vẫn còn cache local -> cho vào tạm bằng cache, có thể đồng bộ lại sau
-      const cached = localStorage.getItem('progressCache_' + authUsername);
-      if (cached) {
-        try { progressState = JSON.parse(cached); closeAuthGate(); syncOk = false; return; } catch {}
-      }
+      // Không có mạng / server chưa phản hồi kịp — nếu đã vào bằng cache thì cứ để vậy, đồng bộ lại sau
+      if (!enteredWithCache) openAuthGate();
+      else { syncOk = false; updateSyncIndicator(); }
     }
+    return;
   }
   openAuthGate();
 }
@@ -1803,7 +1860,7 @@ function playBuzz() {
 // ════════════════════════════════════════════════════
 // GLOBAL STATE
 // ════════════════════════════════════════════════════
-let currentTab = 'home';
+let currentTab = 'home'; // được applyUIState() ghi đè lại đúng giá trị đã lưu khi app khởi động
 let showPinyin = true;
 let questionCount = 10;
 
@@ -1815,6 +1872,9 @@ function togglePinyin() {
 
 function goTab(tab) {
   currentTab = tab;
+  progressState.ui.lastTab = tab;
+  cacheProgressLocally();
+  scheduleSync();
   document.querySelectorAll('#nav button').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-' + tab).classList.add('active');
   render();
@@ -1870,26 +1930,43 @@ function lessonsOfSelection() {
   return [...set].sort((a,b)=>a-b);
 }
 
-// Xử lý khi người dùng chọn/bỏ chọn Quyển/level trong ô droplist thứ 1 (hỗ trợ chọn nhiều mục cùng lúc)
-function onLevelSelectChange(sel) {
-  const ids = Array.from(sel.selectedOptions).map(o => parseInt(o.value));
-  if (!isLoggedIn() && ids.some(id => id !== 1)) { guestLimitNotice(); return; }
-  selectedBookIds = new Set(ids.length ? ids : [1]);
+// Lưu lại lựa chọn Quyển/level + bài hiện tại vào progressState.ui (đồng bộ lên server, gộp cả
+// khách lẫn tài khoản — cacheProgressLocally tự lưu máy, scheduleSync tự bỏ qua nếu là khách)
+function saveSelectionState() {
+  progressState.ui.selectedBookIds = [...selectedBookIds];
+  progressState.ui.selectedLessons = [...selectedLessons];
+  cacheProgressLocally();
+  scheduleSync();
+}
+
+// Bấm 1 thẻ Quyển/level: bật/tắt trong danh sách đang chọn (giữ lại ít nhất 1 mục luôn được chọn)
+function toggleBook(id) {
+  if (!isLoggedIn() && id !== 1) { guestLimitNotice(); return; }
+  if (selectedBookIds.has(id)) {
+    if (selectedBookIds.size > 1) selectedBookIds.delete(id);
+  } else {
+    selectedBookIds.add(id);
+  }
   selectedLessons.clear(); // đổi Quyển/level thì reset lựa chọn bài cụ thể trước đó
+  saveSelectionState();
+  render();
+  ensureVocabLoaded(selectedBookIds).then(() => render()); // tải đúng phần từ vựng vừa chọn thêm (nếu chưa có)
+}
+
+// Bấm "Tất cả": học hết các bài trong (các) Quyển/level đang chọn
+function selectAllLessonsInSelection() { selectedLessons.clear(); saveSelectionState(); render(); }
+// Bấm 1 thẻ bài cụ thể: bật/tắt bài đó (chọn được nhiều bài cùng lúc)
+function toggleLessonChip(l) {
+  if (!isLoggedIn() && l > GUEST_MAX_LESSON) { guestLimitNotice(); return; }
+  if (selectedLessons.has(l)) selectedLessons.delete(l);
+  else selectedLessons.add(l);
+  saveSelectionState();
   render();
 }
 
-// Xử lý khi người dùng chọn/bỏ chọn bài cụ thể trong ô droplist thứ 2
-function onLessonSelectChange(sel) {
-  const ids = Array.from(sel.selectedOptions).map(o => parseInt(o.value));
-  if (!isLoggedIn() && ids.some(l => l > GUEST_MAX_LESSON)) { guestLimitNotice(); return; }
-  selectedLessons = new Set(ids);
-  render();
-}
-
-// Ô droplist 1: chọn Quyển/level, nhóm theo từng loại (Giáo trình cơ bản / Từ vựng mở rộng / Luyện thi HSK...)
-// Cache số từ theo từng Quyển/level — tránh phải lọc lại toàn bộ WORDS (có thể hơn 10.000 từ)
-// mỗi lần vẽ lại droplist, vốn là nguyên nhân khiến droplist bị khựng/giật khi chọn.
+// Cache số từ theo từng Quyển/level — tránh phải lọc lại toàn bộ WORDS mỗi lần vẽ lại danh sách.
+// Với các bài chưa tải nội dung về (Bài 31 trở lên khi chưa chọn), dùng số đếm nhẹ lấy từ
+// server (vocabCounts) để vẫn hiện đúng số từ mà không cần tải cả nội dung.
 let _bookCountCache = { len: -1, counts: {} };
 function bookWordCount(bookId) {
   if (_bookCountCache.len !== WORDS.length) {
@@ -1901,29 +1978,41 @@ function bookWordCount(bookId) {
     }
     _bookCountCache = { len: WORDS.length, counts };
   }
+  const b = BOOKS.find(x => x.id === bookId);
+  if (b && b.from > 30 && !loadedLessonNumbers.has(b.from)) {
+    let sum = 0;
+    for (let l = b.from; l <= b.to; l++) sum += vocabCounts[l] || 0;
+    return sum;
+  }
   return _bookCountCache.counts[bookId] || 0;
 }
 
+// Thẻ chọn Quyển/level, nhóm theo từng loại (Giáo trình cơ bản / Từ vựng mở rộng / Luyện thi HSK...)
+// Có thể chạm nhiều thẻ để chọn cùng lúc.
 function levelSelectHtml() {
   const loggedIn = isLoggedIn();
   const groups = [];
   for (const b of BOOKS) if (!groups.includes(b.group)) groups.push(b.group);
-  const optgroups = groups.map(g => {
-    const opts = BOOKS.filter(b => b.group === g).map(b => {
+  return groups.map(g => {
+    const cards = BOOKS.filter(b => b.group === g).map(b => {
       const locked = !loggedIn && b.id !== 1;
-      const count = bookWordCount(b.id);
       const sel = selectedBookIds.has(b.id);
-      return `<option value="${b.id}"${sel?' selected':''}${locked?' disabled':''}>${locked?'🔒 ':''}${b.name} (${count} từ)</option>`;
+      const count = bookWordCount(b.id);
+      return `<button class="book-card${sel?' sel':''}${locked?' locked':''}" onclick="toggleBook(${b.id})">
+        ${locked?'<span class="book-card-lock">🔒</span>':''}
+        <span class="book-card-name">${b.name}</span>
+        <span class="book-card-count">${count} từ</span>
+      </button>`;
     }).join('');
-    return `<optgroup label="${g}">${opts}</optgroup>`;
+    return `<div class="book-group">
+      <div class="book-group-label">${g}</div>
+      <div class="book-grid">${cards}</div>
+    </div>`;
   }).join('');
-  return `<div style="font-size:.72rem;color:var(--muted);font-weight:700;margin-bottom:4px;">Chọn Quyển / level</div>
-    <select id="level-select" multiple size="8" onchange="onLevelSelectChange(this)" style="width:100%;border-radius:12px;border:2px solid var(--border);padding:6px;font-size:.86rem;font-family:inherit;background:#fff;color:var(--ink);">${optgroups}</select>
-    <div style="font-size:.7rem;color:var(--muted);margin:4px 0 8px;">Chạm để chọn/bỏ chọn — có thể chọn nhiều Quyển/level cùng lúc để gộp từ vựng lại với nhau.</div>`;
 }
 
-// Ô droplist 2: chọn bài cụ thể — CHỈ áp dụng cho các Quyển có nhiều hơn 1 bài (Quyển 1, Quyển 2).
-// Chuyên ngành / HSK... mỗi mục chỉ có đúng 1 bài nên không cần (và không hiện) ô chọn thêm này.
+// Chip chọn bài cụ thể — CHỈ áp dụng cho các Quyển có nhiều hơn 1 bài (Quyển 1, Quyển 2).
+// Chuyên ngành / HSK... mỗi mục chỉ có đúng 1 bài nên không cần (và không hiện) phần chọn thêm này.
 function lessonSelectHtml() {
   const multiLessonIds = [...selectedBookIds].filter(id => {
     const b = BOOKS.find(x => x.id === id);
@@ -1934,13 +2023,18 @@ function lessonSelectHtml() {
   for (const id of multiLessonIds) for (const l of lessonsOfBook(id)) set.add(l);
   const lessons = [...set].sort((a,b)=>a-b);
   const loggedIn = isLoggedIn();
-  const opts = lessons.map(l => {
+  const allSelected = selectedLessons.size === 0;
+  const allBtn = `<button class="lbtn${allSelected?' sel':''}" style="${allSelected ? `border-color:var(--active);background:var(--active);color:#fff;` : `border-color:var(--active);background:${lessonBg(0)};color:var(--active);`}" onclick="selectAllLessonsInSelection()">Tất cả</button>`;
+  const chips = lessons.map(l => {
+    const sel = !allSelected && selectedLessons.has(l);
     const locked = !loggedIn && l > GUEST_MAX_LESSON;
-    const sel = selectedLessons.has(l);
-    return `<option value="${l}"${sel?' selected':''}${locked?' disabled':''}>${locked?'🔒 ':''}Bài ${l}</option>`;
+    const style = sel
+      ? `border-color:${lessonColor(l)};background:${lessonColor(l)};color:#fff;`
+      : `border-color:${lessonColor(l)};background:${lessonBg(l)};color:${lessonColor(l)};`;
+    return `<button class="lbtn${sel?' sel':''}${locked?' locked':''}" style="${style}${locked?'opacity:.5;':''}" onclick="toggleLessonChip(${l})">${locked?'🔒 ':''}Bài ${l}</button>`;
   }).join('');
-  return `<div style="font-size:.72rem;color:var(--muted);font-weight:700;margin-bottom:4px;">Chọn bài cụ thể (để trống = tất cả các bài ở trên)</div>
-    <select id="lesson-select" multiple size="6" onchange="onLessonSelectChange(this)" style="width:100%;border-radius:12px;border:2px solid var(--border);padding:6px;font-size:.86rem;font-family:inherit;background:#fff;color:var(--ink);">${opts}</select>`;
+  return `<div style="font-size:.72rem;color:var(--muted);font-weight:700;margin:8px 0 4px;">Chọn bài cụ thể (mặc định = tất cả)</div>
+    <div id="lesson-filter">${allBtn}${chips}</div>`;
 }
 
 // ════════════════════════════════════════════════════
@@ -3061,26 +3155,60 @@ function shuffle(arr) {
 // BOOT
 // ════════════════════════════════════════════════════
 fetch('/api/visit', { method: 'POST' }).catch(() => {}); // ghi nhận lượt truy cập, không chặn nếu lỗi
-// Nạp thêm các từ vựng được admin thêm qua Excel (nếu có), gộp vào bộ từ có sẵn
-async function loadExtraVocab() {
+
+// Số từ theo từng bài lấy từ server (payload rất nhỏ — chỉ vài số), dùng để hiện số từ ở màn
+// chọn Quyển/level mà KHÔNG cần tải cả nội dung từ vựng. Bài 1-30 (781 từ có sẵn) đã nhúng
+// sẵn trong app nên không cần tính qua server.
+let vocabCounts = {};
+async function loadVocabCounts() {
   if (isGuest || !authToken) return;
   try {
-    const res = await fetch('/api/vocab', { headers: authHeaders() });
+    const res = await fetch('/api/vocab/counts', { headers: authHeaders() });
     const data = await res.json();
-    if (!data.ok || !Array.isArray(data.vocab)) return;
-    const seen = new Set(WORDS.map(w => w.hz + '-' + w.l));
-    for (const w of data.vocab) {
-      const key = w.hz + '-' + w.l;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      WORDS.push(w);
-    }
+    if (data.ok && data.counts) vocabCounts = data.counts;
   } catch {
-    // Không tải được từ vựng mở rộng thì vẫn dùng bộ từ có sẵn, không chặn app
+    // Không tải được thì màn chọn Quyển/level tạm không hiện số từ, không chặn app
   }
 }
 
-bootAuth().then(() => loadExtraVocab()).then(() => {
+// Bài nào đã tải nội dung từ vựng về máy rồi (tránh tải lại lần 2 khi chọn lại)
+let loadedLessonNumbers = new Set();
+
+// Tải về ĐÚNG phần từ vựng cần cho các Quyển/level đang chọn (thay vì tải hết mọi thứ).
+// Bài 1-30 (781 từ) đã có sẵn trong app nên bỏ qua, chỉ tải Bài 31 trở đi (Chuyên ngành/HSK...).
+async function ensureVocabLoaded(bookIds) {
+  if (isGuest || !authToken) return;
+  const needed = [];
+  for (const id of bookIds) {
+    const b = BOOKS.find(x => x.id === id);
+    if (!b) continue;
+    for (let l = b.from; l <= b.to; l++) {
+      if (l > 30 && !loadedLessonNumbers.has(l)) needed.push(l);
+    }
+  }
+  if (needed.length === 0) return;
+  try {
+    const res = await fetch('/api/vocab?lessons=' + needed.join(','), { headers: authHeaders() });
+    const data = await res.json();
+    if (data.ok && Array.isArray(data.vocab)) {
+      const seen = new Set(WORDS.map(w => w.hz + '-' + w.l));
+      for (const w of data.vocab) {
+        const key = w.hz + '-' + w.l;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        WORDS.push(w);
+      }
+      _bookCountCache.len = -1; // WORDS vừa đổi -> tính lại cache số từ theo Quyển
+    }
+    needed.forEach(l => loadedLessonNumbers.add(l));
+  } catch {
+    // Không tải được thì các bài đó tạm hiện thiếu từ, không chặn app — sẽ thử lại khi chọn lại
+  }
+}
+
+bootAuth().then(async () => {
+  await loadVocabCounts();
+  await ensureVocabLoaded(selectedBookIds); // tải đúng phần cần cho lựa chọn đã khôi phục lúc mở app
   updateStreak();
   render();
 });
