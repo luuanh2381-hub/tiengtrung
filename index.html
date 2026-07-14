@@ -52,6 +52,7 @@
     --active-dark: #46A302;
     --active-bg:   #eefbe3;
     --correct:     #58CC02;
+    --ok:          #58CC02;
     --wrong:       #FF4B4B;
     --fail:        #FF4B4B;
   }
@@ -2728,6 +2729,7 @@ function trNext(ok) { trIdx++; trRenderQ(); }
 // AI DỊCH — Sinh câu & chấm bài bằng Gemini (yêu cầu đăng nhập để tránh lạm dụng quota free)
 // ════════════════════════════════════════════════════
 let aiExercises = [];
+let aiSource = 'live';
 function renderAiTrans() {
   if (!isLoggedIn()) {
     return `<div class="panel center" style="padding:30px">
@@ -2752,16 +2754,18 @@ async function aiGenerate() {
   const count = document.getElementById('ai-count-sel').value;
   const words = getFilteredWords();
   if (words.length === 0) { area.innerHTML = `<div class="panel center" style="padding:20px">Chưa có từ vựng nào trong phạm vi đã chọn.</div>`; return; }
-  area.innerHTML = `<div class="panel center" style="padding:30px">⏳ Đang nhờ AI soạn bài tập...</div>`;
+  const lessons = lessonsAllMode ? lessonsOfSelection() : [...selectedLessons];
+  area.innerHTML = `<div class="panel center" style="padding:30px">⏳ Đang chuẩn bị bài tập...</div>`;
   try {
     const res = await fetch('/api/ai/exercise', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ words: words.map(w => ({ hz: w.hz, py: w.py, vi: w.vi })), count }),
+      body: JSON.stringify({ words: words.map(w => ({ hz: w.hz, py: w.py, vi: w.vi })), count, lessons }),
     });
     const data = await res.json();
     if (!data.ok) { area.innerHTML = `<div class="panel center" style="padding:20px;color:var(--fail)">❌ ${escapeHtml(data.error)}</div>`; return; }
     aiExercises = data.sentences;
+    aiSource = data.source || 'live';
     aiRenderList();
   } catch (e) {
     area.innerHTML = `<div class="panel center" style="padding:20px;color:var(--fail)">❌ Lỗi kết nối: ${escapeHtml(e.message)}</div>`;
@@ -2770,7 +2774,10 @@ async function aiGenerate() {
 
 function aiRenderList() {
   const area = document.getElementById('ai-area');
-  area.innerHTML = aiExercises.map((s, i) => `
+  const sourceNote = aiSource === 'cached'
+    ? `<div style="font-size:.72rem;color:var(--active-dark);margin-bottom:10px;">⚡ Câu đã được AI soạn sẵn hàng ngày — tải nhanh, chấm điểm tức thì.</div>`
+    : `<div style="font-size:.72rem;color:var(--muted);margin-bottom:10px;">🤖 AI vừa soạn riêng cho lượt học này.</div>`;
+  area.innerHTML = sourceNote + aiExercises.map((s, i) => `
     <div class="panel" id="ai-item-${i}" style="margin-bottom:12px">
       <div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">Câu ${i+1}/${aiExercises.length}</div>
       <div class="trans-vi">${escapeHtml(s.vi)}</div>
@@ -2790,10 +2797,12 @@ async function aiGrade(i) {
   if (!answer) { resultBox.innerHTML = `<div style="color:var(--fail);font-size:.85rem">Bạn chưa nhập câu dịch.</div>`; return; }
   resultBox.innerHTML = `<div style="color:var(--muted);font-size:.85rem">⏳ Đang chấm...</div>`;
   try {
+    const item = aiExercises[i];
+    const body = item.id ? { sentenceId: item.id, answer } : { vietnamese: item.vi, answer };
     const res = await fetch('/api/ai/grade', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ vietnamese: aiExercises[i].vi, answer }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
     if (!data.ok) { resultBox.innerHTML = `<div style="color:var(--fail);font-size:.85rem">❌ ${escapeHtml(data.error)}</div>`; return; }
