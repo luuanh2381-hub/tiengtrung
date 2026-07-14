@@ -7,7 +7,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
-const { readDB, updateDB, getVocabByLessons, getVocabCounts, importVocab, clearVocab } = require('../lib/db');
+const { readDB, updateDB, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson } = require('../lib/db');
 
 const app = express();
 
@@ -19,7 +19,7 @@ process.on('unhandledRejection', (err) => {
 });
 
 function emptyProgress() {
-  return { srs: {}, streak: 0, lastDate: null, ui: { lastTab: 'home', selectedBookIds: [1], selectedLessons: [] } };
+  return { srs: {}, streak: 0, lastDate: null, ui: { lastTab: 'home', selectedBookIds: [1], selectedLessons: [], lessonsAllMode: true } };
 }
 
 function makeToken() {
@@ -187,11 +187,12 @@ app.post('/api/progress', async (req, res) => {
     const rank = await updateDB((db) => {
       const safeUi = (ui && typeof ui === 'object') ? {
         lastTab: typeof ui.lastTab === 'string' ? ui.lastTab : 'home',
-        selectedBookIds: Array.isArray(ui.selectedBookIds) && ui.selectedBookIds.length
+        selectedBookIds: Array.isArray(ui.selectedBookIds)
           ? ui.selectedBookIds.filter(n => Number.isFinite(n)) : [1],
         selectedLessons: Array.isArray(ui.selectedLessons)
           ? ui.selectedLessons.filter(n => Number.isFinite(n)) : [],
-      } : { lastTab: 'home', selectedBookIds: [1], selectedLessons: [] };
+        lessonsAllMode: typeof ui.lessonsAllMode === 'boolean' ? ui.lessonsAllMode : true,
+      } : { lastTab: 'home', selectedBookIds: [1], selectedLessons: [], lessonsAllMode: true };
       db.users[authed.username].progress = {
         srs: (srs && typeof srs === 'object') ? srs : {},
         streak: typeof streak === 'number' ? streak : 0,
@@ -359,6 +360,21 @@ app.post('/api/admin/vocab/import', async (req, res) => {
   try {
     const result = await importVocab(words, !!overwrite);
     res.json({ ok: true, ...result });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Xoá toàn bộ từ vựng của MỘT bài cụ thể (không đụng các bài khác) ──
+app.post('/api/admin/vocab/delete-lesson', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const l = parseInt((req.body || {}).l, 10);
+  if (!Number.isFinite(l) || l < 1) {
+    return res.json({ ok: false, error: 'Số bài không hợp lệ' });
+  }
+  try {
+    const removed = await deleteVocabLesson(l);
+    res.json({ ok: true, removed });
   } catch (e) { fail(res, e); }
 });
 
