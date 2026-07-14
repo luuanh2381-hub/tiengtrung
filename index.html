@@ -478,6 +478,7 @@
   <button onclick="goTab('compare')" id="tab-compare">🆚 So sánh</button>
   <button onclick="goTab('hsk')" id="tab-hsk">🎯 HSK4</button>
   <button onclick="goTab('admin')" id="tab-admin" style="display:none;">🛠️ Quản trị</button>
+  <button onclick="goTab('vocab')" id="tab-vocab" style="display:none;">📚 Từ vựng</button>
 </div>
 
 <div id="content"></div>
@@ -1545,7 +1546,7 @@ let progressState = defaultProgress();
 function applyUIState() {
   normalizeProgress(progressState);
   const ui = progressState.ui;
-  const validTabs = ['home','flash','quiz','type','listen','aitrans','stats','compare','hsk','admin'];
+  const validTabs = ['home','flash','quiz','type','listen','aitrans','stats','compare','hsk','admin','vocab'];
   currentTab = validTabs.includes(ui.lastTab) ? ui.lastTab : 'home';
   selectedBookIds = new Set(ui.selectedBookIds);
   selectedLessons = new Set(ui.selectedLessons);
@@ -1686,11 +1687,14 @@ function openAuthGate() {
   document.getElementById('auth-password').value = '';
   document.getElementById('auth-error').classList.remove('show');
   document.getElementById('tab-admin').style.display = 'none';
+  document.getElementById('tab-vocab').style.display = 'none';
 }
 function closeAuthGate() {
   document.getElementById('auth-gate').style.display = 'none';
   updateUserBadge();
-  document.getElementById('tab-admin').style.display = (!isGuest && isAdminRole()) ? '' : 'none';
+  const showAdmin = (!isGuest && isAdminRole()) ? '' : 'none';
+  document.getElementById('tab-admin').style.display = showAdmin;
+  document.getElementById('tab-vocab').style.display = showAdmin;
 }
 function updateUserBadge() {
   const badge = document.getElementById('user-badge');
@@ -2131,7 +2135,12 @@ function levelSelectHtml() {
   const groups = [];
   for (const b of BOOKS) if (!groups.includes(b.group)) groups.push(b.group);
   return groups.map(g => {
-    const cards = BOOKS.filter(b => b.group === g).map(b => {
+    // Ẩn các bài không còn từ nào (0 từ) khỏi màn chọn — trừ khi đang được chọn sẵn,
+    // để tránh tình trạng "bài thừa" còn sót lại sau khi xoá/nhập lại dữ liệu.
+    const booksInGroup = BOOKS.filter(b => b.group === g)
+      .filter(b => bookWordCount(b.id) > 0 || selectedBookIds.has(b.id));
+    if (booksInGroup.length === 0) return '';
+    const cards = booksInGroup.map(b => {
       const locked = !loggedIn && b.id !== 1;
       const sel = selectedBookIds.has(b.id);
       const count = bookWordCount(b.id);
@@ -2189,6 +2198,7 @@ function render() {
   else if (currentTab === 'compare'){ el.innerHTML = renderCompare(); bindCompare(); }
   else if (currentTab === 'hsk')   { el.innerHTML = renderHSK(); }
   else if (currentTab === 'admin') { el.innerHTML = renderAdmin(); bindAdmin(); }
+  else if (currentTab === 'vocab') { el.innerHTML = renderVocabAdmin(); bindVocabAdmin(); }
 }
 
 // Lesson filter html — 2 ô droplist đa lựa chọn: chọn Quyển/level, rồi (nếu cần) chọn bài cụ thể
@@ -3027,8 +3037,17 @@ function renderAdmin() {
   <div class="panel">
     <div class="panel-title">🛠️ Quản trị tài khoản${currentRole==='superadmin' ? ' <span style="font-size:.7rem;background:var(--l15c);color:var(--l15a);padding:2px 8px;border-radius:8px;">QUẢN TRỊ CAO NHẤT</span>' : ''}</div>
     <div id="admin-area" style="color:var(--muted);padding:14px 0;text-align:center;">Đang tải danh sách...</div>
-  </div>
-  <div class="panel">
+  </div>`;
+}
+
+// ════════════════════════════════════════════════════
+// QUẢN LÝ TỪ VỰNG — tách riêng khỏi tab Quản trị tài khoản
+// ════════════════════════════════════════════════════
+function renderVocabAdmin() {
+  if (isGuest || !isAdminRole()) {
+    return `<div class="panel center" style="padding:40px">Bạn không có quyền truy cập mục này.</div>`;
+  }
+  return `<div class="panel">
     <div class="panel-title">✍️ Thêm 1 từ thủ công</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
       <input type="text" id="vocab-manual-hz" placeholder="Chữ Hán (ví dụ 你好)" style="padding:8px;border-radius:8px;border:1.5px solid #ddd;font-size:.9rem;">
@@ -3055,12 +3074,62 @@ function renderAdmin() {
     <label style="display:flex;align-items:center;gap:6px;font-size:.78rem;color:var(--muted);margin-bottom:10px;">
       <input type="checkbox" id="vocab-excel-overwrite"> Ghi đè nếu chữ Hán + số bài đã tồn tại (cập nhật lại pinyin/nghĩa)
     </label>
-    <div id="vocab-import-result" style="font-size:.8rem;color:var(--muted);margin-bottom:12px;"></div>
-    <div style="border-top:1px solid #eee;padding-top:10px;">
-      <button class="btn btn-sm" style="background:#fdecea;color:#c0392b;" onclick="clearAllVocab()">🗑️ Xoá toàn bộ từ đã thêm (Excel + thủ công)</button>
-      <div style="font-size:.72rem;color:var(--muted);margin-top:6px;">Chỉ xoá các từ được thêm qua Excel/thủ công — không đụng tới bộ từ vựng gốc có sẵn của app.</div>
-    </div>
+    <div id="vocab-import-result" style="font-size:.8rem;color:var(--muted);"></div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">📋 Danh sách bài đã có (xoá từng bài)</div>
+    <div id="vocab-list-area" style="color:var(--muted);padding:14px 0;text-align:center;">Đang tải...</div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">🗑️ Xoá toàn bộ dữ liệu</div>
+    <button class="btn btn-sm" style="background:#fdecea;color:#c0392b;" onclick="clearAllVocab()">🗑️ Xoá toàn bộ từ đã thêm (Excel + thủ công)</button>
+    <div style="font-size:.72rem;color:var(--muted);margin-top:6px;">Chỉ xoá các từ được thêm qua Excel/thủ công — không đụng tới bộ từ vựng gốc có sẵn của app (781 từ Quyển 1, 2).</div>
+    <div id="vocab-clear-result" style="font-size:.8rem;color:var(--muted);margin-top:8px;"></div>
   </div>`;
+}
+function bindVocabAdmin() {
+  if (isGuest || !isAdminRole()) return;
+  loadVocabAdminList();
+}
+async function loadVocabAdminList() {
+  const area = document.getElementById('vocab-list-area');
+  if (!area) return;
+  try {
+    const res = await fetch('/api/vocab/counts', { headers: authHeaders() });
+    const data = await res.json();
+    if (!data.ok) { area.textContent = data.error || 'Không tải được danh sách.'; return; }
+    const entries = Object.entries(data.counts)
+      .map(([l, c]) => [parseInt(l, 10), c])
+      .filter(([l, c]) => c > 0)
+      .sort((a, b) => a[0] - b[0]);
+    if (entries.length === 0) {
+      area.innerHTML = `<div style="color:var(--muted);text-align:center;padding:14px 0;">Chưa có bài nào được thêm qua Excel/thủ công.</div>`;
+      return;
+    }
+    area.innerHTML = entries.map(([l, c]) => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 2px;border-bottom:1px solid var(--border);">
+        <span style="font-weight:700;">Bài ${l} <span style="color:var(--muted);font-weight:600;font-size:.82rem;">(${c} từ)</span></span>
+        <button class="btn btn-sm" style="background:#fdecea;color:#c0392b;" onclick="deleteLessonVocab(${l})">🗑️ Xoá</button>
+      </div>`).join('');
+  } catch (e) {
+    area.textContent = 'Không kết nối được máy chủ: ' + e.message;
+  }
+}
+async function deleteLessonVocab(l) {
+  if (!confirm(`Xoá toàn bộ từ vựng của Bài ${l}? Không thể hoàn tác.`)) return;
+  try {
+    const res = await fetch('/api/admin/vocab/delete-lesson', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ l }),
+    });
+    const data = await res.json();
+    if (!data.ok) { alert(data.error || 'Có lỗi xảy ra'); return; }
+    alert(`Đã xoá ${data.removed} từ của Bài ${l}. Tải lại trang để cập nhật màn hình chọn bài.`);
+    loadVocabAdminList();
+  } catch (e) {
+    alert('Không kết nối được máy chủ: ' + e.message);
+  }
 }
 async function addVocabManual() {
   const resultEl = document.getElementById('vocab-manual-result');
@@ -3088,6 +3157,7 @@ async function addVocabManual() {
       document.getElementById('vocab-manual-py').value = '';
       document.getElementById('vocab-manual-vi').value = '';
       document.getElementById('vocab-manual-l').value = '';
+      loadVocabAdminList();
     } else if (data.updated > 0) {
       resultEl.innerHTML = `✅ Đã cập nhật lại từ <b>${hz}</b> (bài ${l}). <span style="color:var(--l9a);">Tải lại trang để dùng ngay.</span>`;
     } else {
@@ -3134,6 +3204,7 @@ async function uploadVocabExcel() {
     const data = await res.json();
     if (!data.ok) { resultEl.textContent = '❌ ' + (data.error || 'Có lỗi xảy ra'); return; }
     resultEl.innerHTML = `✅ Đã thêm <b>${data.added}</b> từ mới, cập nhật <b>${data.updated}</b> từ trùng. Bỏ qua ${data.skipped} từ trùng (chưa tick ghi đè), ${data.invalid} dòng thiếu dữ liệu.<br>Tổng số từ đã thêm qua Excel/thủ công: <b>${data.total}</b>.<br><span style="color:var(--l9a);">Tải lại trang để dùng ngay các từ mới.</span>`;
+    loadVocabAdminList();
     input.value = '';
   } catch (e) {
     resultEl.textContent = '❌ Không đọc được file: ' + e.message;
@@ -3141,13 +3212,14 @@ async function uploadVocabExcel() {
 }
 async function clearAllVocab() {
   if (!confirm('Xoá toàn bộ từ vựng đã thêm qua Excel/thủ công? Không thể hoàn tác. Bộ từ vựng gốc có sẵn của app sẽ KHÔNG bị ảnh hưởng.')) return;
-  const resultEl = document.getElementById('vocab-import-result');
+  const resultEl = document.getElementById('vocab-clear-result');
   resultEl.textContent = 'Đang xoá...';
   try {
     const res = await fetch('/api/admin/vocab/clear', { method: 'POST', headers: authHeaders() });
     const data = await res.json();
     if (!data.ok) { resultEl.textContent = '❌ ' + (data.error || 'Có lỗi xảy ra'); return; }
     resultEl.innerHTML = `✅ Đã xoá ${data.removed} từ. <span style="color:var(--l9a);">Tải lại trang để cập nhật.</span>`;
+    loadVocabAdminList();
   } catch (e) {
     resultEl.textContent = '❌ Không kết nối được máy chủ: ' + e.message;
   }
