@@ -7,7 +7,8 @@
 const express = require('express');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
-const { readDB, updateDB, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson } = require('../lib/db');
+const { readDB, updateDB, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson,
+  replaceLessonSentences, getPracticeSentences, getPracticeSentenceById, getPracticeSentenceCounts } = require('../lib/db');
 
 const app = express();
 
@@ -473,16 +474,31 @@ function parseAiJson(text) {
   return JSON.parse(cleaned);
 }
 
-// ── [AI] Sinh bài tập dịch câu ──
+// ── [AI] Sinh bài tập dịch câu — ƯU TIÊN lấy câu đã sinh sẵn hàng ngày (nhanh, không tốn quota AI),
+//     chỉ gọi AI trực tiếp khi bài học đó chưa có câu nào được sinh sẵn (vd Quyển 1/2) ──
 app.post('/api/ai/exercise', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
   try {
-    const { words, count } = req.body || {};
+    const { words, count, lessons } = req.body || {};
+    const n = Math.min(Math.max(parseInt(count) || 5, 1), 10);
+
+    if (Array.isArray(lessons) && lessons.length) {
+      const cleanLessons = lessons.map(l => parseInt(l, 10)).filter(Number.isFinite);
+      const cached = await getPracticeSentences(cleanLessons, n);
+      if (cached.length > 0) {
+        return res.json({
+          ok: true,
+          source: 'cached',
+          sentences: cached.map(s => ({ id: s.id, vi: s.vi, hint: s.hint })),
+        });
+      }
+    }
+
+    // Không có câu sinh sẵn (thường là Quyển 1/2, hoặc bài mới chưa tới lượt sinh) -> sinh trực tiếp như trước
     if (!Array.isArray(words) || words.length === 0) {
       return res.json({ ok: false, error: 'Thiếu danh sách từ vựng' });
     }
-    const n = Math.min(Math.max(parseInt(count) || 5, 1), 10);
     const vocabList = words.slice(0, 60).map(w => `${w.hz} (${w.py}) = ${w.vi}`).join('; ');
     const prompt = `Bạn là giáo viên tiếng Trung cho người Việt mới học. Đây là danh sách từ vựng học viên ĐÃ HỌC: ${vocabList}.
 Hãy soạn ${n} câu tiếng Việt đơn giản, tự nhiên, chỉ dùng ngữ pháp cơ bản (câu ngắn, không dùng thành ngữ khó), để học viên dịch sang tiếng Trung. Mỗi câu CHỈ được dùng các từ trong danh sách trên (có thể thêm số từ, đại từ, trợ từ ngữ pháp cơ bản như 的/吗/了 nếu cần diễn đạt đúng).
@@ -491,20 +507,66 @@ Trả lời CHỈ bằng JSON hợp lệ, không thêm chữ nào khác, đúng 
     const text = await callGemini(prompt);
     const data = parseAiJson(text);
     if (!Array.isArray(data.sentences)) throw new Error('Định dạng AI trả về không hợp lệ');
-    res.json({ ok: true, sentences: data.sentences });
+    res.json({ ok: true, source: 'live', sentences: data.sentences });
   } catch (e) {
     res.json({ ok: false, error: 'Không sinh được bài tập: ' + e.message });
   }
 });
 
+// So khớp câu dịch của học viên với đáp án mẫu theo ký tự (không gọi AI) — dùng thuật toán
+// "chuỗi con chung dài nhất" (LCS) để vẫn tính điểm hợp lý ngay cả khi sai thứ tự 1 phần.
+function selfGradeAnswer(refAnswer, studentAnswer) {
+  const strip = (s) => String(s || '').replace(/[，。！？、,.!?\s]/g, '');
+  const ref = strip(refAnswer);
+  const stu = strip(studentAnswer);
+  const m = ref.length, n = stu.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = ref[i-1] === stu[j-1] ? dp[i-1][j-1] + 1 : Math.max(dp[i-1][j], dp[i][j-1]);
+    }
+  }
+  const lcs = dp[m][n];
+  const similarity = (m + n) === 0 ? 1 : (2 * lcs) / (m + n);
+  const score = Math.max(0, Math.min(10, Math.round(similarity * 10)));
+
+  const refSet = new Set(ref.split(''));
+  const stuSet = new Set(stu.split(''));
+  const missing = [...refSet].filter(c => !stuSet.has(c));
+  const extra = [...stuSet].filter(c => !refSet.has(c));
+  const errors = [];
+  if (stu !== ref) {
+    if (missing.length) errors.push(`Thiếu chữ: ${missing.join('、')}`);
+    if (extra.length) errors.push(`Có chữ chưa đúng/thừa: ${extra.join('、')}`);
+    if (!missing.length && !extra.length) errors.push('Dùng đúng các chữ nhưng có thể sai thứ tự — kiểm tra lại trật tự từ trong câu.');
+  }
+  let comment;
+  if (stu === ref) comment = 'Chính xác tuyệt đối! 🎉';
+  else if (score >= 8) comment = 'Rất tốt, chỉ còn vài chỗ nhỏ cần chỉnh lại.';
+  else if (score >= 5) comment = 'Đã đúng hướng, xem lại các chữ còn thiếu/sai nhé.';
+  else comment = 'Cần luyện tập thêm — so sánh kỹ với câu đáp án mẫu bên dưới.';
+  return { score, correction: refAnswer, errors, comment };
+}
+
 // ── [AI] Chấm bài dịch của học viên ──
+// Nếu câu hỏi lấy từ kho câu sinh sẵn (có sentenceId) -> tự chấm bằng so khớp ký tự, không gọi AI (nhanh, miễn phí).
+// Nếu là câu sinh trực tiếp (không có sentenceId) -> vẫn nhờ AI chấm như trước (hiểu ngữ nghĩa linh hoạt hơn).
 app.post('/api/ai/grade', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
   try {
-    const { vietnamese, answer } = req.body || {};
-    if (!vietnamese || !answer) return res.json({ ok: false, error: 'Thiếu câu đề hoặc bài làm' });
+    const { vietnamese, answer, sentenceId } = req.body || {};
+    if (!answer) return res.json({ ok: false, error: 'Thiếu bài làm' });
     if (String(answer).length > 300) return res.json({ ok: false, error: 'Bài làm quá dài' });
+
+    if (sentenceId) {
+      const sentence = await getPracticeSentenceById(parseInt(sentenceId, 10));
+      if (!sentence) return res.json({ ok: false, error: 'Không tìm thấy câu hỏi này (có thể đã được sinh lại)' });
+      const result = selfGradeAnswer(sentence.answer, answer);
+      return res.json({ ok: true, result, source: 'self' });
+    }
+
+    if (!vietnamese) return res.json({ ok: false, error: 'Thiếu câu đề' });
     const prompt = `Bạn là giáo viên tiếng Trung chấm bài cho người Việt mới học (trình độ sơ cấp).
 Câu tiếng Việt cần dịch: "${vietnamese}"
 Bài dịch tiếng Trung của học viên: "${answer}"
@@ -514,9 +576,60 @@ Trả lời CHỈ bằng JSON hợp lệ, không thêm chữ nào khác, đúng 
 Nếu bài làm đã đúng hoàn toàn thì "errors" là mảng rỗng [].`;
     const text = await callGemini(prompt);
     const data = parseAiJson(text);
-    res.json({ ok: true, result: data });
+    res.json({ ok: true, result: data, source: 'live' });
   } catch (e) {
     res.json({ ok: false, error: 'Không chấm được bài: ' + e.message });
+  }
+});
+
+// ── [CRON — Vercel tự gọi hàng ngày] Sinh sẵn câu luyện dịch cho các bài có từ vựng trong database ──
+// Bảo vệ bằng CRON_SECRET: đặt biến môi trường CRON_SECRET trên Vercel, Vercel sẽ tự đính kèm
+// header Authorization: Bearer <CRON_SECRET> khi gọi endpoint này theo lịch trong vercel.json.
+app.get('/api/cron/generate-sentences', async (req, res) => {
+  if (process.env.CRON_SECRET) {
+    const auth = req.headers['authorization'];
+    if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
+      return res.status(401).json({ ok: false, error: 'Unauthorized' });
+    }
+  }
+  const startedAt = Date.now();
+  const TIME_BUDGET_MS = 50000; // dừng an toàn trước khi Vercel timeout, phần còn lại sẽ được xử lý ở lượt chạy kế tiếp
+  const SENTENCES_PER_LESSON = 8;
+  const results = [];
+  try {
+    const counts = await getVocabCounts();
+    const existingCounts = await getPracticeSentenceCounts();
+    // Ưu tiên các bài CHƯA có câu nào / có ít câu nhất trước, để mọi bài dần có đủ câu theo thời gian
+    const lessons = Object.keys(counts)
+      .map(k => parseInt(k, 10))
+      .filter(l => (counts[l] || 0) >= 5) // cần tối thiểu vài từ mới soạn được câu có nghĩa
+      .sort((a, b) => (existingCounts[a] || 0) - (existingCounts[b] || 0));
+
+    for (const lesson of lessons) {
+      if (Date.now() - startedAt > TIME_BUDGET_MS) { results.push({ lesson: null, note: 'Hết thời gian, các bài còn lại sẽ được xử lý ở lần chạy sau' }); break; }
+      try {
+        const words = await getVocabByLessons([lesson]);
+        if (words.length < 5) continue;
+        const vocabList = words.slice(0, 60).map(w => `${w.hz} (${w.py}) = ${w.vi}`).join('; ');
+        const prompt = `Bạn là giáo viên tiếng Trung cho người Việt mới học. Đây là từ vựng của 1 bài học: ${vocabList}.
+Hãy soạn ${SENTENCES_PER_LESSON} câu tiếng Việt đơn giản, tự nhiên, chỉ dùng ngữ pháp cơ bản, để học viên dịch sang tiếng Trung. Mỗi câu CHỈ dùng các từ trong danh sách trên (có thể thêm số từ, đại từ, trợ từ ngữ pháp cơ bản như 的/吗/了 nếu cần). Kèm theo đáp án mẫu chuẩn bằng tiếng Trung cho mỗi câu.
+Trả lời CHỈ bằng JSON hợp lệ, đúng định dạng:
+{"sentences":[{"vi":"câu tiếng Việt","hint":"gợi ý ngắn 3-5 chữ Hán then chốt","answer":"câu dịch tiếng Trung chuẩn"}]}`;
+        const text = await callGemini(prompt);
+        const data = parseAiJson(text);
+        if (Array.isArray(data.sentences) && data.sentences.length) {
+          const saved = await replaceLessonSentences(lesson, data.sentences);
+          results.push({ lesson, saved });
+        } else {
+          results.push({ lesson, error: 'AI không trả về câu hợp lệ' });
+        }
+      } catch (e) {
+        results.push({ lesson, error: e.message });
+      }
+    }
+    res.json({ ok: true, processed: results.length, results });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
