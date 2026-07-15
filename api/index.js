@@ -338,14 +338,40 @@ app.get('/api/vocab', async (req, res) => {
   } catch (e) { fail(res, e); }
 });
 
-// ── Đếm nhanh số từ theo từng bài (payload rất nhỏ) — để hiện số từ ở màn chọn Quyển/level
-//     mà không cần tải cả nội dung từ vựng về ──
+// ── Lấy từ vựng cho KHÁCH (chưa đăng nhập) — không cần token, nhưng chỉ cho phép tối đa
+//     Bài 1-5 (giới hạn dùng thử của khách), server tự chặn dù client gửi số bài nào khác ──
+const GUEST_MAX_LESSON_SERVER = 5;
+app.get('/api/vocab/public', async (req, res) => {
+  try {
+    const raw = String(req.query.lessons || '').trim();
+    if (!raw) return res.json({ ok: true, vocab: [] });
+    const lessons = raw.split(',').map(s => parseInt(s, 10)).filter(n => Number.isFinite(n) && n >= 1 && n <= GUEST_MAX_LESSON_SERVER);
+    if (lessons.length === 0) return res.json({ ok: true, vocab: [] });
+    const vocab = await getVocabByLessons(lessons);
+    res.json({ ok: true, vocab });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Đếm nhanh số từ theo từng bài (payload rất nhỏ, không chứa dữ liệu nhạy cảm) — để hiện số từ
+//     ở màn chọn Quyển/level mà không cần tải cả nội dung. Công khai, không cần đăng nhập. ──
 app.get('/api/vocab/counts', async (req, res) => {
-  const authed = await requireAuth(req, res);
-  if (!authed) return;
   try {
     const counts = await getVocabCounts();
     res.json({ ok: true, counts });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Lấy 1 lô câu đã sinh sẵn (kèm đáp án tiếng Trung) cho các bài đang học — dùng để tìm câu ví dụ
+//     chứa đúng từ đang được hỏi trong phần Trắc nghiệm, không cần gọi AI ──
+app.get('/api/practice-sentences', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const raw = String(req.query.lessons || '').trim();
+    if (!raw) return res.json({ ok: true, sentences: [] });
+    const lessons = raw.split(',').map(s => parseInt(s, 10)).filter(Number.isFinite);
+    const sentences = await getPracticeSentences(lessons, 200);
+    res.json({ ok: true, sentences: sentences.map(s => ({ vi: s.vi, answer: s.answer })) });
   } catch (e) { fail(res, e); }
 });
 
