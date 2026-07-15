@@ -361,6 +361,17 @@ app.get('/api/vocab/counts', async (req, res) => {
   } catch (e) { fail(res, e); }
 });
 
+// ── [ADMIN] Đếm số câu luyện dịch đã được AI sinh sẵn theo từng bài — để theo dõi tiến độ ──
+app.get('/api/admin/practice-sentences/counts', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const counts = await getPracticeSentenceCounts();
+    res.json({ ok: true, counts });
+  } catch (e) { fail(res, e); }
+});
+
 // ── Lấy 1 lô câu đã sinh sẵn (kèm đáp án tiếng Trung) cho các bài đang học — dùng để tìm câu ví dụ
 //     chứa đúng từ đang được hỏi trong phần Trắc nghiệm, không cần gọi AI ──
 app.get('/api/practice-sentences', async (req, res) => {
@@ -611,6 +622,51 @@ Nếu bài làm đã đúng hoàn toàn thì "errors" là mảng rỗng [].`;
 // ── [CRON — Vercel tự gọi hàng ngày] Sinh sẵn câu luyện dịch cho các bài có từ vựng trong database ──
 // Bảo vệ bằng CRON_SECRET: đặt biến môi trường CRON_SECRET trên Vercel, Vercel sẽ tự đính kèm
 // header Authorization: Bearer <CRON_SECRET> khi gọi endpoint này theo lịch trong vercel.json.
+// Logic dùng chung: sinh câu luyện dịch cho các bài đang thiếu câu nhất — gọi từ cron TỰ ĐỘNG
+// hàng ngày lẫn nút "Chạy ngay" thủ công trong trang Quản trị.
+async function runSentenceGeneration() {
+  const startedAt = Date.now();
+  const TIME_BUDGET_MS = 50000; // dừng an toàn trước khi Vercel timeout, phần còn lại sẽ được xử lý ở lượt chạy kế tiếp
+  const SENTENCES_PER_LESSON = 8;
+  const results = [];
+  const counts = await getVocabCounts();
+  const existingCounts = await getPracticeSentenceCounts();
+  // Xử lý theo ĐÚNG THỨ TỰ SỐ BÀI tăng dần (Bài 1, 2, 3...), bỏ qua bài đã có câu sẵn rồi
+  // (để không sinh lại tốn quota AI vô ích) — chạy nhiều lần sẽ tự tiếp tục từ bài còn thiếu tiếp theo.
+  const lessons = Object.keys(counts)
+    .map(k => parseInt(k, 10))
+    .filter(l => (counts[l] || 0) >= 5) // cần tối thiểu vài từ mới soạn được câu có nghĩa
+    .filter(l => !((existingCounts[l] || 0) > 0)) // bỏ qua bài đã có câu rồi
+    .sort((a, b) => a - b);
+
+  for (const lesson of lessons) {
+    if (Date.now() - startedAt > TIME_BUDGET_MS) { results.push({ lesson: null, note: 'Hết thời gian, các bài còn lại sẽ được xử lý ở lần chạy sau' }); break; }
+    try {
+      const words = await getVocabByLessons([lesson]);
+      if (words.length < 5) continue;
+      const vocabList = words.slice(0, 60).map(w => `${w.hz} (${w.py}) = ${w.vi}`).join('; ');
+      const prompt = `Bạn là giáo viên tiếng Trung cho người Việt mới học. Đây là từ vựng của 1 bài học: ${vocabList}.
+Hãy soạn ${SENTENCES_PER_LESSON} câu tiếng Việt đơn giản, tự nhiên, chỉ dùng ngữ pháp cơ bản, để học viên dịch sang tiếng Trung. Mỗi câu CHỈ dùng các từ trong danh sách trên (có thể thêm số từ, đại từ, trợ từ ngữ pháp cơ bản như 的/吗/了 nếu cần). Kèm theo đáp án mẫu chuẩn bằng tiếng Trung cho mỗi câu.
+Trả lời CHỈ bằng JSON hợp lệ, đúng định dạng:
+{"sentences":[{"vi":"câu tiếng Việt","hint":"gợi ý ngắn 3-5 chữ Hán then chốt","answer":"câu dịch tiếng Trung chuẩn"}]}`;
+      const text = await callGemini(prompt);
+      const data = parseAiJson(text);
+      if (Array.isArray(data.sentences) && data.sentences.length) {
+        const saved = await replaceLessonSentences(lesson, data.sentences);
+        results.push({ lesson, saved });
+      } else {
+        results.push({ lesson, error: 'AI không trả về câu hợp lệ' });
+      }
+    } catch (e) {
+      results.push({ lesson, error: e.message });
+    }
+  }
+  return results;
+}
+
+// ── [CRON — Vercel TỰ ĐỘNG gọi hàng ngày] ──
+// Bảo vệ bằng CRON_SECRET: đặt biến môi trường CRON_SECRET trên Vercel, Vercel sẽ tự đính kèm
+// header Authorization: Bearer <CRON_SECRET> khi gọi endpoint này theo lịch trong vercel.json.
 app.get('/api/cron/generate-sentences', async (req, res) => {
   if (process.env.CRON_SECRET) {
     const auth = req.headers['authorization'];
@@ -618,41 +674,22 @@ app.get('/api/cron/generate-sentences', async (req, res) => {
       return res.status(401).json({ ok: false, error: 'Unauthorized' });
     }
   }
-  const startedAt = Date.now();
-  const TIME_BUDGET_MS = 50000; // dừng an toàn trước khi Vercel timeout, phần còn lại sẽ được xử lý ở lượt chạy kế tiếp
-  const SENTENCES_PER_LESSON = 8;
-  const results = [];
   try {
-    const counts = await getVocabCounts();
-    const existingCounts = await getPracticeSentenceCounts();
-    // Ưu tiên các bài CHƯA có câu nào / có ít câu nhất trước, để mọi bài dần có đủ câu theo thời gian
-    const lessons = Object.keys(counts)
-      .map(k => parseInt(k, 10))
-      .filter(l => (counts[l] || 0) >= 5) // cần tối thiểu vài từ mới soạn được câu có nghĩa
-      .sort((a, b) => (existingCounts[a] || 0) - (existingCounts[b] || 0));
+    const results = await runSentenceGeneration();
+    res.json({ ok: true, processed: results.length, results });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
-    for (const lesson of lessons) {
-      if (Date.now() - startedAt > TIME_BUDGET_MS) { results.push({ lesson: null, note: 'Hết thời gian, các bài còn lại sẽ được xử lý ở lần chạy sau' }); break; }
-      try {
-        const words = await getVocabByLessons([lesson]);
-        if (words.length < 5) continue;
-        const vocabList = words.slice(0, 60).map(w => `${w.hz} (${w.py}) = ${w.vi}`).join('; ');
-        const prompt = `Bạn là giáo viên tiếng Trung cho người Việt mới học. Đây là từ vựng của 1 bài học: ${vocabList}.
-Hãy soạn ${SENTENCES_PER_LESSON} câu tiếng Việt đơn giản, tự nhiên, chỉ dùng ngữ pháp cơ bản, để học viên dịch sang tiếng Trung. Mỗi câu CHỈ dùng các từ trong danh sách trên (có thể thêm số từ, đại từ, trợ từ ngữ pháp cơ bản như 的/吗/了 nếu cần). Kèm theo đáp án mẫu chuẩn bằng tiếng Trung cho mỗi câu.
-Trả lời CHỈ bằng JSON hợp lệ, đúng định dạng:
-{"sentences":[{"vi":"câu tiếng Việt","hint":"gợi ý ngắn 3-5 chữ Hán then chốt","answer":"câu dịch tiếng Trung chuẩn"}]}`;
-        const text = await callGemini(prompt);
-        const data = parseAiJson(text);
-        if (Array.isArray(data.sentences) && data.sentences.length) {
-          const saved = await replaceLessonSentences(lesson, data.sentences);
-          results.push({ lesson, saved });
-        } else {
-          results.push({ lesson, error: 'AI không trả về câu hợp lệ' });
-        }
-      } catch (e) {
-        results.push({ lesson, error: e.message });
-      }
-    }
+// ── [ADMIN] Kích hoạt THỦ CÔNG y hệt logic cron — dùng nút "Chạy ngay" trong trang Quản trị,
+//     không thay thế lịch tự động, chỉ để admin không phải đợi tới giờ cron hoặc tự gọi API tay ──
+app.post('/api/admin/generate-sentences', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const results = await runSentenceGeneration();
     res.json({ ok: true, processed: results.length, results });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
