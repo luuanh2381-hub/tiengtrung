@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>学中文 · Học Tiếng Trung</title>
+<title>學中文 · Học Tiếng Trung</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
@@ -2357,6 +2357,15 @@ function renderVocabAdmin() {
     <div id="vocab-import-result" style="font-size:.8rem;color:var(--muted);"></div>
   </div>
   <div class="panel">
+    <div class="panel-title">🤖 Câu luyện dịch AI đã sinh sẵn (chạy tự động hàng ngày)</div>
+    <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px;">
+      Mỗi ngày hệ thống tự nhờ AI soạn sẵn 8 câu/bài, lưu vào kho để dùng ngay lúc luyện tập (không cần đợi AI mỗi lần). Danh sách dưới đây cho biết mỗi bài đã có bao nhiêu câu.
+    </div>
+    <button class="btn btn-sm" style="background:var(--l9c);color:var(--l9a);margin-bottom:12px;" id="gen-now-btn" onclick="triggerSentenceGeneration()">🚀 Chạy sinh câu ngay (không cần đợi lịch tự động)</button>
+    <div id="gen-now-result" style="font-size:.8rem;color:var(--muted);margin-bottom:10px;"></div>
+    <div id="sentence-count-area" style="color:var(--muted);padding:14px 0;text-align:center;">Đang tải...</div>
+  </div>
+  <div class="panel">
     <div class="panel-title">📋 Danh sách bài đã có (xoá từng bài)</div>
     <div id="vocab-list-area" style="color:var(--muted);padding:14px 0;text-align:center;">Đang tải...</div>
   </div>
@@ -2370,6 +2379,71 @@ function renderVocabAdmin() {
 function bindVocabAdmin() {
   if (isGuest || !isAdminRole()) return;
   loadVocabAdminList();
+  loadSentenceCounts();
+}
+async function triggerSentenceGeneration() {
+  const btn = document.getElementById('gen-now-btn');
+  const resultEl = document.getElementById('gen-now-result');
+  btn.disabled = true;
+  btn.textContent = '⏳ Đang chạy... (có thể mất tới 50 giây, đừng rời trang)';
+  resultEl.textContent = '';
+  try {
+    const res = await fetch('/api/admin/generate-sentences', { method: 'POST', headers: authHeaders() });
+    const data = await res.json();
+    if (!data.ok) { resultEl.innerHTML = `❌ ${data.error || 'Có lỗi xảy ra'}`; }
+    else {
+      const okList = data.results.filter(r => r.saved !== undefined);
+      const errList = data.results.filter(r => r.error);
+      resultEl.innerHTML = `✅ Đã xử lý ${data.processed} bài. Thành công: ${okList.length}${errList.length ? `, lỗi: ${errList.length}` : ''}.`;
+      loadSentenceCounts();
+    }
+  } catch (e) {
+    resultEl.innerHTML = `❌ Không kết nối được máy chủ: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🚀 Chạy sinh câu ngay (không cần đợi lịch tự động)';
+  }
+}
+async function loadSentenceCounts() {
+  const area = document.getElementById('sentence-count-area');
+  if (!area) return;
+  try {
+    const [sentRes, vocabRes] = await Promise.all([
+      fetch('/api/admin/practice-sentences/counts', { headers: authHeaders() }),
+      fetch('/api/vocab/counts'),
+    ]);
+    const sentData = await sentRes.json();
+    const vocabData = await vocabRes.json();
+    if (!sentData.ok) { area.textContent = sentData.error || 'Không tải được dữ liệu.'; return; }
+    const vocabCountsLocal = vocabData.ok ? vocabData.counts : {};
+    // Lấy tất cả số bài có từ vựng (kể cả chưa có câu nào) để biết bài nào còn thiếu
+    const allLessons = new Set([
+      ...Object.keys(sentData.counts).map(k => parseInt(k, 10)),
+      ...Object.keys(vocabCountsLocal).map(k => parseInt(k, 10)),
+    ]);
+    const entries = [...allLessons].filter(l => (vocabCountsLocal[l] || 0) > 0).sort((a, b) => a - b);
+    if (entries.length === 0) {
+      area.innerHTML = `<div style="color:var(--muted);text-align:center;padding:14px 0;">Chưa có bài nào có từ vựng.</div>`;
+      return;
+    }
+    const totalSentences = Object.values(sentData.counts).reduce((s, n) => s + n, 0);
+    const doneCount = entries.filter(l => (sentData.counts[l] || 0) > 0).length;
+    area.innerHTML = `
+      <div style="display:flex;gap:16px;margin-bottom:12px;">
+        <div><b style="font-size:1.3rem;color:var(--active-dark)">${totalSentences}</b><div style="font-size:.72rem;color:var(--muted)">Tổng số câu</div></div>
+        <div><b style="font-size:1.3rem;color:var(--active-dark)">${doneCount}/${entries.length}</b><div style="font-size:.72rem;color:var(--muted)">Số bài đã có câu</div></div>
+      </div>
+      ${entries.map(l => {
+        const count = sentData.counts[l] || 0;
+        const color = count === 0 ? '#c0392b' : (count < 8 ? '#b45309' : 'var(--active-dark)');
+        return `<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 2px;border-bottom:1px solid var(--border);font-size:.85rem;">
+          <span>Bài ${l}</span>
+          <span style="font-weight:800;color:${color}">${count} câu</span>
+        </div>`;
+      }).join('')}`;
+  } catch (e) {
+    area.textContent = 'Không kết nối được máy chủ: ' + e.message;
+  }
 }
 async function loadVocabAdminList() {
   const area = document.getElementById('vocab-list-area');
