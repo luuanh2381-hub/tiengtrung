@@ -465,6 +465,7 @@
     <span class="speed-val" id="speed-val">0.65</span>
   </div>
   <button class="pinyin-toggle" onclick="togglePinyin()" id="py-toggle-btn">Ẩn Pinyin</button>
+  <button class="pinyin-toggle" onclick="toggleMeaning()" id="vi-toggle-btn">Ẩn nghĩa</button>
   <button class="theme-toggle" onclick="toggleTheme()" id="theme-toggle-btn" title="Chế độ tối/sáng">🌙</button>
 </div>
 
@@ -512,770 +513,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // ════════════════════════════════════════════════════
 // DATA
 // ════════════════════════════════════════════════════
-const VOCAB = [
-  // Bài 1
-  {hz:'五',py:'wǔ',vi:'số năm',l:1},
-  {hz:'八',py:'bā',vi:'số tám',l:1},
-  {hz:'白',py:'bái',vi:'trắng',l:1},
-  {hz:'不',py:'bù',vi:'không',l:1},
-  {hz:'大',py:'dà',vi:'to, lớn',l:1},
-  {hz:'好',py:'hǎo',vi:'tốt, đẹp',l:1},
-  {hz:'口',py:'kǒu',vi:'miệng, mồm',l:1},
-  {hz:'马',py:'mǎ',vi:'ngựa',l:1},
-  {hz:'你',py:'nǐ',vi:'anh, bạn',l:1},
-  {hz:'你好',py:'nǐ hǎo',vi:'xin chào',l:1},
-  {hz:'女',py:'nǚ',vi:'con gái, đàn bà',l:1},
-  {hz:'一',py:'yī',vi:'một',l:1},
-  // Bài 2
-  {hz:'爸爸',py:'bàba',vi:'ba, bố',l:2},
-  {hz:'弟弟',py:'dìdi',vi:'em trai',l:2},
-  {hz:'汉语',py:'Hànyǔ',vi:'tiếng Hán',l:2},
-  {hz:'哥哥',py:'gēge',vi:'anh trai',l:2},
-  {hz:'很',py:'hěn',vi:'rất',l:2},
-  {hz:'忙',py:'máng',vi:'bận',l:2},
-  {hz:'妈妈',py:'māma',vi:'mẹ, má',l:2},
-  {hz:'吗',py:'ma',vi:'chưa, không (trợ từ hỏi)',l:2},
-  {hz:'妹妹',py:'mèimei',vi:'em gái',l:2},
-  {hz:'男',py:'nán',vi:'nam',l:2},
-  {hz:'难',py:'nán',vi:'khó',l:2},
-  {hz:'她',py:'tā',vi:'cô ấy',l:2},
-  {hz:'他',py:'tā',vi:'anh ta',l:2},
-  {hz:'太',py:'tài',vi:'lắm, quá',l:2},
-  // Bài 3
-  {hz:'阿拉伯语',py:'Ālābóyǔ',vi:'tiếng Ả Rập',l:3},
-  {hz:'的',py:'de',vi:'(trợ từ)',l:3},
-  {hz:'法语',py:'Fǎyǔ',vi:'tiếng Pháp',l:3},
-  {hz:'俄语',py:'Éyǔ',vi:'tiếng Nga',l:3},
-  {hz:'对',py:'duì',vi:'đúng',l:3},
-  {hz:'韩国语',py:'Hánguóyǔ',vi:'tiếng Hàn',l:3},
-  {hz:'见',py:'jiàn',vi:'gặp',l:3},
-  {hz:'九',py:'jiǔ',vi:'số 9',l:3},
-  {hz:'六',py:'liù',vi:'số 6',l:3},
-  {hz:'明天',py:'míngtiān',vi:'ngày mai',l:3},
-  {hz:'七',py:'qī',vi:'số 7',l:3},
-  {hz:'钱',py:'qián',vi:'tiền',l:3},
-  {hz:'取',py:'qǔ',vi:'nhắc, lấy',l:3},
-  {hz:'去',py:'qù',vi:'đi',l:3},
-  {hz:'日语',py:'Rìyǔ',vi:'tiếng Nhật',l:3},
-  {hz:'寄',py:'jì',vi:'gửi',l:3},
-  {hz:'西班牙语',py:'Xībānyáyǔ',vi:'tiếng Tây Ban Nha',l:3},
-  {hz:'学',py:'xué',vi:'học',l:3},
-  {hz:'英语',py:'Yīngyǔ',vi:'tiếng Anh',l:3},
-  {hz:'银行',py:'yínháng',vi:'ngân hàng',l:3},
-  {hz:'邮局',py:'yóujú',vi:'bưu điện',l:3},
-  // Bài 4
-  {hz:'二',py:'èr',vi:'hai',l:4},
-  {hz:'回',py:'huí',vi:'về',l:4},
-  {hz:'几',py:'jǐ',vi:'mấy',l:4},
-  {hz:'今天',py:'jīntiān',vi:'hôm nay',l:4},
-  {hz:'那儿',py:'nàr',vi:'chỗ đó, nơi đó',l:4},
-  {hz:'哪',py:'nǎ',vi:'nào, cái nào',l:4},
-  {hz:'哪儿',py:'nǎr',vi:'ở đâu, chỗ nào',l:4},
-  {hz:'没关系',py:'méi guānxi',vi:'không sao',l:4},
-  {hz:'三',py:'sān',vi:'số 3',l:4},
-  {hz:'四',py:'sì',vi:'số 4',l:4},
-  {hz:'天',py:'tiān',vi:'ngày',l:4},
-  {hz:'我',py:'wǒ',vi:'tôi',l:4},
-  {hz:'星期',py:'xīngqī',vi:'tuần',l:4},
-  {hz:'星期一',py:'xīngqīyī',vi:'thứ hai',l:4},
-  {hz:'星期二',py:'xīngqī\'èr',vi:'thứ ba',l:4},
-  {hz:'星期三',py:'xīngqīsān',vi:'thứ tư',l:4},
-  {hz:'星期四',py:'xīngqīsì',vi:'thứ năm',l:4},
-  {hz:'星期五',py:'xīngqīwǔ',vi:'thứ sáu',l:4},
-  {hz:'星期六',py:'xīngqīliù',vi:'thứ bảy',l:4},
-  {hz:'星期天',py:'xīngqītiān',vi:'chủ nhật',l:4},
-  {hz:'学校',py:'xuéxiào',vi:'trường học',l:4},
-  {hz:'再见',py:'zàijiàn',vi:'tạm biệt',l:4},
-  {hz:'昨天',py:'zuótiān',vi:'hôm qua',l:4},
-  {hz:'对不起',py:'duì bu qǐ',vi:'xin lỗi',l:4},
-  // Bài 5
-  {hz:'茶',py:'chá',vi:'trà',l:5},
-  {hz:'不客气',py:'bú kèqi',vi:'không có gì',l:5},
-  {hz:'谢谢',py:'xièxie',vi:'cảm ơn',l:5},
-  {hz:'老师',py:'lǎoshī',vi:'thầy giáo',l:5},
-  {hz:'您',py:'nín',vi:'ngài',l:5},
-  {hz:'请',py:'qǐng',vi:'mời',l:5},
-  {hz:'身体',py:'shēntǐ',vi:'thân thể',l:5},
-  {hz:'十',py:'shí',vi:'số mười',l:5},
-  {hz:'是',py:'shì',vi:'là, phải, đúng',l:5},
-  {hz:'喝',py:'hē',vi:'uống',l:5},
-  {hz:'进',py:'jìn',vi:'tiến, vào',l:5},
-  {hz:'客气',py:'kèqi',vi:'khách khí',l:5},
-  {hz:'坐',py:'zuò',vi:'ngồi',l:5},
-  {hz:'这',py:'zhè',vi:'đây, này',l:5},
-  {hz:'工作',py:'gōngzuò',vi:'công việc, làm việc',l:5},
-  {hz:'日',py:'rì',vi:'ngày',l:5},
-  // Bài 6
-  {hz:'贵姓',py:'guìxìng',vi:'quý tính',l:6},
-  {hz:'德国',py:'Déguó',vi:'nước Đức',l:6},
-  {hz:'德语',py:'Déyǔ',vi:'tiếng Đức',l:6},
-  {hz:'俄国',py:'Éguó',vi:'nước Nga',l:6},
-  {hz:'俄文',py:'Éwén',vi:'tiếng Nga',l:6},
-  {hz:'发音',py:'fāyīn',vi:'phát âm',l:6},
-  {hz:'法国',py:'Fǎguó',vi:'nước Pháp',l:6},
-  {hz:'法文',py:'Fǎwén',vi:'tiếng Pháp',l:6},
-  {hz:'韩国',py:'Hánguó',vi:'nước Hàn',l:6},
-  {hz:'韩文',py:'Hánwén',vi:'tiếng Hàn',l:6},
-  {hz:'国',py:'guó',vi:'nước',l:6},
-  {hz:'叫',py:'jiào',vi:'kêu, gọi, tên là',l:6},
-  {hz:'那',py:'nà',vi:'đó, đấy, kia',l:6},
-  {hz:'名字',py:'míngzi',vi:'tên',l:6},
-  {hz:'朋友',py:'péngyou',vi:'bạn bè',l:6},
-  {hz:'人',py:'rén',vi:'người',l:6},
-  {hz:'日本（国）',py:'Rìběn',vi:'Nhật Bản',l:6},
-  {hz:'日文',py:'Rìwén',vi:'tiếng Nhật',l:6},
-  {hz:'什么',py:'shénme',vi:'cái gì',l:6},
-  {hz:'书',py:'shū',vi:'sách',l:6},
-  {hz:'谁',py:'shéi / shuí',vi:'ai',l:6},
-  {hz:'问',py:'wèn',vi:'hỏi',l:6},
-  {hz:'文',py:'wén',vi:'văn',l:6},
-  {hz:'姓',py:'xìng',vi:'họ',l:6},
-  {hz:'学习',py:'xuéxí',vi:'học tập',l:6},
-  {hz:'西班牙文',py:'Xībānyáwén',vi:'tiếng Tây Ban Nha',l:6},
-  {hz:'英国',py:'Yīngguó',vi:'nước Anh',l:6},
-  {hz:'英文',py:'Yīngwén',vi:'Anh văn',l:6},
-  {hz:'邮包',py:'yóubāo',vi:'bưu kiện',l:6},
-  {hz:'杂志',py:'zázhì',vi:'tạp chí',l:6},
-  {hz:'中国',py:'Zhōngguó',vi:'Trung Quốc',l:6},
-  {hz:'中文',py:'Zhōngwén',vi:'Trung văn',l:6},
-  {hz:'美国',py:'Měiguó',vi:'nước Mỹ',l:6},
-  {hz:'请问',py:'qǐngwèn',vi:'xin hỏi',l:6},
-  // Bài 7
-  {hz:'中午',py:'zhōngwǔ',vi:'buổi trưa',l:7},
-  {hz:'吃',py:'chī',vi:'ăn',l:7},
-  {hz:'饭',py:'fàn',vi:'cơm',l:7},
-  {hz:'食堂',py:'shítáng',vi:'nhà ăn',l:7},
-  {hz:'馒头',py:'mántou',vi:'màn thầu',l:7},
-  {hz:'米饭',py:'mǐfàn',vi:'cơm',l:7},
-  {hz:'米',py:'mǐ',vi:'gạo',l:7},
-  {hz:'要',py:'yào',vi:'muốn, cần',l:7},
-  {hz:'个',py:'gè',vi:'cái, chiếc (l.từ chung cho người/vật)',l:7},
-  {hz:'鸡蛋',py:'jīdàn',vi:'trứng gà',l:7},
-  {hz:'鸡',py:'jī',vi:'gà, con gà',l:7},
-  {hz:'蛋',py:'dàn',vi:'trứng',l:7},
-  {hz:'汤',py:'tāng',vi:'canh',l:7},
-  {hz:'啤酒',py:'píjiǔ',vi:'bia',l:7},
-  {hz:'这些',py:'zhèxiē',vi:'những...này',l:7},
-  {hz:'些',py:'xiē',vi:'một vài, một số',l:7},
-  {hz:'一些',py:'yīxiē',vi:'một số',l:7},
-  {hz:'那些',py:'nàxiē',vi:'những...đó',l:7},
-  {hz:'包子',py:'bāozi',vi:'bánh bao',l:7},
-  {hz:'面条儿',py:'miàntiáor',vi:'mì sợi',l:7},
-  {hz:'饺子',py:'jiǎozi',vi:'bánh bột nhân thịt',l:7},
-  {hz:'酒',py:'jiǔ',vi:'rượu',l:7},
-  {hz:'碗',py:'wǎn',vi:'bát',l:7},
-  // Bài 8
-  {hz:'买',py:'mǎi',vi:'mua',l:8},
-  {hz:'水果',py:'shuǐguǒ',vi:'hoa quả',l:8},
-  {hz:'苹果',py:'píngguǒ',vi:'táo',l:8},
-  {hz:'斤',py:'jīn',vi:'cân (1/2 kg)',l:8},
-  {hz:'公斤',py:'gōngjīn',vi:'kg, cân',l:8},
-  {hz:'贵',py:'guì',vi:'đắt, quý',l:8},
-  {hz:'了',py:'le',vi:'(trợ từ)',l:8},
-  {hz:'多少',py:'duōshao',vi:'bao nhiêu',l:8},
-  {hz:'少',py:'shǎo',vi:'ít',l:8},
-  {hz:'块（元）',py:'kuài (yuán)',vi:'đồng',l:8},
-  {hz:'角（毛）',py:'jiǎo (máo)',vi:'hào',l:8},
-  {hz:'分',py:'fēn',vi:'xu',l:8},
-  {hz:'还',py:'hái',vi:'vẫn còn',l:8},
-  {hz:'别的',py:'biéde',vi:'khác',l:8},
-  {hz:'橘子',py:'júzi',vi:'quả quýt',l:8},
-  {hz:'一共',py:'yígòng',vi:'tổng cộng',l:8},
-  {hz:'给',py:'gěi',vi:'đưa',l:8},
-  {hz:'找',py:'zhǎo',vi:'tìm',l:8},
-  {hz:'卖',py:'mài',vi:'bán',l:8},
-  {hz:'两',py:'liǎng',vi:'hai',l:8},
-  {hz:'怎么',py:'zěnme',vi:'thế nào',l:8},
-  {hz:'多',py:'duō',vi:'nhiều',l:8},
-  // Bài 9
-  {hz:'下午',py:'xiàwǔ',vi:'buổi chiều',l:9},
-  {hz:'上午',py:'shàngwǔ',vi:'buổi sáng',l:9},
-  {hz:'图书馆',py:'túshūguǎn',vi:'thư viện',l:9},
-  {hz:'要',py:'yào',vi:'muốn, cần',l:9},
-  {hz:'换',py:'huàn',vi:'đổi',l:9},
-  {hz:'小姐',py:'xiǎojiě',vi:'cô gái',l:9},
-  {hz:'营业员',py:'yíngyèyuán',vi:'nhân viên bán hàng',l:9},
-  {hz:'人民币',py:'rénmínbì',vi:'nhân dân tệ',l:9},
-  {hz:'人民',py:'rénmín',vi:'nhân dân',l:9},
-  {hz:'百',py:'bǎi',vi:'trăm',l:9},
-  {hz:'千',py:'qiān',vi:'nghìn',l:9},
-  {hz:'万',py:'wàn',vi:'vạn',l:9},
-  {hz:'美元',py:'měiyuán',vi:'tiền Mỹ, đô la Mỹ',l:9},
-  {hz:'港币',py:'gǎngbì',vi:'đô la Hồng Kông',l:9},
-  {hz:'日元',py:'rìyuán',vi:'yên Nhật',l:9},
-  {hz:'欧元',py:'ōuyuán',vi:'đồng Euro',l:9},
-  {hz:'等',py:'děng',vi:'đợi, đợi chờ',l:9},
-  {hz:'一会儿',py:'yīhuìr',vi:'một lát',l:9},
-  {hz:'先生',py:'xiānsheng',vi:'tiên sinh, ngài',l:9},
-  {hz:'数',py:'shǔ',vi:'đếm',l:9},
-  // Bài 10
-  {hz:'办公室',py:'bàngōngshì',vi:'phòng làm việc',l:10},
-  {hz:'办公',py:'bàngōng',vi:'làm việc',l:10},
-  {hz:'职员',py:'zhíyuán',vi:'nhân viên',l:10},
-  {hz:'找',py:'zhǎo',vi:'tìm',l:10},
-  {hz:'在',py:'zài',vi:'ở',l:10},
-  {hz:'家',py:'jiā',vi:'nhà',l:10},
-  {hz:'呢',py:'ne',vi:'nhi...? còn...?',l:10},
-  {hz:'住',py:'zhù',vi:'cư trú, ở',l:10},
-  {hz:'楼',py:'lóu',vi:'nhà, lầu',l:10},
-  {hz:'房间',py:'fángjiān',vi:'phòng',l:10},
-  {hz:'号',py:'hào',vi:'số, cỡ',l:10},
-  {hz:'知道',py:'zhīdào',vi:'biết',l:10},
-  {hz:'电话',py:'diànhuà',vi:'điện thoại',l:10},
-  {hz:'电',py:'diàn',vi:'điện',l:10},
-  {hz:'话',py:'huà',vi:'lời nói',l:10},
-  {hz:'号码',py:'hàomǎ',vi:'số hiệu',l:10},
-  {hz:'零',py:'líng',vi:'số không',l:10},
-  {hz:'手机',py:'shǒujī',vi:'điện thoại di động',l:10},
-  {hz:'手',py:'shǒu',vi:'tay',l:10},
-  {hz:'门',py:'mén',vi:'cửa, ngõ, cổng',l:10},
-  // Bài 11
-  {hz:'秘书',py:'mìshū',vi:'thư ký',l:11},
-  {hz:'先',py:'xiān',vi:'trước, trước tiên',l:11},
-  {hz:'介绍',py:'jièshào',vi:'giới thiệu',l:11},
-  {hz:'一下儿',py:'yīxiàr',vi:'một lúc',l:11},
-  {hz:'位',py:'wèi',vi:'vị (l.từ lịch sự đếm người)',l:11},
-  {hz:'教授',py:'jiàoshòu',vi:'giáo sư',l:11},
-  {hz:'校长',py:'xiàozhǎng',vi:'hiệu trưởng',l:11},
-  {hz:'欢迎',py:'huānyíng',vi:'hoan nghênh',l:11},
-  {hz:'留学生',py:'liúxuéshēng',vi:'lưu học sinh',l:11},
-  {hz:'留学',py:'liúxué',vi:'du học',l:11},
-  {hz:'也',py:'yě',vi:'cũng',l:11},
-  {hz:'我们',py:'wǒmen',vi:'chúng tôi',l:11},
-  {hz:'你们',py:'nǐmen',vi:'các anh',l:11},
-  {hz:'他们',py:'tāmen',vi:'họ',l:11},
-  {hz:'都',py:'dōu',vi:'đều',l:11},
-  {hz:'俩',py:'liǎ',vi:'hai (người)',l:11},
-  {hz:'学生',py:'xuésheng',vi:'học sinh',l:11},
-  {hz:'没什么',py:'méi shénme',vi:'không có gì',l:11},
-  {hz:'和',py:'hé',vi:'và, với',l:11},
-  // Bài 12
-  {hz:'语言',py:'yǔyán',vi:'ngôn ngữ',l:12},
-  {hz:'大学',py:'dàxué',vi:'đại học',l:12},
-  {hz:'怎么样',py:'zěnmeyàng',vi:'như thế nào',l:12},
-  {hz:'觉得',py:'juéde',vi:'cảm giác',l:12},
-  {hz:'语法',py:'yǔfǎ',vi:'ngữ pháp',l:12},
-  {hz:'听',py:'tīng',vi:'nghe',l:12},
-  {hz:'说',py:'shuō',vi:'nói',l:12},
-  {hz:'比较',py:'bǐjiào',vi:'so sánh',l:12},
-  {hz:'容易',py:'róngyì',vi:'dễ, dễ dàng',l:12},
-  {hz:'读',py:'dú',vi:'đọc',l:12},
-  {hz:'写',py:'xiě',vi:'viết',l:12},
-  {hz:'但是',py:'dànshì',vi:'nhưng',l:12},
-  {hz:'给',py:'gěi',vi:'cho, đưa cho',l:12},
-  {hz:'新',py:'xīn',vi:'mới',l:12},
-  {hz:'同学',py:'tóngxué',vi:'bạn học',l:12},
-  {hz:'同屋',py:'tóngwū',vi:'bạn cùng phòng',l:12},
-  {hz:'班',py:'bān',vi:'lớp',l:12},
-  // Bài 13
-  {hz:'没（有）',py:'méi (yǒu)',vi:'không có',l:13},
-  {hz:'箱子',py:'xiāngzi',vi:'cái hòm, vali',l:13},
-  {hz:'有',py:'yǒu',vi:'có',l:13},
-  {hz:'这儿',py:'zhèr',vi:'ở đây',l:13},
-  {hz:'重',py:'zhòng',vi:'nặng',l:13},
-  {hz:'黑',py:'hēi',vi:'đen',l:13},
-  {hz:'红',py:'hóng',vi:'đỏ, hồng',l:13},
-  {hz:'轻',py:'qīng',vi:'nhẹ',l:13},
-  {hz:'药',py:'yào',vi:'thuốc',l:13},
-  {hz:'西药',py:'xīyào',vi:'thuốc tây',l:13},
-  {hz:'茶叶',py:'cháyè',vi:'lá chè, trà',l:13},
-  {hz:'里',py:'lǐ',vi:'trong, bên trong',l:13},
-  {hz:'日用品',py:'rìyòngpǐn',vi:'đồ dùng hàng ngày',l:13},
-  {hz:'件',py:'jiàn',vi:'kiện, cái',l:13},
-  {hz:'雨伞',py:'yǔsǎn',vi:'ô, dù',l:13},
-  {hz:'雨',py:'yǔ',vi:'mưa',l:13},
-  {hz:'香水',py:'xiāngshuǐ',vi:'nước hoa',l:13},
-  {hz:'水',py:'shuǐ',vi:'nước',l:13},
-  {hz:'本',py:'běn',vi:'cuốn, quyển (l.từ đếm sách, vở)',l:13},
-  {hz:'词典',py:'cídiǎn',vi:'từ điển',l:13},
-  {hz:'张',py:'zhāng',vi:'tờ, tấm (l.từ đếm vật phẳng)',l:13},
-  {hz:'光盘',py:'guāngpán',vi:'đĩa CD',l:13},
-  {hz:'支',py:'zhī',vi:'cây, chiếc (l.từ đếm vật dài như bút)',l:13},
-  {hz:'笔',py:'bǐ',vi:'bút',l:13},
-  {hz:'旧',py:'jiù',vi:'cũ',l:13},
-  {hz:'瓶',py:'píng',vi:'chai, bình',l:13},
-  {hz:'中药',py:'zhōngyào',vi:'thuốc Đông y',l:13},
-  {hz:'椅子',py:'yǐzi',vi:'cái ghế',l:13},
-  // Bài 14
-  {hz:'颜色',py:'yánsè',vi:'màu sắc',l:14},
-  {hz:'刚',py:'gāng',vi:'vừa',l:14},
-  {hz:'还是',py:'háishì',vi:'hay là',l:14},
-  {hz:'好久',py:'hǎojiǔ',vi:'lâu lắm rồi',l:14},
-  {hz:'咖啡',py:'kāfēi',vi:'cà phê',l:14},
-  {hz:'开',py:'kāi',vi:'mở',l:14},
-  {hz:'开学',py:'kāixué',vi:'khai giảng',l:14},
-  {hz:'啊',py:'à',vi:'a, á',l:14},
-  {hz:'杯',py:'bēi',vi:'cốc',l:14},
-  {hz:'车',py:'chē',vi:'xe',l:14},
-  {hz:'出租车',py:'chūzūchē',vi:'xe taxi',l:14},
-  {hz:'点儿',py:'diǎnr',vi:'một chút',l:14},
-  {hz:'有（一）点儿',py:'yǒu (yì) diǎnr',vi:'có một chút',l:14},
-  {hz:'来',py:'lái',vi:'đến',l:14},
-  {hz:'蓝',py:'lán',vi:'màu xanh lam',l:14},
-  {hz:'辆',py:'liàng',vi:'chiếc (l.từ đếm xe cộ)',l:14},
-  {hz:'马马虎虎',py:'mǎmahūhū',vi:'tạm, bình thường',l:14},
-  {hz:'摩托车',py:'mótuōchē',vi:'xe máy',l:14},
-  {hz:'汽车',py:'qìchē',vi:'xe ô tô',l:14},
-  {hz:'自行车',py:'zìxíngchē',vi:'xe đạp',l:14},
-  {hz:'最近',py:'zuìjìn',vi:'gần đây',l:14},
-  // Bài 15
-  {hz:'全',py:'quán',vi:'toàn',l:15},
-  {hz:'商店',py:'shāngdiàn',vi:'cửa hàng',l:15},
-  {hz:'外国',py:'wàiguó',vi:'ngoại quốc',l:15},
-  {hz:'外贸',py:'wàimào',vi:'mậu dịch, thương mại quốc tế',l:15},
-  {hz:'小',py:'xiǎo',vi:'nhỏ',l:15},
-  {hz:'医院',py:'yīyuàn',vi:'bệnh viện',l:15},
-  {hz:'照片',py:'zhàopiàn',vi:'cái ảnh',l:15},
-  {hz:'只',py:'zhǐ',vi:'chỉ',l:15},
-  {hz:'做',py:'zuò',vi:'làm',l:15},
-  {hz:'姐姐',py:'jiějie',vi:'chị gái',l:15},
-  {hz:'大概',py:'dàgài',vi:'đại khái',l:15},
-  {hz:'大夫',py:'dàifu',vi:'bác sĩ',l:15},
-  {hz:'多',py:'duō',vi:'hơn',l:15},
-  {hz:'律师',py:'lǜshī',vi:'luật sư',l:15},
-  {hz:'公司',py:'gōngsī',vi:'công ty',l:15},
-  {hz:'看',py:'kàn',vi:'nhìn',l:15},
-  // ===== QUYỂN 2 =====
-  // Bài 16
-  {hz:'安静',py:'ānjìng',vi:'yên lặng',l:16},
-  {hz:'超市',py:'chāoshì',vi:'siêu thị',l:16},
-  {hz:'常（常）',py:'cháng(cháng)',vi:'thường',l:16},
-  {hz:'查',py:'chá',vi:'kiểm tra',l:16},
-  {hz:'复习',py:'fùxí',vi:'ôn tập',l:16},
-  {hz:'东西',py:'dōngxi',vi:'đồ vật',l:16},
-  {hz:'发',py:'fā',vi:'gửi',l:16},
-  {hz:'借',py:'jiè',vi:'mượn',l:16},
-  {hz:'课文',py:'kèwén',vi:'học bài đọc',l:16},
-  {hz:'练习',py:'liànxí',vi:'luyện tập, bài tập',l:16},
-  {hz:'聊天儿',py:'liáo tiānr',vi:'nói chuyện',l:16},
-  {hz:'跟',py:'gēn',vi:'cùng',l:16},
-  {hz:'公园',py:'gōngyuán',vi:'công viên',l:16},
-  {hz:'或者',py:'huòzhě',vi:'hoặc là',l:16},
-  {hz:'电视',py:'diànshì',vi:'ti vi',l:16},
-  {hz:'电视剧',py:'diànshìjù',vi:'phim truyền hình',l:16},
-  {hz:'电影',py:'diànyǐng',vi:'phim',l:16},
-  {hz:'上网',py:'shàng wǎng',vi:'lên mạng',l:16},
-  {hz:'生词',py:'shēngcí',vi:'từ mới',l:16},
-  {hz:'收',py:'shōu',vi:'thu',l:16},
-  {hz:'收发',py:'shōufā',vi:'thu phát',l:16},
-  {hz:'时候',py:'shíhou',vi:'lúc',l:16},
-  {hz:'宿舍',py:'sùshè',vi:'ký túc xá',l:16},
-  {hz:'网',py:'wǎng',vi:'mạng',l:16},
-  {hz:'晚上',py:'wǎnshang',vi:'buổi tối',l:16},
-  {hz:'现在',py:'xiànzài',vi:'bây giờ',l:16},
-  {hz:'一起',py:'yìqǐ',vi:'cùng nhau',l:16},
-  {hz:'伊妹儿',py:'yīmèir',vi:'email',l:16},
-  {hz:'休息',py:'xiūxi',vi:'nghỉ ngơi',l:16},
-  {hz:'有时候',py:'yǒu shíhou',vi:'có lúc',l:16},
-  {hz:'预习',py:'yùxí',vi:'ôn tập (bài mới)',l:16},
-  {hz:'咱们',py:'zánmen',vi:'chúng tôi',l:16},
-  {hz:'资料',py:'zīliào',vi:'tư liệu',l:16},
-  {hz:'总（是）',py:'zǒng(shì)',vi:'tổng, luôn luôn',l:16},
-  {hz:'走',py:'zǒu',vi:'đi',l:16},
-  // Bài 17
-  {hz:'出来',py:'chūlai',vi:'đi ra',l:17},
-  {hz:'行',py:'xíng',vi:'được',l:17},
-  {hz:'音乐',py:'yīnyuè',vi:'âm nhạc',l:17},
-  {hz:'阅读',py:'yuèdú',vi:'đọc',l:17},
-  {hz:'在',py:'zài',vi:'ở',l:17},
-  {hz:'正',py:'zhèng',vi:'đang',l:17},
-  {hz:'正在',py:'zhèngzài',vi:'đang',l:17},
-  {hz:'想',py:'xiǎng',vi:'nghĩ',l:17},
-  {hz:'课',py:'kè',vi:'bài',l:17},
-  {hz:'口语',py:'kǒuyǔ',vi:'khẩu ngữ',l:17},
-  {hz:'来',py:'lái',vi:'đến',l:17},
-  {hz:'录音',py:'lùyīn',vi:'ghi âm',l:17},
-  {hz:'没有',py:'méiyǒu',vi:'không có',l:17},
-  {hz:'门',py:'mén',vi:'môn (l.từ đếm môn học)',l:17},
-  {hz:'挤',py:'jǐ',vi:'chật, chen',l:17},
-  {hz:'教',py:'jiāo',vi:'dạy',l:17},
-  {hz:'汉英',py:'Hàn-Yīng',vi:'Hán Anh',l:17},
-  {hz:'体育',py:'tǐyù',vi:'thể dục',l:17},
-  {hz:'听力',py:'tīnglì',vi:'năng lực nghe',l:17},
-  {hz:'文化',py:'wénhuà',vi:'văn hóa',l:17},
-  {hz:'事',py:'shì',vi:'việc',l:17},
-  {hz:'书店',py:'shūdiàn',vi:'hiệu sách',l:17},
-  {hz:'骑',py:'qí',vi:'cưỡi, đi (xe)',l:17},
-  // Bài 18
-  {hz:'用',py:'yòng',vi:'dùng',l:18},
-  {hz:'邮票',py:'yóupiào',vi:'tem',l:18},
-  {hz:'旅行',py:'lǚxíng',vi:'du lịch',l:18},
-  {hz:'代表',py:'dàibiǎo',vi:'đại biểu',l:18},
-  {hz:'当',py:'dāng',vi:'làm',l:18},
-  {hz:'翻译',py:'fānyì',vi:'phiên dịch',l:18},
-  {hz:'飞',py:'fēi',vi:'bay',l:18},
-  {hz:'飞机',py:'fēijī',vi:'máy bay',l:18},
-  {hz:'份',py:'fèn',vi:'phần',l:18},
-  {hz:'办',py:'bàn',vi:'làm',l:18},
-  {hz:'帮',py:'bāng',vi:'giúp',l:18},
-  {hz:'包裹',py:'bāoguǒ',vi:'bưu kiện',l:18},
-  {hz:'报',py:'bào',vi:'báo',l:18},
-  {hz:'不用',py:'búyòng',vi:'không cần',l:18},
-  {hz:'参观',py:'cānguān',vi:'thăm quan',l:18},
-  {hz:'花',py:'huā',vi:'hoa',l:18},
-  {hz:'回来',py:'huílái',vi:'quay về',l:18},
-  {hz:'火车',py:'huǒchē',vi:'tàu hỏa',l:18},
-  {hz:'浇',py:'jiāo',vi:'tưới',l:18},
-  {hz:'问题',py:'wèntí',vi:'vấn đề',l:18},
-  {hz:'顺便',py:'shùnbiàn',vi:'thuận tiện',l:18},
-  {hz:'替',py:'tì',vi:'thay thế',l:18},
-  {hz:'团',py:'tuán',vi:'đoàn',l:18},
-  {hz:'青年',py:'qīngnián',vi:'thanh niên',l:18},
-  // Bài 19
-  {hz:'一点儿',py:'yìdiǎnr',vi:'một chút',l:19},
-  {hz:'应该',py:'yīnggāi',vi:'nên',l:19},
-  {hz:'羽绒服',py:'yǔróngfú',vi:'áo lông vũ',l:19},
-  {hz:'又…又…',py:'yòu…yòu…',vi:'vừa...vừa...',l:19},
-  {hz:'打折',py:'dǎ zhé',vi:'giảm giá',l:19},
-  {hz:'当然',py:'dāngrán',vi:'đương nhiên',l:19},
-  {hz:'肥',py:'féi',vi:'béo',l:19},
-  {hz:'好看',py:'hǎokàn',vi:'đẹp, ưa nhìn',l:19},
-  {hz:'合适',py:'héshì',vi:'thích hợp',l:19},
-  {hz:'可以',py:'kěyǐ',vi:'có thể',l:19},
-  {hz:'浅',py:'qiǎn',vi:'nhạt',l:19},
-  {hz:'便宜',py:'piányi',vi:'rẻ',l:19},
-  {hz:'胖',py:'pàng',vi:'béo',l:19},
-  {hz:'深',py:'shēn',vi:'sâu',l:19},
-  {hz:'瘦',py:'shòu',vi:'gầy',l:19},
-  {hz:'毛衣',py:'máoyī',vi:'áo len',l:19},
-  {hz:'长',py:'cháng',vi:'dài',l:19},
-  {hz:'种',py:'zhǒng',vi:'chủng, loại',l:19},
-  {hz:'试',py:'shì',vi:'thử',l:19},
-  // Bài 20
-  {hz:'一定',py:'yídìng',vi:'nhất định',l:20},
-  {hz:'月',py:'yuè',vi:'tháng',l:20},
-  {hz:'正好',py:'zhènghǎo',vi:'vừa phải',l:20},
-  {hz:'就',py:'jiù',vi:'thì, liền',l:20},
-  {hz:'今年',py:'jīnnián',vi:'năm nay',l:20},
-  {hz:'举行',py:'jǔxíng',vi:'cử hành, tổ chức',l:20},
-  {hz:'快',py:'kuài',vi:'nhanh',l:20},
-  {hz:'快乐',py:'kuàilè',vi:'vui vẻ',l:20},
-  {hz:'明年',py:'míngnián',vi:'sang năm',l:20},
-  {hz:'去年',py:'qùnián',vi:'năm ngoái',l:20},
-  {hz:'毕业',py:'bì yè',vi:'tốt nghiệp',l:20},
-  {hz:'狗',py:'gǒu',vi:'chó',l:20},
-  {hz:'过',py:'guò',vi:'qua',l:20},
-  {hz:'号',py:'hào',vi:'số',l:20},
-  {hz:'后年',py:'hòunián',vi:'sang năm nữa',l:20},
-  {hz:'年',py:'nián',vi:'năm',l:20},
-  {hz:'生日',py:'shēngrì',vi:'sinh nhật',l:20},
-  {hz:'时间',py:'shíjiān',vi:'thời gian',l:20},
-  {hz:'准备',py:'zhǔnbèi',vi:'chuẩn bị',l:20},
-  {hz:'祝',py:'zhù',vi:'chúc',l:20},
-  {hz:'点（钟）',py:'diǎn(zhōng)',vi:'giờ',l:20},
-  {hz:'多',py:'duō',vi:'nhiều',l:20},
-  {hz:'多大',py:'duō dà',vi:'bao nhiêu (tuổi)',l:20},
-  {hz:'晚会',py:'wǎnhuì',vi:'dạ hội',l:20},
-  {hz:'岁',py:'suì',vi:'tuổi',l:20},
-  {hz:'属',py:'shǔ',vi:'thuộc (tuổi con giáp)',l:20},
-  // Bài 21
-  {hz:'以后',py:'yǐhòu',vi:'sau này',l:21},
-  {hz:'早饭',py:'zǎofàn',vi:'cơm sáng',l:21},
-  {hz:'早上',py:'zǎoshang',vi:'buổi sáng',l:21},
-  {hz:'床',py:'chuáng',vi:'giường',l:21},
-  {hz:'带',py:'dài',vi:'mang',l:21},
-  {hz:'灯',py:'dēng',vi:'đèn',l:21},
-  {hz:'点',py:'diǎn',vi:'điểm',l:21},
-  {hz:'分（钟）',py:'fēn(zhōng)',vi:'phút',l:21},
-  {hz:'操场',py:'cāochǎng',vi:'sân tập thể dục',l:21},
-  {hz:'半',py:'bàn',vi:'nửa',l:21},
-  {hz:'集合',py:'jíhé',vi:'tập hợp',l:21},
-  {hz:'教室',py:'jiàoshì',vi:'phòng học',l:21},
-  {hz:'准时',py:'zhǔnshí',vi:'đúng giờ',l:21},
-  {hz:'年级',py:'niánjí',vi:'lớp, năm cấp',l:21},
-  {hz:'爬',py:'pá',vi:'trèo, leo',l:21},
-  {hz:'起床',py:'qǐ chuáng',vi:'ngủ dậy',l:21},
-  {hz:'前',py:'qián',vi:'trước, phía trước',l:21},
-  {hz:'山',py:'shān',vi:'núi',l:21},
-  {hz:'上车',py:'shàng chē',vi:'lên xe',l:21},
-  {hz:'上课',py:'shàng kè',vi:'lên lớp',l:21},
-  {hz:'洗',py:'xǐ',vi:'rửa',l:21},
-  {hz:'洗澡',py:'xǐ zǎo',vi:'tắm',l:21},
-  {hz:'下车',py:'xià chē',vi:'xuống xe',l:21},
-  {hz:'晚饭',py:'wǎnfàn',vi:'cơm tối',l:21},
-  {hz:'午饭',py:'wǔfàn',vi:'cơm trưa',l:21},
-  {hz:'锻炼',py:'duànliàn',vi:'luyện tập, rèn luyện',l:21},
-  {hz:'每',py:'měi',vi:'mỗi',l:21},
-  {hz:'们',py:'men',vi:'chỉ số nhiều',l:21},
-  {hz:'睡觉',py:'shuì jiào',vi:'ngủ',l:21},
-  // Bài 22
-  {hz:'以前',py:'yǐqián',vi:'phía trước, trước đây',l:22},
-  {hz:'兴趣',py:'xìngqù',vi:'hứng thú',l:22},
-  {hz:'心情',py:'xīnqíng',vi:'tâm trạng',l:22},
-  {hz:'业余',py:'yèyú',vi:'ngoài chuyên môn',l:22},
-  {hz:'爱好',py:'àihào',vi:'sở thích',l:22},
-  {hz:'唱',py:'chàng',vi:'hát',l:22},
-  {hz:'大家',py:'dàjiā',vi:'mọi người',l:22},
-  {hz:'对',py:'duì',vi:'đối với',l:22},
-  {hz:'非常',py:'fēicháng',vi:'rất, vô cùng',l:22},
-  {hz:'感到',py:'gǎndào',vi:'cảm nhận',l:22},
-  {hz:'感兴趣',py:'gǎn xìngqù',vi:'có hứng thú (với)',l:22},
-  {hz:'高兴',py:'gāoxìng',vi:'vui vẻ',l:22},
-  {hz:'画',py:'huà',vi:'vẽ',l:22},
-  {hz:'画儿',py:'huàr',vi:'bức tranh',l:22},
-  {hz:'叫',py:'jiào',vi:'gọi',l:22},
-  {hz:'让',py:'ràng',vi:'nhường',l:22},
-  {hz:'派',py:'pài',vi:'phái',l:22},
-  {hz:'特别',py:'tèbié',vi:'đặc biệt',l:22},
-  {hz:'谈',py:'tán',vi:'nói',l:22},
-  {hz:'喜欢',py:'xǐhuan',vi:'thích',l:22},
-  {hz:'下课',py:'xià kè',vi:'tan học',l:22},
-  {hz:'玩',py:'wán',vi:'chơi',l:22},
-  {hz:'京剧',py:'jīngjù',vi:'kinh kịch',l:22},
-  {hz:'书法',py:'shūfǎ',vi:'thư pháp',l:22},
-  {hz:'自己',py:'zìjǐ',vi:'tự mình',l:22},
-  {hz:'愉快',py:'yúkuài',vi:'vui vẻ',l:22},
-  // Bài 23
-  {hz:'一直',py:'yìzhí',vi:'thẳng, liên tục',l:23},
-  {hz:'右',py:'yòu',vi:'phải',l:23},
-  {hz:'右边',py:'yòubian',vi:'bên phải',l:23},
-  {hz:'远',py:'yuǎn',vi:'xa',l:23},
-  {hz:'中间',py:'zhōngjiān',vi:'ở giữa',l:23},
-  {hz:'白色',py:'báisè',vi:'màu trắng',l:23},
-  {hz:'北边',py:'běibian',vi:'phía bắc',l:23},
-  {hz:'…边',py:'…biān',vi:'... bên, phía',l:23},
-  {hz:'博物馆',py:'bówùguǎn',vi:'viện bảo tàng',l:23},
-  {hz:'打听',py:'dǎting',vi:'nghe ngóng',l:23},
-  {hz:'从',py:'cóng',vi:'từ (khi)',l:23},
-  {hz:'东边',py:'dōngbian',vi:'phía đông',l:23},
-  {hz:'地方',py:'dìfang',vi:'địa phương',l:23},
-  {hz:'拐',py:'guǎi',vi:'rẽ',l:23},
-  {hz:'广场',py:'guǎngchǎng',vi:'quảng trường',l:23},
-  {hz:'和平',py:'hépíng',vi:'hòa bình',l:23},
-  {hz:'红绿灯',py:'hónglǜdēng',vi:'đèn xanh đèn đỏ',l:23},
-  {hz:'后边',py:'hòubian',vi:'phía sau',l:23},
-  {hz:'里边',py:'lǐbian',vi:'bên trong',l:23},
-  {hz:'劳驾',py:'láojià',vi:'làm phiền, cảm phiền',l:23},
-  {hz:'离',py:'lí',vi:'rời, cách',l:23},
-  {hz:'路',py:'lù',vi:'đường',l:23},
-  {hz:'绿',py:'lǜ',vi:'xanh',l:23},
-  {hz:'马路',py:'mǎlù',vi:'đường cái',l:23},
-  {hz:'米',py:'mǐ',vi:'mét',l:23},
-  {hz:'南边',py:'nánbian',vi:'phía nam',l:23},
-  {hz:'前边',py:'qiánbian',vi:'phía trước',l:23},
-  {hz:'往',py:'wǎng',vi:'hướng về',l:23},
-  {hz:'西边',py:'xībian',vi:'phía tây',l:23},
-  {hz:'下边',py:'xiàbian',vi:'phía dưới',l:23},
-  {hz:'足球',py:'zúqiú',vi:'đá bóng, bóng đá',l:23},
-  {hz:'足球场',py:'zúqiúchǎng',vi:'sân bóng',l:23},
-  {hz:'左',py:'zuǒ',vi:'trái',l:23},
-  {hz:'左边',py:'zuǒbian',vi:'bên trái',l:23},
-  {hz:'座',py:'zuò',vi:'tòa, ngọn (l.từ đếm núi, công trình lớn)',l:23},
-  // Bài 24
-  {hz:'小时',py:'xiǎoshí',vi:'giờ',l:24},
-  {hz:'意思',py:'yìsi',vi:'ý nghĩa',l:24},
-  {hz:'再',py:'zài',vi:'tái, lại',l:24},
-  {hz:'病',py:'bìng',vi:'bệnh',l:24},
-  {hz:'报名',py:'bào míng',vi:'ghi tên, báo danh',l:24},
-  {hz:'遍',py:'biàn',vi:'lượt, lần (đếm trọn vẹn 1 hành động)',l:24},
-  {hz:'次',py:'cì',vi:'lần',l:24},
-  {hz:'打',py:'dǎ',vi:'đánh',l:24},
-  {hz:'发烧',py:'fā shāo',vi:'phát sốt',l:24},
-  {hz:'懂',py:'dǒng',vi:'hiểu',l:24},
-  {hz:'会',py:'huì',vi:'biết',l:24},
-  {hz:'开始',py:'kāishǐ',vi:'bắt đầu',l:24},
-  {hz:'看病',py:'kàn bìng',vi:'khám bệnh',l:24},
-  {hz:'可能',py:'kěnéng',vi:'khả năng',l:24},
-  {hz:'咳嗽',py:'késou',vi:'ho',l:24},
-  {hz:'听说',py:'tīngshuō',vi:'nghe nói',l:24},
-  {hz:'下',py:'xià',vi:'hạ',l:24},
-  {hz:'感冒',py:'gǎnmào',vi:'cảm (bệnh)',l:24},
-  {hz:'疼',py:'téng',vi:'đau',l:24},
-  {hz:'头',py:'tóu',vi:'đầu',l:24},
-  {hz:'头疼',py:'tóu téng',vi:'đau đầu',l:24},
-  {hz:'舒服',py:'shūfu',vi:'dễ chịu',l:24},
-  {hz:'太极拳',py:'tàijíquán',vi:'thái cực quyền',l:24},
-  {hz:'请假',py:'qǐng jià',vi:'xin nghỉ phép',l:24},
-  {hz:'能',py:'néng',vi:'có thể',l:24},
-  // Bài 25
-  {hz:'因为',py:'yīnwèi',vi:'bởi vì',l:25},
-  {hz:'愿意',py:'yuànyì',vi:'nguyện, mong',l:25},
-  {hz:'运动',py:'yùndòng',vi:'vận động',l:25},
-  {hz:'早',py:'zǎo',vi:'sớm',l:25},
-  {hz:'这么',py:'zhème',vi:'như thế này',l:25},
-  {hz:'表演',py:'biǎoyǎn',vi:'biểu diễn',l:25},
-  {hz:'错',py:'cuò',vi:'sai',l:25},
-  {hz:'得',py:'de',vi:'(trợ từ)',l:25},
-  {hz:'电视台',py:'diànshìtái',vi:'đài truyền hình',l:25},
-  {hz:'节目',py:'jiémù',vi:'tiết mục',l:25},
-  {hz:'进步',py:'jìnbù',vi:'tiến bộ',l:25},
-  {hz:'看',py:'kàn',vi:'nhìn',l:25},
-  {hz:'流利',py:'liúlì',vi:'lưu loát',l:25},
-  {hz:'台',py:'tái',vi:'đài',l:25},
-  {hz:'提高',py:'tígāo',vi:'nâng cao',l:25},
-  {hz:'晚',py:'wǎn',vi:'tối',l:25},
-  {hz:'为',py:'wèi',vi:'vì',l:25},
-  {hz:'为什么',py:'wèi shénme',vi:'tại sao',l:25},
-  {hz:'坚持',py:'jiānchí',vi:'kiên trì',l:25},
-  {hz:'刚才',py:'gāngcái',vi:'vừa mới',l:25},
-  {hz:'哪里',py:'nǎli',vi:'ở đâu (khiêm từ: không dám)',l:25},
-  {hz:'那么',py:'nàme',vi:'thế này, vậy thì',l:25},
-  {hz:'努力',py:'nǔlì',vi:'cố gắng',l:25},
-  {hz:'跑',py:'pǎo',vi:'chạy',l:25},
-  {hz:'跑步',py:'pǎobù',vi:'chạy bộ',l:25},
-  {hz:'认真',py:'rènzhēn',vi:'chăm chỉ',l:25},
-  {hz:'球',py:'qiú',vi:'cầu, bóng',l:25},
-  {hz:'不错',py:'búcuò',vi:'không tồi',l:25},
-  // Bài 26
-  {hz:'已经',py:'yǐjīng',vi:'đã',l:26},
-  {hz:'赢',py:'yíng',vi:'thắng',l:26},
-  {hz:'又',py:'yòu',vi:'lại',l:26},
-  {hz:'阿姨',py:'āyí',vi:'dì, cô',l:26},
-  {hz:'哎',py:'āi',vi:'a, á',l:26},
-  {hz:'比',py:'bǐ',vi:'so, so với',l:26},
-  {hz:'比赛',py:'bǐsài',vi:'thi đấu',l:26},
-  {hz:'出国',py:'chū guó',vi:'ra nước ngoài',l:26},
-  {hz:'出',py:'chū',vi:'xuất',l:26},
-  {hz:'陪',py:'péi',vi:'cùng, với',l:26},
-  {hz:'打（电话）',py:'dǎ (diànhuà)',vi:'gọi (điện thoại)',l:26},
-  {hz:'对了',py:'duì le',vi:'đúng rồi',l:26},
-  {hz:'队',py:'duì',vi:'đội',l:26},
-  {hz:'关',py:'guān',vi:'đóng',l:26},
-  {hz:'关机',py:'guān jī',vi:'đóng máy, tắt máy',l:26},
-  {hz:'接',py:'jiē',vi:'tiếp, đón',l:26},
-  {hz:'响',py:'xiǎng',vi:'kêu, rung (chuông)',l:26},
-  {hz:'忘',py:'wàng',vi:'quên',l:26},
-  {hz:'喂',py:'wèi',vi:'a lô (thán từ)',l:26},
-  {hz:'踢',py:'tī',vi:'đá',l:26},
-  {hz:'输',py:'shū',vi:'thua',l:26},
-  {hz:'托福',py:'Tuōfú',vi:'TOEFL',l:26},
-  {hz:'祝贺',py:'zhùhè',vi:'chúc mừng',l:26},
-  {hz:'中学',py:'zhōngxué',vi:'trung học',l:26},
-  {hz:'考',py:'kǎo',vi:'thi, kiểm tra',l:26},
-  {hz:'开',py:'kāi',vi:'mở',l:26},
-  {hz:'开机',py:'kāi jī',vi:'mở máy',l:26},
-  // Bài 27
-  {hz:'消化',py:'xiāohuà',vi:'tiêu hóa',l:27},
-  {hz:'小便',py:'xiǎobiàn',vi:'tiểu tiện',l:27},
-  {hz:'鱼',py:'yú',vi:'cá',l:27},
-  {hz:'别',py:'bié',vi:'đừng',l:27},
-  {hz:'病人',py:'bìngrén',vi:'bệnh nhân',l:27},
-  {hz:'肠炎',py:'chángyán',vi:'viêm ruột',l:27},
-  {hz:'结果',py:'jiéguǒ',vi:'kết quả',l:27},
-  {hz:'哭',py:'kū',vi:'khóc',l:27},
-  {hz:'拉肚子',py:'lā dùzi',vi:'đau bụng',l:27},
-  {hz:'厉害',py:'lìhai',vi:'lợi hại',l:27},
-  {hz:'礼堂',py:'lǐtáng',vi:'hội trường lớn',l:27},
-  {hz:'难过',py:'nánguò',vi:'khó chịu',l:27},
-  {hz:'牛肉',py:'niúròu',vi:'thịt bò',l:27},
-  {hz:'片',py:'piàn',vi:'phiến, viên (thuốc)',l:27},
-  {hz:'然后',py:'ránhòu',vi:'sau đó',l:27},
-  {hz:'所以',py:'suǒyǐ',vi:'vì vậy',l:27},
-  {hz:'舞会',py:'wǔhuì',vi:'vũ hội',l:27},
-  {hz:'跳舞',py:'tiàowǔ',vi:'nhảy múa',l:27},
-  {hz:'后',py:'hòu',vi:'sau',l:27},
-  {hz:'化验',py:'huàyàn',vi:'hóa nghiệm',l:27},
-  {hz:'检查',py:'jiǎnchá',vi:'kiểm tra',l:27},
-  {hz:'寂寞',py:'jìmò',vi:'cô đơn',l:27},
-  {hz:'打针',py:'dǎ zhēn',vi:'tiêm',l:27},
-  {hz:'大便',py:'dàbiàn',vi:'đại tiện',l:27},
-  {hz:'得',py:'dé',vi:'được',l:27},
-  {hz:'出来',py:'chūlai',vi:'ra',l:27},
-  // Bài 28
-  {hz:'阳光',py:'yángguāng',vi:'ánh mặt trời',l:28},
-  {hz:'要是',py:'yàoshì',vi:'nếu',l:28},
-  {hz:'有的',py:'yǒude',vi:'có cái, có người',l:28},
-  {hz:'站',py:'zhàn',vi:'đứng',l:28},
-  {hz:'真',py:'zhēn',vi:'thật',l:28},
-  {hz:'车站',py:'chēzhàn',vi:'bến xe',l:28},
-  {hz:'层',py:'céng',vi:'tầng',l:28},
-  {hz:'才',py:'cái',vi:'vừa, mới',l:28},
-  {hz:'赶',py:'gǎn',vi:'vội, đuổi theo',l:28},
-  {hz:'公共汽车',py:'gònggòng qìchē',vi:'xe buýt',l:28},
-  {hz:'河',py:'hé',vi:'sông',l:28},
-  {hz:'交通',py:'jiāotōng',vi:'giao thông',l:28},
-  {hz:'环境',py:'huánjìng',vi:'hoàn cảnh',l:28},
-  {hz:'坏处',py:'huàichù',vi:'điểm xấu',l:28},
-  {hz:'情况',py:'qíngkuàng',vi:'tình hình',l:28},
-  {hz:'方便',py:'fāngbiàn',vi:'thuận tiện',l:28},
-  {hz:'房子',py:'fángzi',vi:'nhà',l:28},
-  {hz:'房租',py:'fángzū',vi:'tiền thuê phòng',l:28},
-  {hz:'附近',py:'fùjìn',vi:'gần, lân cận',l:28},
-  {hz:'地铁',py:'dìtiě',vi:'tàu điện ngầm',l:28},
-  {hz:'面积',py:'miànjī',vi:'diện tích',l:28},
-  {hz:'平（方）米',py:'píng(fāng)mǐ',vi:'mét vuông',l:28},
-  {hz:'妻子',py:'qīzi',vi:'vợ',l:28},
-  {hz:'旁边',py:'pángbiān',vi:'bên cạnh',l:28},
-  {hz:'套',py:'tào',vi:'bộ',l:28},
-  {hz:'体育馆',py:'tǐyùguǎn',vi:'phòng thể dục',l:28},
-  {hz:'卧室',py:'wòshì',vi:'phòng ngủ',l:28},
-  {hz:'虽然',py:'suīrán',vi:'tuy, mặc dù',l:28},
-  {hz:'上去',py:'shàngqu',vi:'lên',l:28},
-  {hz:'租',py:'zū',vi:'thuê',l:28},
-  {hz:'周围',py:'zhōuwéi',vi:'xung quanh',l:28},
-  {hz:'客厅',py:'kètīng',vi:'phòng khách',l:28},
-  {hz:'还是',py:'háishi',vi:'hay là',l:28},
-  {hz:'堵车',py:'dǔ chē',vi:'tắc đường',l:28},
-  // Bài 29
-  {hz:'会话',py:'huìhuà',vi:'đàm thoại',l:29},
-  {hz:'见',py:'jiàn',vi:'gặp',l:29},
-  {hz:'句子',py:'jùzi',vi:'câu',l:29},
-  {hz:'看见',py:'kàn jiàn',vi:'nhìn thấy',l:29},
-  {hz:'考试',py:'kǎoshì',vi:'thi',l:29},
-  {hz:'打开',py:'dǎ kāi',vi:'mở (ra)',l:29},
-  {hz:'笑',py:'xiào',vi:'cười',l:29},
-  {hz:'页',py:'yè',vi:'trang',l:29},
-  {hz:'有意思',py:'yǒu yìsi',vi:'có ý nghĩa, hay',l:29},
-  {hz:'糟糕',py:'zāogāo',vi:'chết rồi, thôi rồi',l:29},
-  {hz:'作业',py:'zuòyè',vi:'bài tập',l:29},
-  {hz:'词',py:'cí',vi:'từ',l:29},
-  {hz:'答',py:'dá',vi:'trả lời',l:29},
-  {hz:'道',py:'dào',vi:'câu, món (l.từ đếm câu hỏi, món ăn)',l:29},
-  {hz:'合上',py:'hé shàng',vi:'gấp, đóng (sách)',l:29},
-  {hz:'回信',py:'huí xìn',vi:'trả lời thư',l:29},
-  {hz:'完',py:'wán',vi:'hết, xong',l:29},
-  {hz:'念',py:'niàn',vi:'đọc',l:29},
-  {hz:'成',py:'chéng',vi:'thành',l:29},
-  {hz:'成绩',py:'chéngjì',vi:'thành tích',l:29},
-  {hz:'题',py:'tí',vi:'đề',l:29},
-  {hz:'听见',py:'tīngjiàn',vi:'nghe thấy',l:29},
-  {hz:'故事',py:'gùshi',vi:'câu chuyện',l:29},
-  {hz:'干',py:'gàn',vi:'làm',l:29},
-  {hz:'干什么',py:'gàn shénme',vi:'làm cái gì',l:29},
-  {hz:'熟',py:'shú',vi:'chín, quen',l:29},
-  // Bài 30
-  {hz:'一般',py:'yìbān',vi:'bình thường',l:30},
-  {hz:'原来',py:'yuánlái',vi:'hóa ra, vốn dĩ',l:30},
-  {hz:'延长',py:'yáncháng',vi:'kéo dài',l:30},
-  {hz:'游泳',py:'yóu yǒng',vi:'bơi',l:30},
-  {hz:'油腻',py:'yóunì',vi:'dầu mỡ',l:30},
-  {hz:'效果',py:'xiàoguǒ',vi:'hiệu quả',l:30},
-  {hz:'从来',py:'cónglái',vi:'từ trước tới nay',l:30},
-  {hz:'打鱼',py:'dǎ yú',vi:'câu cá',l:30},
-  {hz:'点心',py:'diǎnxin',vi:'điểm tâm',l:30},
-  {hz:'父母',py:'fùmǔ',vi:'bố mẹ',l:30},
-  {hz:'感谢',py:'gǎnxiè',vi:'cảm tạ',l:30},
-  {hz:'干净',py:'gānjìng',vi:'sạch sẽ',l:30},
-  {hz:'干燥',py:'gānzào',vi:'khô ráo',l:30},
-  {hz:'高血压',py:'gāoxuèyā',vi:'cao huyết áp',l:30},
-  {hz:'功课',py:'gōngkè',vi:'bài học',l:30},
-  {hz:'好',py:'hǎo',vi:'tốt',l:30},
-  {hz:'好处',py:'hǎochù',vi:'có ích, ích lợi',l:30},
-  {hz:'机会',py:'jīhuì',vi:'cơ hội',l:30},
-  {hz:'记',py:'jì',vi:'ghi',l:30},
-  {hz:'记住',py:'jì zhù',vi:'ghi nhớ',l:30},
-  {hz:'课间',py:'kèjiān',vi:'giữa các giờ học',l:30},
-  {hz:'块',py:'kuài',vi:'khối, miếng',l:30},
-  {hz:'练',py:'liàn',vi:'luyện',l:30},
-  {hz:'满意',py:'mǎnyì',vi:'vừa ý',l:30},
-  {hz:'慢性病',py:'mànxìngbìng',vi:'bệnh mãn tính',l:30},
-  {hz:'必须',py:'bìxū',vi:'cần thiết, phải',l:30},
-  {hz:'不过',py:'búguò',vi:'nhưng',l:30},
-  {hz:'不一定',py:'bù yídìng',vi:'không nhất định',l:30},
-  {hz:'差不多',py:'chàbuduō',vi:'xấp xỉ',l:30},
-  {hz:'菜',py:'cài',vi:'rau, món ăn',l:30},
-  {hz:'牛奶',py:'niúnǎi',vi:'sữa bò',l:30},
-  {hz:'气功',py:'qìgōng',vi:'khí công',l:30},
-  {hz:'气候',py:'qìhòu',vi:'khí hậu',l:30},
-  {hz:'散步',py:'sàn bù',vi:'tản bộ, đi dạo',l:30},
-  {hz:'晒',py:'shài',vi:'phơi',l:30},
-  {hz:'失眠',py:'shī mián',vi:'mất ngủ',l:30},
-  {hz:'生活',py:'shēnghuó',vi:'sinh hoạt',l:30},
-  {hz:'习惯',py:'xíguàn',vi:'thói quen',l:30},
-  {hz:'午觉',py:'wǔjiào',vi:'ngủ trưa',l:30},
-  {hz:'挺',py:'tǐng',vi:'khá, rất',l:30},
-  {hz:'钟头',py:'zhōngtóu',vi:'giờ (đồng hồ)',l:30},
-];
+const VOCAB = []; // Quyển 1-2 giờ nạp từ database qua Excel, không nhúng cứng trong code nữa
 
 // Remove duplicate entries (same hz + same lesson)
 const seen = new Set();
@@ -1981,11 +1219,17 @@ function playBuzz() {
 // ════════════════════════════════════════════════════
 let currentTab = 'home'; // được applyUIState() ghi đè lại đúng giá trị đã lưu khi app khởi động
 let showPinyin = true;
+let showMeaning = true;
 let questionCount = 10;
 
 function togglePinyin() {
   showPinyin = !showPinyin;
   document.getElementById('py-toggle-btn').textContent = showPinyin ? 'Ẩn Pinyin' : 'Hiện Pinyin';
+  render();
+}
+function toggleMeaning() {
+  showMeaning = !showMeaning;
+  document.getElementById('vi-toggle-btn').textContent = showMeaning ? 'Ẩn nghĩa' : 'Hiện nghĩa';
   render();
 }
 
@@ -2107,8 +1351,8 @@ function toggleLessonChip(l) {
 }
 
 // Cache số từ theo từng Quyển/level — tránh phải lọc lại toàn bộ WORDS mỗi lần vẽ lại danh sách.
-// Với các bài chưa tải nội dung về (Bài 31 trở lên khi chưa chọn), dùng số đếm nhẹ lấy từ
-// server (vocabCounts) để vẫn hiện đúng số từ mà không cần tải cả nội dung.
+// Với các bài chưa tải nội dung về, dùng số đếm nhẹ lấy từ server (vocabCounts) để vẫn hiện
+// đúng số từ mà không cần tải cả nội dung (toàn bộ từ vựng giờ đều nạp từ database, kể cả Quyển 1/2).
 let _bookCountCache = { len: -1, counts: {} };
 function bookWordCount(bookId) {
   if (_bookCountCache.len !== WORDS.length) {
@@ -2121,7 +1365,7 @@ function bookWordCount(bookId) {
     _bookCountCache = { len: WORDS.length, counts };
   }
   const b = BOOKS.find(x => x.id === bookId);
-  if (b && b.from > 30 && !loadedLessonNumbers.has(b.from)) {
+  if (b && !loadedLessonNumbers.has(b.from)) {
     let sum = 0;
     for (let l = b.from; l <= b.to; l++) sum += vocabCounts[l] || 0;
     return sum;
@@ -2329,7 +1573,7 @@ function fcUpdate() {
     <span class="fc-lesson-tag" style="${tagStyle2}">Bài ${w.l}</span>
     <div class="fc-hz-back">${w.hz}</div>
     ${showPinyin ? `<div class="fc-py">${w.py}</div>` : ''}
-    <div class="fc-vi">${w.vi}</div>
+    ${showMeaning ? `<div class="fc-vi">${w.vi}</div>` : `<button class="btn btn-sm" style="background:var(--l9b);color:var(--l9a);margin-bottom:6px;" onclick="event.stopPropagation();toggleMeaning();fcUpdate();">👁️ Hiện nghĩa</button>`}
     <button class="btn btn-sound btn-sm" onclick="event.stopPropagation();speak('${w.hz}')">🔊 Nghe</button>
     ${renderHanziParts(w.hz)}`;
   document.getElementById('fc-btns').innerHTML = `
@@ -2354,6 +1598,7 @@ function fcAnswer(ok) {
 // QUIZ
 // ════════════════════════════════════════════════════
 let qzWords=[], qzIdx=0, qzType='漢→Việt', qzDone=false, qzScore=0;
+let qzSentencePool = []; // câu ví dụ tiếng Trung lấy từ kho AI sinh sẵn, dùng để minh hoạ cho từ đang hỏi
 
 function renderQuiz() {
   return `
@@ -2370,11 +1615,32 @@ function renderQuiz() {
 function qzSetCount(v) { questionCount=parseInt(v); qzIdx=0; qzScore=0; bindQuiz(); }
 function qzSetType(t) { qzType=t; qzIdx=0; qzScore=0; bindQuiz(); }
 
+// Tải 1 lô câu ví dụ (kho AI sinh sẵn hàng ngày) cho các bài đang học, để minh hoạ từng câu hỏi
+async function qzLoadSentencePool() {
+  qzSentencePool = [];
+  const lessons = lessonsAllMode ? lessonsOfSelection() : [...selectedLessons];
+  if (!lessons.length || isGuest || !authToken) return;
+  try {
+    const res = await fetch('/api/practice-sentences?lessons=' + lessons.join(','), { headers: authHeaders() });
+    const data = await res.json();
+    if (data.ok && Array.isArray(data.sentences)) qzSentencePool = data.sentences;
+  } catch {
+    // Không có câu ví dụ thì thôi, không chặn phần trắc nghiệm
+  }
+}
+// Tìm 1 câu tiếng Trung trong kho có chứa đúng từ đang hỏi
+function qzFindExample(hz) {
+  const matches = qzSentencePool.filter(s => s.answer && s.answer.includes(hz));
+  if (matches.length === 0) return null;
+  return matches[Math.floor(Math.random() * matches.length)];
+}
+
 function bindQuiz() {
   const base = getFilteredWords();
   qzWords = shuffle(sortByPriority(base)).slice(0, questionCount);
   qzIdx = 0; qzScore = 0;
   qzRenderQ();
+  qzLoadSentencePool().then(() => qzRenderQ()); // nạp xong thì vẽ lại để hiện câu ví dụ nếu có
 }
 
 function qzRenderQ() {
@@ -2400,10 +1666,15 @@ function qzRenderQ() {
     qHtml = `<div class="fc-py" style="font-size:1.4rem;font-style:normal;color:var(--ink)">${w.py}</div>`;
     optHtml = opts.map(o=>`<button class="quiz-opt" data-v="${o.hz}" onclick="qzPick(this,'${o.hz}')">${o.hz}</button>`).join('');
   }
+  const example = qzFindExample(w.hz);
+  const exampleHtml = example
+    ? `<div style="font-size:.82rem;color:var(--muted);text-align:center;padding:0 12px 4px;line-height:1.5;">📖 <b style="color:var(--ink)">${example.answer.replace(w.hz, `<span style="color:var(--active-dark);font-weight:800">${w.hz}</span>`)}</b>${showMeaning ? `<br>${example.vi}` : ''}</div>`
+    : '';
   area.innerHTML = `
     <div class="panel">
       <div style="font-size:.75rem;color:var(--muted);font-weight:700;margin-bottom:6px">${qzIdx+1}/${qzWords.length} · ${Math.round(qzScore/(qzIdx||1)*100)}% đúng</div>
       <div class="quiz-q">${qHtml}</div>
+      ${exampleHtml}
       <div class="quiz-opts" id="qz-opts">${optHtml}</div>
     </div>`;
   document.querySelectorAll('#qz-opts .quiz-opt').forEach(b=>{
@@ -3352,9 +2623,8 @@ fetch('/api/visit', { method: 'POST' }).catch(() => {}); // ghi nhận lượt t
 // sẵn trong app nên không cần tính qua server.
 let vocabCounts = {};
 async function loadVocabCounts() {
-  if (isGuest || !authToken) return;
   try {
-    const res = await fetch('/api/vocab/counts', { headers: authHeaders() });
+    const res = await fetch('/api/vocab/counts');
     const data = await res.json();
     if (data.ok && data.counts) vocabCounts = data.counts;
   } catch {
@@ -3366,20 +2636,23 @@ async function loadVocabCounts() {
 let loadedLessonNumbers = new Set();
 
 // Tải về ĐÚNG phần từ vựng cần cho các Quyển/level đang chọn (thay vì tải hết mọi thứ).
-// Bài 1-30 (781 từ) đã có sẵn trong app nên bỏ qua, chỉ tải Bài 31 trở đi (Chuyên ngành/HSK...).
+// Toàn bộ từ vựng giờ nạp từ database, kể cả Quyển 1/2 — khách (chưa đăng nhập) dùng API công khai
+// riêng, server tự giới hạn chỉ được Bài 1-5 (giới hạn dùng thử của khách).
 async function ensureVocabLoaded(bookIds) {
-  if (isGuest || !authToken) return;
   const needed = [];
   for (const id of bookIds) {
     const b = BOOKS.find(x => x.id === id);
     if (!b) continue;
     for (let l = b.from; l <= b.to; l++) {
-      if (l > 30 && !loadedLessonNumbers.has(l)) needed.push(l);
+      if (!loadedLessonNumbers.has(l)) needed.push(l);
     }
   }
   if (needed.length === 0) return;
+  const url = (isGuest || !authToken)
+    ? '/api/vocab/public?lessons=' + needed.join(',')
+    : '/api/vocab?lessons=' + needed.join(',');
   try {
-    const res = await fetch('/api/vocab?lessons=' + needed.join(','), { headers: authHeaders() });
+    const res = await fetch(url, (isGuest || !authToken) ? {} : { headers: authHeaders() });
     const data = await res.json();
     if (data.ok && Array.isArray(data.vocab)) {
       const seen = new Set(WORDS.map(w => w.hz + '-' + w.l));
