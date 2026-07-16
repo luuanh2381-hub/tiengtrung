@@ -8,7 +8,8 @@ const express = require('express');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { readDB, updateDB, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson,
-  replaceLessonSentences, getPracticeSentences, getPracticeSentenceById, getPracticeSentenceCounts } = require('../lib/db');
+  replaceLessonSentences, getPracticeSentences, getPracticeSentenceById, getPracticeSentenceCounts,
+  getAllVocabWords, getWordExampleCounts, insertWordExamples, getWordExamplesForLessons } = require('../lib/db');
 
 const app = express();
 
@@ -624,9 +625,9 @@ Nếu bài làm đã đúng hoàn toàn thì "errors" là mảng rỗng [].`;
 // header Authorization: Bearer <CRON_SECRET> khi gọi endpoint này theo lịch trong vercel.json.
 // Logic dùng chung: sinh câu luyện dịch cho các bài đang thiếu câu nhất — gọi từ cron TỰ ĐỘNG
 // hàng ngày lẫn nút "Chạy ngay" thủ công trong trang Quản trị.
-async function runSentenceGeneration() {
+async function runSentenceGeneration(timeBudgetMs) {
   const startedAt = Date.now();
-  const TIME_BUDGET_MS = 50000; // dừng an toàn trước khi Vercel timeout, phần còn lại sẽ được xử lý ở lượt chạy kế tiếp
+  const TIME_BUDGET_MS = timeBudgetMs || 50000; // dừng an toàn trước khi Vercel timeout, phần còn lại sẽ được xử lý ở lượt chạy kế tiếp
   const SENTENCES_PER_LESSON = 8;
   const results = [];
   const counts = await getVocabCounts();
@@ -664,7 +665,53 @@ Trả lời CHỈ bằng JSON hợp lệ, đúng định dạng:
   return results;
 }
 
-// ── [CRON — Vercel TỰ ĐỘNG gọi hàng ngày] ──
+// Logic sinh ví dụ THEO TỪNG TỪ CỤ THỂ — đảm bảo mỗi từ có sẵn TARGET_EXAMPLES_PER_WORD câu ví dụ,
+// mỗi câu được kiểm tra chắc chắn có chứa đúng chữ Hán của từ đó (nếu AI trả sai, câu đó bị loại,
+// từ vẫn coi là "chưa xong" và sẽ được thử lại ở lượt chạy sau).
+const TARGET_EXAMPLES_PER_WORD = 3;
+const WORD_BATCH_SIZE = 12;
+async function runWordExampleGeneration(timeBudgetMs) {
+  const startedAt = Date.now();
+  const TIME_BUDGET_MS = timeBudgetMs || 50000;
+  const allWords = await getAllVocabWords();
+  const existing = await getWordExampleCounts();
+  // Bỏ qua từ đã đủ ví dụ, xử lý theo đúng thứ tự bài rồi tới thứ tự từ trong bài
+  const pending = allWords.filter(w => (existing[w.hz + '-' + w.l] || 0) < TARGET_EXAMPLES_PER_WORD);
+  let batches = 0, wordsDone = 0, wordsRetried = 0, errors = 0;
+
+  for (let i = 0; i < pending.length; i += WORD_BATCH_SIZE) {
+    if (Date.now() - startedAt > TIME_BUDGET_MS) break;
+    const batch = pending.slice(i, i + WORD_BATCH_SIZE);
+    try {
+      const wordList = batch.map(w => `${w.hz} (${w.py}) = ${w.vi}`).join('; ');
+      const prompt = `Bạn là giáo viên tiếng Trung cho người Việt mới học. Với MỖI từ trong danh sách sau, hãy soạn ${TARGET_EXAMPLES_PER_WORD} câu ví dụ tiếng Trung khác nhau, đơn giản, ngắn gọn — mỗi câu BẮT BUỘC phải chứa đúng chữ Hán của từ đó (không được bỏ sót), kèm nghĩa tiếng Việt của câu ví dụ đó.
+Danh sách từ (giữ đúng thứ tự): ${wordList}
+Trả lời CHỈ bằng JSON hợp lệ, đúng định dạng, đúng thứ tự các từ đã cho, không thêm chữ nào khác:
+{"words":[{"hz":"chữ Hán của từ","examples":[{"zh":"câu ví dụ tiếng Trung","vi":"nghĩa câu ví dụ"}]}]}`;
+      const text = await callGemini(prompt);
+      const data = parseAiJson(text);
+      if (!Array.isArray(data.words)) { errors++; continue; }
+      for (const item of data.words) {
+        const w = batch.find(b => b.hz === item.hz);
+        if (!w || !Array.isArray(item.examples)) continue;
+        // Chỉ giữ lại câu THỰC SỰ chứa đúng chữ Hán — đảm bảo tính đúng đắn, không tin mù AI
+        const valid = item.examples.filter(e => e && e.zh && e.vi && e.zh.includes(w.hz)).slice(0, TARGET_EXAMPLES_PER_WORD);
+        if (valid.length > 0) {
+          await insertWordExamples(w.hz, w.l, valid);
+          if (valid.length >= TARGET_EXAMPLES_PER_WORD) wordsDone++; else wordsRetried++;
+        } else {
+          wordsRetried++;
+        }
+      }
+      batches++;
+    } catch (e) {
+      errors++;
+    }
+  }
+  return { batches, wordsDone, wordsRetried, errors, totalPending: pending.length };
+}
+
+// ── [CRON — Vercel TỰ ĐỘNG gọi hàng ngày] (endpoint cũ, chỉ sinh câu luyện dịch — giữ lại để tương thích ngược) ──
 // Bảo vệ bằng CRON_SECRET: đặt biến môi trường CRON_SECRET trên Vercel, Vercel sẽ tự đính kèm
 // header Authorization: Bearer <CRON_SECRET> khi gọi endpoint này theo lịch trong vercel.json.
 app.get('/api/cron/generate-sentences', async (req, res) => {
@@ -691,6 +738,76 @@ app.post('/api/admin/generate-sentences', async (req, res) => {
   try {
     const results = await runSentenceGeneration();
     res.json({ ok: true, processed: results.length, results });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── Lấy toàn bộ ví dụ theo từ cho các bài đang học — dùng để minh hoạ từng câu hỏi trong Trắc nghiệm
+//     (mỗi từ có thể có vài ví dụ, client tự chọn ngẫu nhiên 1 câu để hiện) ──
+app.get('/api/word-examples', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const raw = String(req.query.lessons || '').trim();
+    if (!raw) return res.json({ ok: true, examples: [] });
+    const lessons = raw.split(',').map(s => parseInt(s, 10)).filter(Number.isFinite);
+    const examples = await getWordExamplesForLessons(lessons);
+    res.json({ ok: true, examples });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Tiến độ sinh ví dụ theo từ — bao nhiêu từ đã đủ ví dụ / tổng số từ ──
+app.get('/api/admin/word-examples/progress', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const allWords = await getAllVocabWords();
+    const counts = await getWordExampleCounts();
+    const total = allWords.length;
+    const done = allWords.filter(w => (counts[w.hz + '-' + w.l] || 0) >= TARGET_EXAMPLES_PER_WORD).length;
+    res.json({ ok: true, total, done });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Kích hoạt thủ công việc sinh ví dụ theo từ (giống nút "Chạy ngay" của câu luyện dịch) ──
+app.post('/api/admin/generate-word-examples', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const result = await runWordExampleGeneration(50000);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── [CRON — Vercel TỰ ĐỘNG gọi nhiều lần/ngày] Chạy GỘP cả 2 việc trong cùng 1 lượt: ưu tiên sinh
+//     ví dụ theo từ trước (quan trọng hơn, đảm bảo phủ hết từng từ), phần thời gian còn lại mới
+//     dùng cho câu luyện dịch theo bài. Đây là endpoint mà vercel.json trỏ lịch chạy tới. ──
+app.get('/api/cron/generate-daily', async (req, res) => {
+  if (process.env.CRON_SECRET) {
+    const auth = req.headers['authorization'];
+    if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
+      return res.status(401).json({ ok: false, error: 'Unauthorized' });
+    }
+  }
+  const overallStart = Date.now();
+  const TOTAL_BUDGET_MS = 50000;
+  try {
+    const wordResult = await runWordExampleGeneration(TOTAL_BUDGET_MS - 5000);
+    const remaining = TOTAL_BUDGET_MS - (Date.now() - overallStart);
+    let sentenceResults = [];
+    if (remaining > 5000) {
+      sentenceResults = await runSentenceGeneration(remaining);
+    }
+    res.json({
+      ok: true,
+      wordExamples: wordResult,
+      sentences: { processed: sentenceResults.length, results: sentenceResults },
+    });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
