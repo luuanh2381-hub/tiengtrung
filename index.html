@@ -1598,7 +1598,7 @@ function fcAnswer(ok) {
 // QUIZ
 // ════════════════════════════════════════════════════
 let qzWords=[], qzIdx=0, qzType='漢→Việt', qzDone=false, qzScore=0;
-let qzSentencePool = []; // câu ví dụ tiếng Trung lấy từ kho AI sinh sẵn, dùng để minh hoạ cho từ đang hỏi
+let qzWordExamples = []; // ví dụ theo từng từ (kho đảm bảo mỗi từ có sẵn vài câu), dùng để minh hoạ từ đang hỏi
 
 function renderQuiz() {
   return `
@@ -1615,22 +1615,22 @@ function renderQuiz() {
 function qzSetCount(v) { questionCount=parseInt(v); qzIdx=0; qzScore=0; bindQuiz(); }
 function qzSetType(t) { qzType=t; qzIdx=0; qzScore=0; bindQuiz(); }
 
-// Tải 1 lô câu ví dụ (kho AI sinh sẵn hàng ngày) cho các bài đang học, để minh hoạ từng câu hỏi
+// Tải toàn bộ ví dụ theo từ (kho đảm bảo mỗi từ có sẵn vài câu) cho các bài đang học
 async function qzLoadSentencePool() {
-  qzSentencePool = [];
+  qzWordExamples = [];
   const lessons = lessonsAllMode ? lessonsOfSelection() : [...selectedLessons];
   if (!lessons.length || isGuest || !authToken) return;
   try {
-    const res = await fetch('/api/practice-sentences?lessons=' + lessons.join(','), { headers: authHeaders() });
+    const res = await fetch('/api/word-examples?lessons=' + lessons.join(','), { headers: authHeaders() });
     const data = await res.json();
-    if (data.ok && Array.isArray(data.sentences)) qzSentencePool = data.sentences;
+    if (data.ok && Array.isArray(data.examples)) qzWordExamples = data.examples;
   } catch {
     // Không có câu ví dụ thì thôi, không chặn phần trắc nghiệm
   }
 }
-// Tìm 1 câu tiếng Trung trong kho có chứa đúng từ đang hỏi
+// Chọn NGẪU NHIÊN 1 trong các câu ví dụ có sẵn của đúng từ đang hỏi
 function qzFindExample(hz) {
-  const matches = qzSentencePool.filter(s => s.answer && s.answer.includes(hz));
+  const matches = qzWordExamples.filter(e => e.hz === hz);
   if (matches.length === 0) return null;
   return matches[Math.floor(Math.random() * matches.length)];
 }
@@ -1668,7 +1668,7 @@ function qzRenderQ() {
   }
   const example = qzFindExample(w.hz);
   const exampleHtml = example
-    ? `<div style="font-size:.82rem;color:var(--muted);text-align:center;padding:0 12px 4px;line-height:1.5;">📖 <b style="color:var(--ink)">${example.answer.replace(w.hz, `<span style="color:var(--active-dark);font-weight:800">${w.hz}</span>`)}</b>${showMeaning ? `<br>${example.vi}` : ''}</div>`
+    ? `<div style="font-size:.82rem;color:var(--muted);text-align:center;padding:0 12px 4px;line-height:1.5;">📖 <b style="color:var(--ink)">${example.zh.replace(w.hz, `<span style="color:var(--active-dark);font-weight:800">${w.hz}</span>`)}</b>${showMeaning ? `<br>${example.vi}` : ''}</div>`
     : '';
   area.innerHTML = `
     <div class="panel">
@@ -2366,6 +2366,15 @@ function renderVocabAdmin() {
     <div id="sentence-count-area" style="color:var(--muted);padding:14px 0;text-align:center;">Đang tải...</div>
   </div>
   <div class="panel">
+    <div class="panel-title">📖 Ví dụ theo từng từ (đảm bảo mỗi từ có sẵn 3 ví dụ)</div>
+    <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px;">
+      Khác với câu luyện dịch ở trên (theo cả bài), đây là kho ví dụ minh hoạ hiện trong Trắc nghiệm — mỗi từ được đảm bảo có sẵn 3 câu ví dụ riêng (AI tự kiểm tra câu có đúng chứa từ đó không trước khi lưu). Có thể mất nhiều ngày để phủ hết toàn bộ từ vựng.
+    </div>
+    <button class="btn btn-sm" style="background:var(--l9c);color:var(--l9a);margin-bottom:12px;" id="gen-word-ex-btn" onclick="triggerWordExampleGeneration()">🚀 Chạy sinh ví dụ theo từ ngay</button>
+    <div id="gen-word-ex-result" style="font-size:.8rem;color:var(--muted);margin-bottom:10px;"></div>
+    <div id="word-ex-progress-area" style="color:var(--muted);padding:14px 0;text-align:center;">Đang tải...</div>
+  </div>
+  <div class="panel">
     <div class="panel-title">📋 Danh sách bài đã có (xoá từng bài)</div>
     <div id="vocab-list-area" style="color:var(--muted);padding:14px 0;text-align:center;">Đang tải...</div>
   </div>
@@ -2380,6 +2389,46 @@ function bindVocabAdmin() {
   if (isGuest || !isAdminRole()) return;
   loadVocabAdminList();
   loadSentenceCounts();
+  loadWordExampleProgress();
+}
+async function loadWordExampleProgress() {
+  const area = document.getElementById('word-ex-progress-area');
+  if (!area) return;
+  try {
+    const res = await fetch('/api/admin/word-examples/progress', { headers: authHeaders() });
+    const data = await res.json();
+    if (!data.ok) { area.textContent = data.error || 'Không tải được dữ liệu.'; return; }
+    const pct = data.total ? Math.round(data.done / data.total * 100) : 0;
+    area.innerHTML = `
+      <div style="display:flex;justify-content:space-between;font-size:.85rem;font-weight:700;margin-bottom:6px;">
+        <span>${data.done} / ${data.total} từ đã có đủ 3 ví dụ</span>
+        <span style="color:var(--active-dark)">${pct}%</span>
+      </div>
+      <div class="prog-bar"><div class="prog-fill" style="width:${pct}%;background:var(--active);"></div></div>`;
+  } catch (e) {
+    area.textContent = 'Không kết nối được máy chủ: ' + e.message;
+  }
+}
+async function triggerWordExampleGeneration() {
+  const btn = document.getElementById('gen-word-ex-btn');
+  const resultEl = document.getElementById('gen-word-ex-result');
+  btn.disabled = true;
+  btn.textContent = '⏳ Đang chạy... (có thể mất tới 50 giây, đừng rời trang)';
+  resultEl.textContent = '';
+  try {
+    const res = await fetch('/api/admin/generate-word-examples', { method: 'POST', headers: authHeaders() });
+    const data = await res.json();
+    if (!data.ok) { resultEl.innerHTML = `❌ ${data.error || 'Có lỗi xảy ra'}`; }
+    else {
+      resultEl.innerHTML = `✅ Đã xử lý ${data.batches} lô. Từ xong hoàn toàn: ${data.wordsDone}, cần thử lại: ${data.wordsRetried}${data.errors ? `, lỗi: ${data.errors}` : ''}. Còn ${data.totalPending - data.wordsDone} từ đang chờ xử lý.`;
+      loadWordExampleProgress();
+    }
+  } catch (e) {
+    resultEl.innerHTML = `❌ Không kết nối được máy chủ: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🚀 Chạy sinh ví dụ theo từ ngay';
+  }
 }
 async function triggerSentenceGeneration() {
   const btn = document.getElementById('gen-now-btn');
