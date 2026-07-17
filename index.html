@@ -1554,6 +1554,7 @@ async function loadHanziParts() {
 }
 
 function renderHanziParts(hz) {
+  const cjk = /[\u4e00-\u9fff]/;
   const chars = [...hz];
   const rows = chars.map(ch => {
     // Ưu tiên dữ liệu từ database (AI sinh, phủ rộng hơn), fallback về từ điển nhỏ có sẵn trong code
@@ -1568,12 +1569,16 @@ function renderHanziParts(hz) {
       }
     }
     const entry = HANZI_PARTS[ch];
-    if (!entry) return '';
-    if (Array.isArray(entry)) {
-      const chips = entry.map(([c,m]) => `<span class="fc-parts-chip">${c}</span><span class="fc-parts-note">${m}</span>`).join(' + ');
-      return `<div class="fc-parts-row"><span class="fc-parts-char">${ch}</span><span class="fc-parts-comps">${chips}</span></div>`;
+    if (entry) {
+      if (Array.isArray(entry)) {
+        const chips = entry.map(([c,m]) => `<span class="fc-parts-chip">${c}</span><span class="fc-parts-note">${m}</span>`).join(' + ');
+        return `<div class="fc-parts-row"><span class="fc-parts-char">${ch}</span><span class="fc-parts-comps">${chips}</span></div>`;
+      }
+      return `<div class="fc-parts-row"><span class="fc-parts-char">${ch}</span><span class="fc-parts-comps fc-parts-note">${entry}</span></div>`;
     }
-    return `<div class="fc-parts-row"><span class="fc-parts-char">${ch}</span><span class="fc-parts-comps fc-parts-note">${entry}</span></div>`;
+    // Chưa có dữ liệu — chỉ báo "đang chờ" cho chữ Hán thật sự (bỏ qua số/chữ Latin lẫn trong từ)
+    if (!cjk.test(ch)) return '';
+    return `<div class="fc-parts-row"><span class="fc-parts-char">${ch}</span><span class="fc-parts-comps fc-parts-note" style="opacity:.65">⏳ Đang chờ AI xử lý chữ này</span></div>`;
   }).join('');
   if (!rows) return '';
   return `<div class="fc-parts-wrap" onclick="event.stopPropagation()"><div class="fc-parts-title">🧩 Bộ thủ / thành phần</div>${rows}</div>`;
