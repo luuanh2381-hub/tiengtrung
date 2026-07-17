@@ -1538,9 +1538,35 @@ function bindFlash() {
   fcUpdate();
 }
 
+// Chiết tự bộ thủ lấy từ database (AI sinh, phủ toàn bộ từ vựng) — tải 1 lần lúc mở app
+let dbHanziParts = {};
+async function loadHanziParts() {
+  if (isGuest || !authToken) return;
+  try {
+    const res = await fetch('/api/hanzi-parts', { headers: authHeaders() });
+    const data = await res.json();
+    if (data.ok && Array.isArray(data.parts)) {
+      for (const row of data.parts) dbHanziParts[row.hz] = row.parts;
+    }
+  } catch {
+    // Không tải được thì dùng tạm từ điển có sẵn trong code (phủ ít hơn), không chặn app
+  }
+}
+
 function renderHanziParts(hz) {
   const chars = [...hz];
   const rows = chars.map(ch => {
+    // Ưu tiên dữ liệu từ database (AI sinh, phủ rộng hơn), fallback về từ điển nhỏ có sẵn trong code
+    const dbEntry = dbHanziParts[ch];
+    if (dbEntry) {
+      if (dbEntry.type === 'parts' && Array.isArray(dbEntry.items) && dbEntry.items.length) {
+        const chips = dbEntry.items.map(x => `<span class="fc-parts-chip">${x.c}</span><span class="fc-parts-note">${x.m}</span>`).join(' + ');
+        return `<div class="fc-parts-row"><span class="fc-parts-char">${ch}</span><span class="fc-parts-comps">${chips}</span></div>`;
+      }
+      if (dbEntry.type === 'note' && dbEntry.text) {
+        return `<div class="fc-parts-row"><span class="fc-parts-char">${ch}</span><span class="fc-parts-comps fc-parts-note">${dbEntry.text}</span></div>`;
+      }
+    }
     const entry = HANZI_PARTS[ch];
     if (!entry) return '';
     if (Array.isArray(entry)) {
@@ -1668,11 +1694,15 @@ function qzRenderQ() {
   const exampleHtml = example
     ? `<div style="font-size:.82rem;color:var(--muted);text-align:center;padding:0 12px 4px;line-height:1.5;">📖 <b style="color:var(--ink)">${example.zh.replace(w.hz, `<span style="color:var(--active-dark);font-weight:800">${w.hz}</span>`)}</b>${showMeaning ? `<br>${example.vi}` : ''}</div>`
     : '';
+  // Chỉ hiện chiết tự bộ thủ khi chữ Hán đã hiện sẵn trong câu hỏi (漢→Việt) — các chế độ khác
+  // (Việt→漢, Âm→漢) chữ Hán chính là đáp án cần đoán, hiện chiết tự sẽ lộ đáp án.
+  const partsHtml = qzType === '漢→Việt' ? renderHanziParts(w.hz) : '';
   area.innerHTML = `
     <div class="panel">
       <div style="font-size:.75rem;color:var(--muted);font-weight:700;margin-bottom:6px">${qzIdx+1}/${qzWords.length} · ${Math.round(qzScore/(qzIdx||1)*100)}% đúng</div>
       <div class="quiz-q">${qHtml}</div>
       ${exampleHtml}
+      ${partsHtml}
       <div class="quiz-opts" id="qz-opts">${optHtml}</div>
     </div>`;
   document.querySelectorAll('#qz-opts .quiz-opt').forEach(b=>{
@@ -2267,6 +2297,15 @@ function renderVocabAdmin() {
     <div id="word-ex-progress-area" style="color:var(--muted);padding:14px 0;text-align:center;">Đang tải...</div>
   </div>
   <div class="panel">
+    <div class="panel-title">🧩 Chiết tự bộ thủ (phân tích từng chữ Hán)</div>
+    <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px;">
+      AI phân tích từng chữ Hán thành các thành phần cấu tạo (bộ thủ), giúp ghi nhớ mặt chữ dễ hơn — hiện trong Flashcard và Trắc nghiệm (chế độ 漢→Việt).
+    </div>
+    <button class="btn btn-sm" style="background:var(--l9c);color:var(--l9a);margin-bottom:12px;" id="gen-hanzi-btn" onclick="triggerHanziPartsGeneration()">🚀 Chạy sinh chiết tự ngay</button>
+    <div id="gen-hanzi-result" style="font-size:.8rem;color:var(--muted);margin-bottom:10px;"></div>
+    <div id="hanzi-progress-area" style="color:var(--muted);padding:14px 0;text-align:center;">Đang tải...</div>
+  </div>
+  <div class="panel">
     <div class="panel-title">📋 Danh sách bài đã có (xoá từng bài)</div>
     <div id="vocab-list-area" style="color:var(--muted);padding:14px 0;text-align:center;">Đang tải...</div>
   </div>
@@ -2281,6 +2320,7 @@ function bindVocabAdmin() {
   if (isGuest || !isAdminRole()) return;
   loadVocabAdminList();
   loadWordExampleProgress();
+  loadHanziPartsProgress();
 }
 async function loadWordExampleProgress() {
   const area = document.getElementById('word-ex-progress-area');
@@ -2319,6 +2359,46 @@ async function triggerWordExampleGeneration() {
   } finally {
     btn.disabled = false;
     btn.textContent = '🚀 Chạy sinh ví dụ theo từ ngay';
+  }
+}
+async function loadHanziPartsProgress() {
+  const area = document.getElementById('hanzi-progress-area');
+  if (!area) return;
+  try {
+    const res = await fetch('/api/admin/hanzi-parts/progress', { headers: authHeaders() });
+    const data = await res.json();
+    if (!data.ok) { area.textContent = data.error || 'Không tải được dữ liệu.'; return; }
+    const pct = data.total ? Math.round(data.done / data.total * 100) : 0;
+    area.innerHTML = `
+      <div style="display:flex;justify-content:space-between;font-size:.85rem;font-weight:700;margin-bottom:6px;">
+        <span>${data.done} / ${data.total} chữ đã có chiết tự</span>
+        <span style="color:var(--active-dark)">${pct}%</span>
+      </div>
+      <div class="prog-bar"><div class="prog-fill" style="width:${pct}%;background:var(--active);"></div></div>`;
+  } catch (e) {
+    area.textContent = 'Không kết nối được máy chủ: ' + e.message;
+  }
+}
+async function triggerHanziPartsGeneration() {
+  const btn = document.getElementById('gen-hanzi-btn');
+  const resultEl = document.getElementById('gen-hanzi-result');
+  btn.disabled = true;
+  btn.textContent = '⏳ Đang chạy... (có thể mất tới 50 giây, đừng rời trang)';
+  resultEl.textContent = '';
+  try {
+    const res = await fetch('/api/admin/generate-hanzi-parts', { method: 'POST', headers: authHeaders() });
+    const data = await res.json();
+    if (!data.ok) { resultEl.innerHTML = `❌ ${data.error || 'Có lỗi xảy ra'}`; }
+    else {
+      resultEl.innerHTML = `✅ Đã xử lý ${data.batches} lô, thêm ${data.done} chữ${data.errors ? `, lỗi: ${data.errors}` : ''}. Còn ${data.totalPending - data.done} chữ đang chờ xử lý.`;
+      loadHanziPartsProgress();
+      loadHanziParts(); // nạp lại dữ liệu mới để dùng ngay không cần tải lại trang
+    }
+  } catch (e) {
+    resultEl.innerHTML = `❌ Không kết nối được máy chủ: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🚀 Chạy sinh chiết tự ngay';
   }
 }
 async function loadVocabAdminList() {
@@ -2626,6 +2706,7 @@ bootAuth().then(async () => {
   await ensureVocabLoaded(selectedBookIds); // tải đúng phần cần cho lựa chọn đã khôi phục lúc mở app
   updateStreak();
   render();
+  loadHanziParts().then(() => render()); // tải chiết tự bộ thủ ngầm phía sau, không chặn hiển thị ban đầu
 });
 
 // ── Widget liên hệ Zalo (nổi góc màn hình) ──
