@@ -523,6 +523,34 @@ const WORDS = VOCAB.filter(w => {
   seen.add(k); return true;
 });
 
+// ALL_WORDS = TOÀN BỘ kho từ vựng trong database, không phụ thuộc bài nào đang được chọn ở
+// màn Flashcard. WORDS chỉ chứa những bài đã chọn/tải (để tiết kiệm băng thông khi học),
+// nên KHÔNG dùng WORDS cho các mục cần nhìn toàn bộ kho từ như HSK / So sánh / Thống kê —
+// nếu không các mục đó sẽ hiện sai/thiếu tuỳ theo Quyển nào đang được chọn lúc đó.
+let ALL_WORDS = [];
+let allWordsLoaded = false;
+async function loadAllWords() {
+  try {
+    const url = (isGuest || !authToken) ? '/api/vocab/public?lessons=1,2,3,4,5' : '/api/vocab/all';
+    const res = await fetch(url, (isGuest || !authToken) ? {} : { headers: authHeaders() });
+    const data = await res.json();
+    if (data.ok && Array.isArray(data.vocab)) {
+      const s = new Set();
+      ALL_WORDS = data.vocab.filter(w => {
+        const k = w.hz + '-' + w.l;
+        if (s.has(k)) return false;
+        s.add(k); return true;
+      });
+    }
+  } catch {
+    // Không tải được thì HSK/So sánh/Thống kê tạm dùng WORDS (đã chọn) làm dự phòng bên dưới
+  } finally {
+    allWordsLoaded = true;
+  }
+}
+// Dùng ALL_WORDS nếu đã tải xong, không thì tạm dùng WORDS (đã chọn) làm dự phòng để không bị trống trơn
+function fullWordSet() { return allWordsLoaded && ALL_WORDS.length ? ALL_WORDS : WORDS; }
+
 const SENTENCES = [
   {vi:'Buổi sáng tôi ăn bánh bao và uống súp.',hz:'早上我吃包子，喝汤。',hint:'早上、包子、汤',l:7},
   {vi:'Bạn muốn ăn cơm hay mì sợi?',hz:'你要吃米饭还是面条？',hint:'米饭、还是、面条',l:7},
@@ -2040,9 +2068,10 @@ function trNext(ok) { trIdx++; trRenderQ(); }
 // ════════════════════════════════════════════════════
 function renderStats() {
   const d=getSRS();
+  const src = fullWordSet();
   const all = lessonsAllMode
-    ? WORDS.filter(w => selectedBookIds.has(bookOfLesson(w.l)))
-    : WORDS.filter(w => selectedLessons.has(w.l));
+    ? src.filter(w => selectedBookIds.has(bookOfLesson(w.l)))
+    : src.filter(w => selectedLessons.has(w.l));
   const total=all.reduce((s,w)=>s+(d[w.hz]?.total||0),0);
   const correct=all.reduce((s,w)=>s+(d[w.hz]?.correct||0),0);
   const known=all.filter(w=>d[w.hz]&&d[w.hz].step>=3).length;
@@ -2112,7 +2141,7 @@ function renderCompare() {
 function bindCompare() {}
 
 function cpRenderList() {
-  const appHz = new Set(WORDS.map(w => w.hz));
+  const appHz = new Set(fullWordSet().map(w => w.hz));
   return CONFUSE_GROUPS.map(g => {
     const itemsHtml = g.chars.map((c,i) => `
       ${i>0?'<span class="confuse-vs">vs</span>':''}
@@ -2180,7 +2209,7 @@ function cpExitTest() {
 // HSK4 PROGRESS TRACKER
 // ════════════════════════════════════════════════════
 function computeHSKCoverage() {
-  const appHz = new Set(WORDS.map(w => w.hz));
+  const appHz = new Set(fullWordSet().map(w => w.hz));
   const srs = getSRS();
   const result = {};
   let totalWords = 0, totalCovered = 0, totalKnown = 0;
@@ -2715,6 +2744,7 @@ bootAuth().then(async () => {
   updateStreak();
   render();
   loadHanziParts().then(() => render()); // tải chiết tự bộ thủ ngầm phía sau, không chặn hiển thị ban đầu
+  loadAllWords().then(() => render()); // tải toàn bộ kho từ ngầm phía sau, cho HSK/So sánh/Thống kê
 });
 
 // ── Widget liên hệ Zalo (nổi góc màn hình) ──
