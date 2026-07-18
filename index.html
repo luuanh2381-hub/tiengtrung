@@ -245,30 +245,20 @@
   .btn-fail:active{transform:translateY(2px);box-shadow:0 1px 0 var(--l10a);}
   .btn-sound{background:var(--l9b);color:var(--l9a);padding:9px 15px;}
   .fc-counter{text-align:center;font-size:.78rem;color:var(--muted);margin-bottom:12px;font-weight:700;}
-  .fc-parts-wrap{width:100%;max-height:78px;overflow-y:auto;padding:6px 16px;box-sizing:border-box;}
-  .fc-parts-title{font-size:.66rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;}
-  .fc-parts-row{display:flex;align-items:flex-start;gap:6px;margin-bottom:3px;font-size:.74rem;line-height:1.3;}
-  .fc-parts-char{font-weight:900;font-size:1.05rem;min-width:24px;flex-shrink:0;}
-  .fc-parts-comps{flex:1;color:var(--ink);}
-  .fc-parts-chip{display:inline-block;background:var(--paper);border-radius:6px;padding:1px 6px;margin:0 3px 2px 0;font-weight:700;}
+  .fc-parts-wrap{width:100%;max-height:82px;overflow-y:auto;padding:6px 16px;box-sizing:border-box;}
+  .fc-parts-wrap.qz-parts{max-height:none;overflow-y:visible;padding:12px 6px 4px;}
+  .fc-parts-title{font-size:.66rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px;}
+  .fc-parts-row{margin-bottom:7px;font-size:.76rem;line-height:1.55;}
+  .fc-parts-char{display:inline-block;font-weight:900;font-size:1.05rem;color:var(--active-dark);margin-right:5px;}
+  .fc-parts-comps{color:var(--ink);}
+  .fc-parts-chip{display:inline-block;background:var(--paper);border-radius:6px;padding:1px 7px;margin:1px 3px 1px 0;font-weight:700;white-space:nowrap;}
   .fc-parts-note{color:var(--muted);font-style:italic;}
 
   /* ── QUIZ ──────────────────────────────────────────────── */
-  /* Thẻ câu hỏi trắc nghiệm được thu gọn riêng (scope theo #qz-area) để toàn bộ
-     nội dung — điểm số, chữ Hán, ví dụ, chiết tự, đáp án — vừa khít trong 1 màn
-     hình điện thoại, không tràn / không cần cuộn. */
-  #qz-area .panel{padding:16px 14px;}
   .quiz-q{font-size:1.5rem;font-weight:800;text-align:center;padding:26px 16px;min-height:90px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;}
-  #qz-area .quiz-q{padding:10px 12px 6px;min-height:0;gap:2px;}
-  #qz-area .quiz-q .fc-hz{font-size:2.5rem;line-height:1.05;}
-  #qz-area .quiz-q .fc-py{font-size:.88rem;margin-top:-1px;}
-  #qz-area .quiz-q .fc-vi{padding:0 8px;font-size:1.15rem!important;}
-  #qz-area .fc-parts-wrap{max-height:58px;padding:4px 4px 2px;margin-bottom:2px;}
   .quiz-sub{font-size:.85rem;color:var(--muted);font-weight:400;}
-  .quiz-opts{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:6px;}
-  .quiz-opt{padding:12px 8px;min-height:56px;background:var(--paper);border:2px solid var(--border);border-radius:var(--radius-sm);font-size:1rem;font-weight:700;line-height:1.2;cursor:pointer;text-align:center;display:flex;align-items:center;justify-content:center;}
-  .quiz-opt.qo-long{font-size:.82rem;}
-  .quiz-opt .quiz-sub{margin-top:2px;}
+  .quiz-opts{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;}
+  .quiz-opt{padding:15px 10px;background:var(--paper);border:2px solid var(--border);border-radius:var(--radius-sm);font-size:1rem;font-weight:700;cursor:pointer;text-align:center;}
   .quiz-opt.correct{background:var(--l8c);border-color:var(--l8a);color:var(--l8a);animation:popIn .3s cubic-bezier(.2,.8,.3,1);}
   .quiz-opt.wrong{background:var(--l10c);border-color:var(--l10a);color:var(--l10a);animation:shakeX .4s;}
   .quiz-type-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}
@@ -1564,7 +1554,7 @@ async function loadHanziParts() {
   }
 }
 
-function renderHanziParts(hz) {
+function renderHanziParts(hz, expanded) {
   const cjk = /[\u4e00-\u9fff]/;
   const chars = [...hz];
   const rows = chars.map(ch => {
@@ -1592,7 +1582,7 @@ function renderHanziParts(hz) {
     return `<div class="fc-parts-row"><span class="fc-parts-char">${ch}</span><span class="fc-parts-comps fc-parts-note" style="opacity:.65">⏳ Đang chờ AI xử lý chữ này</span></div>`;
   }).join('');
   if (!rows) return '';
-  return `<div class="fc-parts-wrap" onclick="event.stopPropagation()"><div class="fc-parts-title">🧩 Bộ thủ / thành phần</div>${rows}</div>`;
+  return `<div class="fc-parts-wrap${expanded ? ' qz-parts' : ''}" onclick="event.stopPropagation()"><div class="fc-parts-title">🧩 Bộ thủ / thành phần</div>${rows}</div>`;
 }
 
 function fcUpdate() {
@@ -1695,13 +1685,10 @@ function qzRenderQ() {
   }
   const w = qzWords[qzIdx];
   const opts = qzMakeOpts(w);
-  // Chữ đáp án dài (vd "làm (nghề nghiệp)") tự thu nhỏ font để không vỡ dòng xấu,
-  // giữ chiều cao các nút trong lưới 2 cột đều/vừa vặn với nhau.
-  const optCls = t => 'quiz-opt' + (t && t.length > 10 ? ' qo-long' : '');
   let qHtml, optHtml;
   if (qzType === '漢→Việt') {
     qHtml = `<div class="fc-hz">${w.hz}</div>${showPinyin?`<div class="fc-py">${w.py}</div>`:''}`;
-    optHtml = opts.map(o=>`<button class="${optCls(o.vi)}" data-v="${o.vi}" onclick="qzPick(this,'${o.hz}')">${o.vi}</button>`).join('');
+    optHtml = opts.map(o=>`<button class="quiz-opt" data-v="${o.vi}" onclick="qzPick(this,'${o.hz}')">${o.vi}</button>`).join('');
   } else if (qzType === 'Việt→漢') {
     qHtml = `<div class="fc-vi" style="font-size:1.3rem">${w.vi}</div>`;
     optHtml = opts.map(o=>`<button class="quiz-opt" data-v="${o.hz}" onclick="qzPick(this,'${o.hz}')">${o.hz}${showPinyin?`<div class="quiz-sub">${o.py}</div>`:''}</button>`).join('');
@@ -1711,11 +1698,11 @@ function qzRenderQ() {
   }
   const example = qzFindExample(w.hz);
   const exampleHtml = example
-    ? `<div style="font-size:.78rem;color:var(--muted);text-align:center;padding:0 10px 2px;line-height:1.4;">📖 <b style="color:var(--ink)">${example.zh.replace(w.hz, `<span style="color:var(--active-dark);font-weight:800">${w.hz}</span>`)}</b>${showMeaning ? `<br>${example.vi}` : ''}</div>`
+    ? `<div style="font-size:.82rem;color:var(--muted);text-align:center;padding:0 12px 4px;line-height:1.5;">📖 <b style="color:var(--ink)">${example.zh.replace(w.hz, `<span style="color:var(--active-dark);font-weight:800">${w.hz}</span>`)}</b>${showMeaning ? `<br>${example.vi}` : ''}</div>`
     : '';
   // Chỉ hiện chiết tự bộ thủ khi chữ Hán đã hiện sẵn trong câu hỏi (漢→Việt) — các chế độ khác
   // (Việt→漢, Âm→漢) chữ Hán chính là đáp án cần đoán, hiện chiết tự sẽ lộ đáp án.
-  const partsHtml = qzType === '漢→Việt' ? renderHanziParts(w.hz) : '';
+  const partsHtml = qzType === '漢→Việt' ? renderHanziParts(w.hz, true) : '';
   area.innerHTML = `
     <div class="panel">
       <div style="font-size:.75rem;color:var(--muted);font-weight:700;margin-bottom:6px">${qzIdx+1}/${qzWords.length} · ${Math.round(qzScore/(qzIdx||1)*100)}% đúng</div>
