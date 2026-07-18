@@ -80,6 +80,18 @@ async function requireAuth(req, res) {
   return { username, token, db };
 }
 
+// ── Kiểm tra đăng nhập KHÔNG bắt buộc — trả về user nếu có token hợp lệ, hoặc null nếu không
+//     (khác requireAuth: không tự ghi lỗi 401, để endpoint tự quyết định làm gì tiếp theo) ──
+async function checkAuthSoft(req) {
+  const header = req.headers['authorization'] || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return null;
+  const db = await readDB();
+  const username = db.tokens[token];
+  if (!username || !db.users[username]) return null;
+  return { username, token, db };
+}
+
 function requireAdmin(user, res) {
   if (!user || (user.role !== 'admin' && user.role !== 'superadmin')) {
     res.status(403).json({ ok: false, error: 'Chỉ quản trị viên mới dùng được chức năng này' });
@@ -349,6 +361,21 @@ app.get('/api/vocab/public', async (req, res) => {
     const lessons = raw.split(',').map(s => parseInt(s, 10)).filter(n => Number.isFinite(n) && n >= 1 && n <= GUEST_MAX_LESSON_SERVER);
     if (lessons.length === 0) return res.json({ ok: true, vocab: [] });
     const vocab = await getVocabByLessons(lessons);
+    res.json({ ok: true, vocab });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Lấy TOÀN BỘ từ vựng trong database (không lọc theo bài) — dùng cho HSK / So sánh / Thống kê,
+//     các mục cần nhìn thấy cả kho từ chứ không chỉ những bài đang chọn ở màn Flashcard.
+//     Người dùng đã đăng nhập: trả về hết. Khách: chỉ trả về Bài 1-5 (đúng giới hạn dùng thử). ──
+app.get('/api/vocab/all', async (req, res) => {
+  try {
+    const auth = await checkAuthSoft(req);
+    if (auth) {
+      const vocab = await getAllVocabWords();
+      return res.json({ ok: true, vocab });
+    }
+    const vocab = await getVocabByLessons([1, 2, 3, 4, 5]);
     res.json({ ok: true, vocab });
   } catch (e) { fail(res, e); }
 });
