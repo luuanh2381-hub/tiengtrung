@@ -400,6 +400,7 @@
     #content{max-width:780px;}
   }
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
 
@@ -2493,23 +2494,7 @@ async function addVocabManual() {
     resultEl.textContent = '❌ Không kết nối được máy chủ: ' + e.message;
   }
 }
-// Thư viện xlsx (~700KB) chỉ admin dùng để nhập/xuất Excel — tải lười khi cần,
-// thay vì nhúng cứng trong <head> làm chậm trang cho MỌI người dùng.
-let _xlsxLoadPromise = null;
-function loadXLSXLib() {
-  if (window.XLSX) return Promise.resolve();
-  if (_xlsxLoadPromise) return _xlsxLoadPromise;
-  _xlsxLoadPromise = new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-    s.onload = resolve;
-    s.onerror = () => { _xlsxLoadPromise = null; reject(new Error('Không tải được thư viện Excel (kiểm tra mạng)')); };
-    document.head.appendChild(s);
-  });
-  return _xlsxLoadPromise;
-}
-async function downloadVocabTemplate() {
-  try { await loadXLSXLib(); } catch (e) { alert(e.message); return; }
+function downloadVocabTemplate() {
   const ws = XLSX.utils.json_to_sheet([
     { hz: '你好', py: 'nǐ hǎo', vi: 'xin chào', l: 1 },
     { hz: '谢谢', py: 'xièxie', vi: 'cảm ơn', l: 1 },
@@ -2523,8 +2508,6 @@ async function uploadVocabExcel() {
   const resultEl = document.getElementById('vocab-import-result');
   const file = input.files && input.files[0];
   if (!file) { resultEl.textContent = 'Chưa chọn file.'; return; }
-  resultEl.textContent = 'Đang tải công cụ đọc Excel...';
-  try { await loadXLSXLib(); } catch (e) { resultEl.textContent = '❌ ' + e.message; return; }
   resultEl.textContent = 'Đang đọc file...';
   try {
     const buf = await file.arrayBuffer();
@@ -2734,11 +2717,8 @@ async function ensureVocabLoaded(bookIds) {
   }
 }
 
-// loadVocabCounts() không cần đăng nhập, nên bắn đi song song với bootAuth() luôn
-// (trước đây phải đợi bootAuth xong mới bắt đầu gọi, tốn thêm 1 vòng round-trip không cần thiết).
-const vocabCountsPromise = loadVocabCounts();
 bootAuth().then(async () => {
-  await vocabCountsPromise;
+  await loadVocabCounts();
   mergeDiscoveredLessonsIntoBooks(); // tự nhận diện các bài mới chưa có trong danh mục, thêm vào mục chọn
   await ensureVocabLoaded(selectedBookIds); // tải đúng phần cần cho lựa chọn đã khôi phục lúc mở app
   updateStreak();
