@@ -523,34 +523,6 @@ const WORDS = VOCAB.filter(w => {
   seen.add(k); return true;
 });
 
-// ALL_WORDS = TOÀN BỘ kho từ vựng trong database, không phụ thuộc bài nào đang được chọn ở
-// màn Flashcard. WORDS chỉ chứa những bài đã chọn/tải (để tiết kiệm băng thông khi học),
-// nên KHÔNG dùng WORDS cho các mục cần nhìn toàn bộ kho từ như HSK / So sánh / Thống kê —
-// nếu không các mục đó sẽ hiện sai/thiếu tuỳ theo Quyển nào đang được chọn lúc đó.
-let ALL_WORDS = [];
-let allWordsLoaded = false;
-async function loadAllWords() {
-  try {
-    const url = (isGuest || !authToken) ? '/api/vocab/public?lessons=1,2,3,4,5' : '/api/vocab/all';
-    const res = await fetch(url, (isGuest || !authToken) ? {} : { headers: authHeaders() });
-    const data = await res.json();
-    if (data.ok && Array.isArray(data.vocab)) {
-      const s = new Set();
-      ALL_WORDS = data.vocab.filter(w => {
-        const k = w.hz + '-' + w.l;
-        if (s.has(k)) return false;
-        s.add(k); return true;
-      });
-    }
-  } catch {
-    // Không tải được thì HSK/So sánh/Thống kê tạm dùng WORDS (đã chọn) làm dự phòng bên dưới
-  } finally {
-    allWordsLoaded = true;
-  }
-}
-// Dùng ALL_WORDS nếu đã tải xong, không thì tạm dùng WORDS (đã chọn) làm dự phòng để không bị trống trơn
-function fullWordSet() { return allWordsLoaded && ALL_WORDS.length ? ALL_WORDS : WORDS; }
-
 const SENTENCES = [
   {vi:'Buổi sáng tôi ăn bánh bao và uống súp.',hz:'早上我吃包子，喝汤。',hint:'早上、包子、汤',l:7},
   {vi:'Bạn muốn ăn cơm hay mì sợi?',hz:'你要吃米饭还是面条？',hint:'米饭、还是、面条',l:7},
@@ -1289,8 +1261,6 @@ function lessonTagStyle(l) { return `background:${lessonTagBg(l)};color:${lesson
 let BOOKS = [
   {id:1,  name:'Quyển 1',      from:1,  to:15, group:'📗 Giáo trình cơ bản'},
   {id:2,  name:'Quyển 2',      from:16, to:30, group:'📗 Giáo trình cơ bản'},
-  {id:12, name:'Quyển 3',      from:100,to:109,group:'📗 Giáo trình cơ bản'},
-  {id:13, name:'Quyển 4',      from:110,to:119,group:'📗 Giáo trình cơ bản'},
   {id:3,  name:'Chuyên ngành', from:31, to:31, group:'🧩 Từ vựng mở rộng'},
   {id:4,  name:'HSK 1',        from:32, to:32, group:'🎯 Luyện thi HSK'},
   {id:5,  name:'HSK 2',        from:33, to:33, group:'🎯 Luyện thi HSK'},
@@ -1658,13 +1628,14 @@ function fcAnswer(ok) {
 // QUIZ
 // ════════════════════════════════════════════════════
 let qzWords=[], qzIdx=0, qzType='漢→Việt', qzDone=false, qzScore=0;
+let qzQuestionCount = 30; // số câu riêng cho Trắc nghiệm, mặc định 30 (không dùng chung questionCount với các tab khác)
 let qzWordExamples = []; // ví dụ theo từng từ (kho đảm bảo mỗi từ có sẵn vài câu), dùng để minh hoạ từ đang hỏi
 
 function renderQuiz() {
   return `
   <div class="count-row">
     <label>Số câu:</label>
-    <select onchange="qzSetCount(this.value)">${[5,10,15,20,30].map(n=>`<option value="${n}"${n==questionCount?' selected':''}>${n}</option>`).join('')}</select>
+    <select onchange="qzSetCount(this.value)">${[5,10,15,20,30].map(n=>`<option value="${n}"${n==qzQuestionCount?' selected':''}>${n}</option>`).join('')}</select>
   </div>
   <div class="quiz-type-row">
     ${['漢→Việt','Việt→漢','Âm→漢'].map(t=>`<button class="quiz-type-btn${qzType===t?' active':''}" onclick="qzSetType('${t}')">${t}</button>`).join('')}
@@ -1672,7 +1643,7 @@ function renderQuiz() {
   <div id="qz-area"></div>`;
 }
 
-function qzSetCount(v) { questionCount=parseInt(v); qzIdx=0; qzScore=0; bindQuiz(); }
+function qzSetCount(v) { qzQuestionCount=parseInt(v); qzIdx=0; qzScore=0; bindQuiz(); }
 function qzSetType(t) { qzType=t; qzIdx=0; qzScore=0; bindQuiz(); }
 
 // Tải toàn bộ ví dụ theo từ (kho đảm bảo mỗi từ có sẵn vài câu) cho các bài đang học
@@ -1697,7 +1668,7 @@ function qzFindExample(hz) {
 
 function bindQuiz() {
   const base = getFilteredWords();
-  qzWords = shuffle(sortByPriority(base)).slice(0, questionCount);
+  qzWords = shuffle(sortByPriority(base)).slice(0, qzQuestionCount);
   qzIdx = 0; qzScore = 0;
   qzRenderQ();
   qzLoadSentencePool().then(() => qzRenderQ()); // nạp xong thì vẽ lại để hiện câu ví dụ nếu có
@@ -1733,14 +1704,25 @@ function qzRenderQ() {
   // Chỉ hiện chiết tự bộ thủ khi chữ Hán đã hiện sẵn trong câu hỏi (漢→Việt) — các chế độ khác
   // (Việt→漢, Âm→漢) chữ Hán chính là đáp án cần đoán, hiện chiết tự sẽ lộ đáp án.
   const partsHtml = qzType === '漢→Việt' ? renderHanziParts(w.hz, true) : '';
+  const myIdx = qzIdx; // để đối chiếu lại khi setTimeout chạy, tránh chèn nhầm vào câu đã đổi
   area.innerHTML = `
     <div class="panel">
       <div style="font-size:.75rem;color:var(--muted);font-weight:700;margin-bottom:6px">${qzIdx+1}/${qzWords.length} · ${Math.round(qzScore/(qzIdx||1)*100)}% đúng</div>
       <div class="quiz-q">${qHtml}</div>
-      ${exampleHtml}
-      ${partsHtml}
+      <div id="qz-example-${myIdx}"></div>
+      <div id="qz-parts-${myIdx}"></div>
       <div class="quiz-opts" id="qz-opts">${optHtml}</div>
     </div>`;
+  // Hiện ví dụ + chiết tự sau 3 giây thay vì ngay lập tức, để người học tự đoán trước
+  if (exampleHtml || partsHtml) {
+    setTimeout(() => {
+      if (qzIdx !== myIdx) return; // đã chuyển sang câu khác, không chèn nữa
+      const exEl = document.getElementById('qz-example-' + myIdx);
+      const paEl = document.getElementById('qz-parts-' + myIdx);
+      if (exEl) exEl.innerHTML = exampleHtml;
+      if (paEl) paEl.innerHTML = partsHtml;
+    }, 3000);
+  }
   document.querySelectorAll('#qz-opts .quiz-opt').forEach(b=>{
     b._correct = (b.dataset.v === (qzType==='漢→Việt' ? w.vi : w.hz));
   });
@@ -2068,10 +2050,9 @@ function trNext(ok) { trIdx++; trRenderQ(); }
 // ════════════════════════════════════════════════════
 function renderStats() {
   const d=getSRS();
-  const src = fullWordSet();
   const all = lessonsAllMode
-    ? src.filter(w => selectedBookIds.has(bookOfLesson(w.l)))
-    : src.filter(w => selectedLessons.has(w.l));
+    ? WORDS.filter(w => selectedBookIds.has(bookOfLesson(w.l)))
+    : WORDS.filter(w => selectedLessons.has(w.l));
   const total=all.reduce((s,w)=>s+(d[w.hz]?.total||0),0);
   const correct=all.reduce((s,w)=>s+(d[w.hz]?.correct||0),0);
   const known=all.filter(w=>d[w.hz]&&d[w.hz].step>=3).length;
@@ -2141,7 +2122,7 @@ function renderCompare() {
 function bindCompare() {}
 
 function cpRenderList() {
-  const appHz = new Set(fullWordSet().map(w => w.hz));
+  const appHz = new Set(WORDS.map(w => w.hz));
   return CONFUSE_GROUPS.map(g => {
     const itemsHtml = g.chars.map((c,i) => `
       ${i>0?'<span class="confuse-vs">vs</span>':''}
@@ -2209,57 +2190,64 @@ function cpExitTest() {
 // HSK4 PROGRESS TRACKER
 // ════════════════════════════════════════════════════
 function computeHSKCoverage() {
+  const appHz = new Set(WORDS.map(w => w.hz));
   const srs = getSRS();
-  const src = fullWordSet();
-  const hskBooks = BOOKS.filter(b => b.group === '🎯 Luyện thi HSK');
   const result = {};
-  let totalWords = 0, totalKnown = 0;
-  hskBooks.forEach(b => {
-    const seenHz = new Set();
-    let known = 0;
-    src.filter(w => w.l >= b.from && w.l <= b.to).forEach(w => {
-      if (seenHz.has(w.hz)) return; // 1 chữ chỉ tính 1 lần dù xuất hiện nhiều bài trong cùng cấp
-      seenHz.add(w.hz);
-      const s = srs[w.hz];
-      if (s && s.step >= 3) known++;
+  let totalWords = 0, totalCovered = 0, totalKnown = 0;
+  [1,2,3,4].forEach(lvl => {
+    const list = HSK_OFFICIAL[lvl] || [];
+    let covered = 0, known = 0;
+    list.forEach(hz => {
+      if (appHz.has(hz)) {
+        covered++;
+        const s = srs[hz];
+        if (s && s.step >= 3) known++;
+      }
     });
-    result[b.id] = { name: b.name, total: seenHz.size, known };
-    totalWords += seenHz.size; totalKnown += known;
+    result[lvl] = { total: list.length, covered, known };
+    totalWords += list.length; totalCovered += covered; totalKnown += known;
   });
-  result.overall = { total: totalWords, known: totalKnown };
+  result.overall = { total: totalWords, covered: totalCovered, known: totalKnown };
   return result;
 }
 
 function renderHSK() {
   const cov = computeHSKCoverage();
-  const hskBooks = BOOKS.filter(b => b.group === '🎯 Luyện thi HSK');
-  const pct = cov.overall.total ? Math.round(cov.overall.known/cov.overall.total*100) : 0;
+  const pct = cov.overall.total ? Math.round(cov.overall.covered/cov.overall.total*100) : 0;
+  const knownPct = cov.overall.total ? Math.round(cov.overall.known/cov.overall.total*100) : 0;
 
-  const levelRows = hskBooks.map(b => {
-    const c = cov[b.id];
-    const p = c.total ? Math.round(c.known/c.total*100) : 0;
+  const levelRows = [1,2,3,4].map(lvl => {
+    const c = cov[lvl];
+    const p = c.total ? Math.round(c.covered/c.total*100) : 0;
     return `<div class="hsk-level-row">
       <div class="hsk-level-label">
-        <span class="lv">${b.name}</span>
-        <span class="ct">${c.known}/${c.total} từ (${p}%)</span>
+        <span class="lv">HSK ${lvl}</span>
+        <span class="ct">${c.covered}/${c.total} từ (${p}%)</span>
       </div>
-      <div class="prog-bar"><div class="prog-fill" style="width:${p}%;background:${lessonColor(6+b.id)}"></div></div>
+      <div class="prog-bar"><div class="prog-fill" style="width:${p}%;background:${lessonColor(6+lvl)}"></div></div>
     </div>`;
   }).join('');
 
   return `
   <div class="panel">
     <div class="hsk-hero">
-      <div class="hsk-hero-num">${cov.overall.known}/${cov.overall.total}</div>
-      <div class="hsk-hero-sub">từ HSK đã thuộc / tổng số từ HSK đã nhập vào app (${pct}%)</div>
+      <div class="hsk-hero-num">${cov.overall.covered}/${cov.overall.total}</div>
+      <div class="hsk-hero-sub">từ vựng HSK1-4 đã có trong app (${pct}%)</div>
       <div class="hsk-bigbar"><div class="hsk-bigbar-fill" style="width:${pct}%"></div></div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">Đã thuộc thật (⭐ qua SRS, ≥1 ngày)</div>
+    <div class="stat-grid" style="grid-template-columns:1fr 1fr;">
+      <div class="stat-box"><div class="stat-num" style="color:var(--l8a)">${cov.overall.known}</div><div class="stat-lbl">Từ đã thuộc</div></div>
+      <div class="stat-box"><div class="stat-num">${knownPct}%</div><div class="stat-lbl">% trên tổng HSK1-4</div></div>
     </div>
   </div>
   <div class="panel">
     <div class="panel-title">Chi tiết theo cấp độ</div>
     ${levelRows}
     <div class="hsk-note">
-      📌 Số liệu tính trực tiếp trên bộ từ HSK bạn đã đưa vào database (mục "Luyện thi HSK" ở màn chọn bài) — không còn so với danh sách chuẩn cố định nữa. "Đã thuộc" là từ đã vượt mốc ôn ≥1 ngày trong SRS.
+      📌 Danh sách dựa trên bộ từ vựng HSK1-4 phổ biến (~1200 từ, chuẩn HSK 2.0). Một từ tính "đã có" nếu trùng chữ Hán với từ vựng trong app (bất kể bài học nào); "đã thuộc" là từ đã vượt mốc ôn ≥1 ngày trong SRS. Số liệu chỉ mang tính ước lượng tham khảo, không thay thế kết quả thi thật.
     </div>
   </div>`;
 }
@@ -2737,7 +2725,6 @@ bootAuth().then(async () => {
   updateStreak();
   render();
   loadHanziParts().then(() => render()); // tải chiết tự bộ thủ ngầm phía sau, không chặn hiển thị ban đầu
-  loadAllWords().then(() => render()); // tải toàn bộ kho từ ngầm phía sau, cho HSK/So sánh/Thống kê
 });
 
 // ── Widget liên hệ Zalo (nổi góc màn hình) ──
