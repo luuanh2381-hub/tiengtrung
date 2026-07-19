@@ -5,7 +5,6 @@
 // vì Vercel không giữ file lâu dài giữa các lần chạy.
 // ════════════════════════════════════════════════════
 const express = require('express');
-const compression = require('compression');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { readDB, updateDB, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson,
@@ -65,7 +64,6 @@ function fail(res, e, fallbackMsg) {
   res.status(500).json({ ok: false, error: fallbackMsg || ('Lỗi server: ' + (e && e.message)) });
 }
 
-app.use(compression());
 app.use(express.json({ limit: '20mb' }));
 
 // ── Xác thực: kiểm tra token, KHÔNG khoá dữ liệu (chỉ đọc) ──
@@ -351,9 +349,6 @@ app.get('/api/vocab/public', async (req, res) => {
     const lessons = raw.split(',').map(s => parseInt(s, 10)).filter(n => Number.isFinite(n) && n >= 1 && n <= GUEST_MAX_LESSON_SERVER);
     if (lessons.length === 0) return res.json({ ok: true, vocab: [] });
     const vocab = await getVocabByLessons(lessons);
-    // Dữ liệu công khai, giống nhau cho mọi khách — cache ngắn ở CDN/trình duyệt để
-    // các lượt ghé sau (hoặc chuyển tab) không phải chờ DB mỗi lần.
-    res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=600');
     res.json({ ok: true, vocab });
   } catch (e) { fail(res, e); }
 });
@@ -363,7 +358,6 @@ app.get('/api/vocab/public', async (req, res) => {
 app.get('/api/vocab/counts', async (req, res) => {
   try {
     const counts = await getVocabCounts();
-    res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=600');
     res.json({ ok: true, counts });
   } catch (e) { fail(res, e); }
 });
