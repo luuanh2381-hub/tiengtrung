@@ -1259,9 +1259,13 @@ function lessonTagStyle(l) { return `background:${lessonTagBg(l)};color:${lesson
 
 // Quyển (book) — Quyển 1: bài 1-15, Quyển 2: bài 16-30
 let BOOKS = [
-  {id:1,  name:'Quyển 1',      from:1,  to:15, group:'📗 Giáo trình cơ bản'},
-  {id:2,  name:'Quyển 2',      from:16, to:30, group:'📗 Giáo trình cơ bản'},
+  {id:1,  name:'Quyển 1',      from:1,   to:15,  group:'📗 Giáo trình cơ bản'},
+  {id:2,  name:'Quyển 2',      from:16,  to:30,  group:'📗 Giáo trình cơ bản'},
+  {id:12, name:'Quyển 3',      from:100, to:109, group:'📗 Giáo trình cơ bản'},
+  {id:13, name:'Quyển 4',      from:110, to:119, group:'📗 Giáo trình cơ bản'},
   {id:3,  name:'Chuyên ngành', from:31, to:31, group:'🧩 Từ vựng mở rộng'},
+  {id:14, name:'Từ nối',       from:90, to:90, group:'🧩 Từ vựng mở rộng'},
+  {id:15, name:'Lượng từ',     from:91, to:91, group:'🧩 Từ vựng mở rộng'},
   {id:4,  name:'HSK 1',        from:32, to:32, group:'🎯 Luyện thi HSK'},
   {id:5,  name:'HSK 2',        from:33, to:33, group:'🎯 Luyện thi HSK'},
   {id:6,  name:'HSK 3',        from:34, to:34, group:'🎯 Luyện thi HSK'},
@@ -1713,7 +1717,7 @@ function qzRenderQ() {
       <div id="qz-parts-${myIdx}"></div>
       <div class="quiz-opts" id="qz-opts">${optHtml}</div>
     </div>`;
-  // Hiện ví dụ + chiết tự sau 3 giây thay vì ngay lập tức, để người học tự đoán trước
+  // Hiện ví dụ + chiết tự sau 5 giây thay vì ngay lập tức, để người học tự đoán trước
   if (exampleHtml || partsHtml) {
     setTimeout(() => {
       if (qzIdx !== myIdx) return; // đã chuyển sang câu khác, không chèn nữa
@@ -1721,7 +1725,7 @@ function qzRenderQ() {
       const paEl = document.getElementById('qz-parts-' + myIdx);
       if (exEl) exEl.innerHTML = exampleHtml;
       if (paEl) paEl.innerHTML = partsHtml;
-    }, 3000);
+    }, 5000);
   }
   document.querySelectorAll('#qz-opts .quiz-opt').forEach(b=>{
     b._correct = (b.dataset.v === (qzType==='漢→Việt' ? w.vi : w.hz));
