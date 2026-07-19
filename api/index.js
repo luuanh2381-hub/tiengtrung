@@ -5,6 +5,7 @@
 // vì Vercel không giữ file lâu dài giữa các lần chạy.
 // ════════════════════════════════════════════════════
 const express = require('express');
+const compression = require('compression');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { readDB, updateDB, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson,
@@ -64,6 +65,7 @@ function fail(res, e, fallbackMsg) {
   res.status(500).json({ ok: false, error: fallbackMsg || ('Lỗi server: ' + (e && e.message)) });
 }
 
+app.use(compression());
 app.use(express.json({ limit: '20mb' }));
 
 // ── Xác thực: kiểm tra token, KHÔNG khoá dữ liệu (chỉ đọc) ──
@@ -77,18 +79,6 @@ async function requireAuth(req, res) {
     res.status(401).json({ ok: false, error: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại' });
     return null;
   }
-  return { username, token, db };
-}
-
-// ── Kiểm tra đăng nhập KHÔNG bắt buộc — trả về user nếu có token hợp lệ, hoặc null nếu không
-//     (khác requireAuth: không tự ghi lỗi 401, để endpoint tự quyết định làm gì tiếp theo) ──
-async function checkAuthSoft(req) {
-  const header = req.headers['authorization'] || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-  if (!token) return null;
-  const db = await readDB();
-  const username = db.tokens[token];
-  if (!username || !db.users[username]) return null;
   return { username, token, db };
 }
 
@@ -361,21 +351,9 @@ app.get('/api/vocab/public', async (req, res) => {
     const lessons = raw.split(',').map(s => parseInt(s, 10)).filter(n => Number.isFinite(n) && n >= 1 && n <= GUEST_MAX_LESSON_SERVER);
     if (lessons.length === 0) return res.json({ ok: true, vocab: [] });
     const vocab = await getVocabByLessons(lessons);
-    res.json({ ok: true, vocab });
-  } catch (e) { fail(res, e); }
-});
-
-// ── Lấy TOÀN BỘ từ vựng trong database (không lọc theo bài) — dùng cho HSK / So sánh / Thống kê,
-//     các mục cần nhìn thấy cả kho từ chứ không chỉ những bài đang chọn ở màn Flashcard.
-//     Người dùng đã đăng nhập: trả về hết. Khách: chỉ trả về Bài 1-5 (đúng giới hạn dùng thử). ──
-app.get('/api/vocab/all', async (req, res) => {
-  try {
-    const auth = await checkAuthSoft(req);
-    if (auth) {
-      const vocab = await getAllVocabWords();
-      return res.json({ ok: true, vocab });
-    }
-    const vocab = await getVocabByLessons([1, 2, 3, 4, 5]);
+    // Dữ liệu công khai, giống nhau cho mọi khách — cache ngắn ở CDN/trình duyệt để
+    // các lượt ghé sau (hoặc chuyển tab) không phải chờ DB mỗi lần.
+    res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=600');
     res.json({ ok: true, vocab });
   } catch (e) { fail(res, e); }
 });
@@ -385,6 +363,7 @@ app.get('/api/vocab/all', async (req, res) => {
 app.get('/api/vocab/counts', async (req, res) => {
   try {
     const counts = await getVocabCounts();
+    res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=600');
     res.json({ ok: true, counts });
   } catch (e) { fail(res, e); }
 });
