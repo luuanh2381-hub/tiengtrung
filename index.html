@@ -1278,7 +1278,6 @@ let BOOKS = [
 // Tự động nhận diện các số bài có từ vựng trong database nhưng CHƯA thuộc Quyển/level nào ở trên
 // (vd admin import Excel với số bài mới, chưa từng khai báo) — tự thêm thành 1 mục chọn riêng,
 // không cần sửa code mỗi khi có dữ liệu mới.
-let nextDynamicBookId = 1000;
 function mergeDiscoveredLessonsIntoBooks() {
   const isCovered = (l) => BOOKS.some(b => l >= b.from && l <= b.to);
   const discovered = Object.keys(vocabCounts)
@@ -1286,7 +1285,9 @@ function mergeDiscoveredLessonsIntoBooks() {
     .filter(l => Number.isFinite(l) && vocabCounts[l] > 0 && !isCovered(l))
     .sort((a,b) => a-b);
   for (const l of discovered) {
-    BOOKS.push({ id: nextDynamicBookId++, name: 'Bài ' + l, from: l, to: l, group: '🆕 Từ vựng mới (tự nhận diện)' });
+    // id = 2000+bài — cố định theo số bài (không phải bộ đếm tăng dần) để giữ ổn định giữa các lần
+    // mở app, tránh trường hợp cùng 1 id trỏ sang bài khác nhau nếu thứ tự phát hiện thay đổi.
+    BOOKS.push({ id: 2000 + l, name: 'Bài ' + l, from: l, to: l, group: '🆕 Từ vựng mới (tự nhận diện)' });
   }
 }
 function lessonsOfBook(bookId) {
@@ -1708,25 +1709,14 @@ function qzRenderQ() {
   // Chỉ hiện chiết tự bộ thủ khi chữ Hán đã hiện sẵn trong câu hỏi (漢→Việt) — các chế độ khác
   // (Việt→漢, Âm→漢) chữ Hán chính là đáp án cần đoán, hiện chiết tự sẽ lộ đáp án.
   const partsHtml = qzType === '漢→Việt' ? renderHanziParts(w.hz, true) : '';
-  const myIdx = qzIdx; // để đối chiếu lại khi setTimeout chạy, tránh chèn nhầm vào câu đã đổi
   area.innerHTML = `
     <div class="panel">
       <div style="font-size:.75rem;color:var(--muted);font-weight:700;margin-bottom:6px">${qzIdx+1}/${qzWords.length} · ${Math.round(qzScore/(qzIdx||1)*100)}% đúng</div>
       <div class="quiz-q">${qHtml}</div>
-      <div id="qz-example-${myIdx}"></div>
-      <div id="qz-parts-${myIdx}"></div>
+      ${exampleHtml}
+      ${partsHtml}
       <div class="quiz-opts" id="qz-opts">${optHtml}</div>
     </div>`;
-  // Hiện ví dụ + chiết tự sau 5 giây thay vì ngay lập tức, để người học tự đoán trước
-  if (exampleHtml || partsHtml) {
-    setTimeout(() => {
-      if (qzIdx !== myIdx) return; // đã chuyển sang câu khác, không chèn nữa
-      const exEl = document.getElementById('qz-example-' + myIdx);
-      const paEl = document.getElementById('qz-parts-' + myIdx);
-      if (exEl) exEl.innerHTML = exampleHtml;
-      if (paEl) paEl.innerHTML = partsHtml;
-    }, 5000);
-  }
   document.querySelectorAll('#qz-opts .quiz-opt').forEach(b=>{
     b._correct = (b.dataset.v === (qzType==='漢→Việt' ? w.vi : w.hz));
   });
@@ -2693,7 +2683,10 @@ let loadedLessonNumbers = new Set();
 async function ensureVocabLoaded(bookIds) {
   const needed = [];
   for (const id of bookIds) {
-    const b = BOOKS.find(x => x.id === id);
+    let b = BOOKS.find(x => x.id === id);
+    // Bài tự nhận diện (id = 2000+bài) có thể chưa kịp gộp vào BOOKS nếu vocabCounts còn đang tải song song —
+    // suy ra trực tiếp từ id để không phải chờ mergeDiscoveredLessonsIntoBooks() chạy trước.
+    if (!b && id >= 2000) b = { from: id - 2000, to: id - 2000 };
     if (!b) continue;
     for (let l = b.from; l <= b.to; l++) {
       if (!loadedLessonNumbers.has(l)) needed.push(l);
@@ -2723,9 +2716,12 @@ async function ensureVocabLoaded(bookIds) {
 }
 
 bootAuth().then(async () => {
-  await loadVocabCounts();
+  // Chạy song song 2 việc không phụ thuộc nhau (trước đây chờ tuần tự, tốn thêm 1 lượt round-trip)
+  await Promise.all([
+    loadVocabCounts(),
+    ensureVocabLoaded(selectedBookIds), // tải đúng phần cần cho lựa chọn đã khôi phục lúc mở app
+  ]);
   mergeDiscoveredLessonsIntoBooks(); // tự nhận diện các bài mới chưa có trong danh mục, thêm vào mục chọn
-  await ensureVocabLoaded(selectedBookIds); // tải đúng phần cần cho lựa chọn đã khôi phục lúc mở app
   updateStreak();
   render();
   loadHanziParts().then(() => render()); // tải chiết tự bộ thủ ngầm phía sau, không chặn hiển thị ban đầu
