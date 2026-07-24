@@ -2441,6 +2441,16 @@ async function loadWordExampleProgress() {
     area.textContent = 'Không kết nối được máy chủ: ' + e.message;
   }
 }
+// Hiện chi tiết vài lỗi mẫu (không lặp lại) gặp phải khi chạy sinh dữ liệu bằng AI — giúp admin biết
+// chính xác vì sao có lỗi (vd thiếu GEMINI_API_KEY, Gemini quá tải, JSON trả về sai định dạng...).
+function renderErrorSamples(errorSamples) {
+  if (!Array.isArray(errorSamples) || errorSamples.length === 0) return '';
+  const items = errorSamples.map(msg => `<li style="margin-bottom:3px;">${msg}</li>`).join('');
+  return `<div style="margin-top:8px;padding:10px 12px;background:#fdecea;border-radius:10px;color:#c0392b;font-size:.78rem;">
+    <b>Chi tiết lỗi:</b>
+    <ul style="margin:6px 0 0;padding-left:18px;">${items}</ul>
+  </div>`;
+}
 async function triggerWordExampleGeneration() {
   const btn = document.getElementById('gen-word-ex-btn');
   const resultEl = document.getElementById('gen-word-ex-result');
@@ -2452,7 +2462,7 @@ async function triggerWordExampleGeneration() {
     const data = await res.json();
     if (!data.ok) { resultEl.innerHTML = `❌ ${data.error || 'Có lỗi xảy ra'}`; }
     else {
-      resultEl.innerHTML = `✅ Đã xử lý ${data.batches} lô. Từ xong hoàn toàn: ${data.wordsDone}, cần thử lại: ${data.wordsRetried}${data.errors ? `, lỗi: ${data.errors}` : ''}. Còn ${data.totalPending - data.wordsDone} từ đang chờ xử lý.`;
+      resultEl.innerHTML = `✅ Đã xử lý ${data.batches} lô. Từ xong hoàn toàn: ${data.wordsDone}, cần thử lại: ${data.wordsRetried}${data.errors ? `, lỗi: ${data.errors}` : ''}. Còn ${data.totalPending - data.wordsDone} từ đang chờ xử lý.` + renderErrorSamples(data.errorSamples);
       loadWordExampleProgress();
     }
   } catch (e) {
@@ -2491,7 +2501,7 @@ async function triggerHanziPartsGeneration() {
     const data = await res.json();
     if (!data.ok) { resultEl.innerHTML = `❌ ${data.error || 'Có lỗi xảy ra'}`; }
     else {
-      resultEl.innerHTML = `✅ Đã xử lý ${data.batches} lô, thêm ${data.done} chữ${data.errors ? `, lỗi: ${data.errors}` : ''}. Còn ${data.totalPending - data.done} chữ đang chờ xử lý.`;
+      resultEl.innerHTML = `✅ Đã xử lý ${data.batches} lô, thêm ${data.done} chữ${data.errors ? `, lỗi: ${data.errors}` : ''}. Còn ${data.totalPending - data.done} chữ đang chờ xử lý.` + renderErrorSamples(data.errorSamples);
       loadHanziPartsProgress();
       loadHanziParts(); // nạp lại dữ liệu mới để dùng ngay không cần tải lại trang
     }
@@ -2773,9 +2783,15 @@ async function loadActivityLogs() {
       const rows = d.logs.map(l => {
         const st = LOG_ACTION_STYLE[l.action] || LOG_ACTION_STYLE.system;
         const who = l.username ? `<b>${l.username}</b>` : '<i>Ẩn danh</i>';
+        const errIdx = l.detail.indexOf(' — Lỗi mẫu: ');
+        const mainText = errIdx === -1 ? l.detail : l.detail.slice(0, errIdx);
+        const errText = errIdx === -1 ? '' : l.detail.slice(errIdx + ' — Lỗi mẫu: '.length);
+        const errBlock = errText
+          ? `<div style="margin-top:4px;color:#c0392b;font-size:.78rem;">⚠️ ${errText.split(' | ').join('<br>⚠️ ')}</div>`
+          : '';
         return `<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid #f0f0f0;">
           <span style="font-size:.68rem;font-weight:800;background:${st.bg};color:${st.color};padding:2px 7px;border-radius:8px;white-space:nowrap;">${st.icon} ${st.label}</span>
-          <div style="flex:1;font-size:.85rem;">${who} — ${l.detail}</div>
+          <div style="flex:1;font-size:.85rem;">${who} — ${mainText}${errBlock}</div>
           <span style="font-size:.7rem;color:var(--muted);white-space:nowrap;">${l.time}</span>
         </div>`;
       }).join('');
