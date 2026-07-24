@@ -482,18 +482,19 @@ app.post('/api/change-password', async (req, res) => {
 // Cần đặt biến môi trường GEMINI_API_KEY (lấy tại https://aistudio.google.com/apikey)
 // ════════════════════════════════════════════════════
 const https = require('https');
-// 'gemini-flash-latest' luôn trỏ tới bản Gemini Flash mới nhất còn được hỗ trợ,
-// tránh phải sửa code mỗi khi Google đổi/khai tử model.
-const GEMINI_MODEL = 'gemini-flash-latest';
+// QUAN TRỌNG: Tài liệu chính thức của Google (ai.google.dev/gemini-api/docs/models) nói rõ
+// "gemini-flash-latest" CỐ TÌNH trỏ tới model thử nghiệm (experimental) — không dành cho production,
+// và có quota free tier rất hẹp (từng đo được chỉ 5 request/phút). Đó là lý do dù giãn cách bao lâu
+// vẫn bị "quota exceeded" liên tục. Model ổn định "gemini-3.5-flash" có quota free tier rộng rãi hơn
+// nhiều (~15 request/phút, ~1.500 request/ngày, theo dữ liệu công khai giữa 2026). Có thể ghi đè bằng
+// biến môi trường GEMINI_MODEL trên Vercel nếu sau này muốn đổi model mà không cần sửa code.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
-// Free tier của Gemini thường chỉ cho phép rất ít request/phút (vd 5 request/phút).
-// Nếu gọi dồn dập nhiều batch liên tiếp sẽ bị lỗi "quota exceeded" hàng loạt.
-// Giải pháp: LUÔN đảm bảo khoảng cách tối thiểu giữa 2 lần gọi Gemini, dù batch nào gọi cũng vậy
-// (dùng chung 1 "hàng đợi" thời gian ở cấp module) — giúp việc sinh dữ liệu chạy chậm nhưng chắc ăn,
-// thay vì chạy nhanh nhưng gần như toàn bộ batch đều thất bại vì vượt quota.
-const GEMINI_MIN_INTERVAL_MS = 13000; // ~4.6 request/phút, an toàn dưới ngưỡng 5 request/phút
+// Luôn đảm bảo khoảng cách tối thiểu giữa 2 lần gọi Gemini để không vượt quota free tier.
+// Với gemini-3.5-flash (~15 request/phút) thì 4.5 giây/lần là đủ an toàn (~13 request/phút).
+const GEMINI_MIN_INTERVAL_MS = 4500;
 let lastGeminiCallAt = 0;
 async function waitForGeminiSlot() {
   const elapsed = Date.now() - lastGeminiCallAt;
