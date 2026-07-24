@@ -486,7 +486,23 @@ const https = require('https');
 // tránh phải sửa code mỗi khi Google đổi/khai tử model.
 const GEMINI_MODEL = 'gemini-flash-latest';
 
-function callGemini(prompt) {
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+// Free tier của Gemini thường chỉ cho phép rất ít request/phút (vd 5 request/phút).
+// Nếu gọi dồn dập nhiều batch liên tiếp sẽ bị lỗi "quota exceeded" hàng loạt.
+// Giải pháp: LUÔN đảm bảo khoảng cách tối thiểu giữa 2 lần gọi Gemini, dù batch nào gọi cũng vậy
+// (dùng chung 1 "hàng đợi" thời gian ở cấp module) — giúp việc sinh dữ liệu chạy chậm nhưng chắc ăn,
+// thay vì chạy nhanh nhưng gần như toàn bộ batch đều thất bại vì vượt quota.
+const GEMINI_MIN_INTERVAL_MS = 13000; // ~4.6 request/phút, an toàn dưới ngưỡng 5 request/phút
+let lastGeminiCallAt = 0;
+async function waitForGeminiSlot() {
+  const elapsed = Date.now() - lastGeminiCallAt;
+  if (elapsed < GEMINI_MIN_INTERVAL_MS) await sleep(GEMINI_MIN_INTERVAL_MS - elapsed);
+  lastGeminiCallAt = Date.now();
+}
+
+async function callGemini(prompt) {
+  await waitForGeminiSlot();
   return new Promise((resolve, reject) => {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return reject(new Error('Chưa cấu hình GEMINI_API_KEY trên server'));
@@ -540,7 +556,9 @@ function callGemini(prompt) {
 }
 
 // Giống callGemini() nhưng gửi kèm file âm thanh (multimodal) — dùng để chấm phát âm.
-function callGeminiWithAudio(prompt, audioBase64, mimeType) {
+// Dùng chung "hàng đợi" thời gian với callGemini() ở trên vì cùng chia sẻ 1 quota API key.
+async function callGeminiWithAudio(prompt, audioBase64, mimeType) {
+  await waitForGeminiSlot();
   return new Promise((resolve, reject) => {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return reject(new Error('Chưa cấu hình GEMINI_API_KEY trên server'));
@@ -617,6 +635,18 @@ function extractUniqueChars(words) {
   for (const w of words) for (const ch of [...w.hz]) if (cjk.test(ch)) set.add(ch);
   return set;
 }
+// Gom các lỗi mẫu lại, coi 2 lỗi là "giống nhau" nếu bỏ hết số đi mà văn bản còn lại khớp nhau
+// (vd lỗi "quota exceeded... Please retry in 34.1s" và "...retry in 21.7s" chỉ khác số giây đếm ngược,
+// nên chỉ cần giữ 1 mẫu là đủ, tránh log bị lặp lại y hệt nhau hàng chục lần).
+const MAX_ERROR_SAMPLES = 5;
+function addErrorSample(errorSamples, msg) {
+  if (errorSamples.length >= MAX_ERROR_SAMPLES) return;
+  const normalize = (s) => s.replace(/[\d.]+/g, '#');
+  const key = normalize(msg);
+  if (errorSamples.some(s => normalize(s) === key)) return;
+  errorSamples.push(msg.length > 300 ? msg.slice(0, 300) + '…' : msg);
+}
+
 async function runHanziPartsGeneration(timeBudgetMs) {
   const startedAt = Date.now();
   const TIME_BUDGET_MS = timeBudgetMs || 50000;
@@ -639,9 +669,7 @@ Trả lời CHỈ bằng JSON hợp lệ, đúng thứ tự các chữ đã cho,
       const data = parseAiJson(text);
       if (!Array.isArray(data.chars)) {
         errors++;
-        if (!errorSamples.includes('Phản hồi AI không đúng định dạng JSON mong đợi (thiếu mảng "chars")')) {
-          errorSamples.push('Phản hồi AI không đúng định dạng JSON mong đợi (thiếu mảng "chars")');
-        }
+        addErrorSample(errorSamples, 'Phản hồi AI không đúng định dạng JSON mong đợi (thiếu mảng "chars")');
         continue;
       }
       const toInsert = [];
@@ -658,8 +686,7 @@ Trả lời CHỈ bằng JSON hợp lệ, đúng thứ tự các chữ đã cho,
       batches++;
     } catch (e) {
       errors++;
-      const msg = (e && e.message) || 'Lỗi không rõ';
-      if (!errorSamples.includes(msg)) errorSamples.push(msg);
+      addErrorSample(errorSamples, (e && e.message) || 'Lỗi không rõ');
     }
   }
   return { batches, done, errors, totalPending: pending.length, errorSamples };
@@ -688,9 +715,7 @@ Trả lời CHỈ bằng JSON hợp lệ, đúng định dạng, đúng thứ t�
       const data = parseAiJson(text);
       if (!Array.isArray(data.words)) {
         errors++;
-        if (!errorSamples.includes('Phản hồi AI không đúng định dạng JSON mong đợi (thiếu mảng "words")')) {
-          errorSamples.push('Phản hồi AI không đúng định dạng JSON mong đợi (thiếu mảng "words")');
-        }
+        addErrorSample(errorSamples, 'Phản hồi AI không đúng định dạng JSON mong đợi (thiếu mảng "words")');
         continue;
       }
       for (const item of data.words) {
@@ -708,8 +733,7 @@ Trả lời CHỈ bằng JSON hợp lệ, đúng định dạng, đúng thứ t�
       batches++;
     } catch (e) {
       errors++;
-      const msg = (e && e.message) || 'Lỗi không rõ';
-      if (!errorSamples.includes(msg)) errorSamples.push(msg);
+      addErrorSample(errorSamples, (e && e.message) || 'Lỗi không rõ');
     }
   }
   return { batches, wordsDone, wordsRetried, errors, totalPending: pending.length, errorSamples };
