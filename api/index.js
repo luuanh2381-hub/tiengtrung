@@ -9,7 +9,8 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { readDB, updateDB, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson,
   getAllVocabWords, getWordExampleCounts, insertWordExamples, getWordExamplesForLessons,
-  getAllHanziParts, getHanziPartsKeys, insertHanziParts } = require('../lib/db');
+  getAllHanziParts, getHanziPartsKeys, insertHanziParts,
+  insertActivityLog, getActivityLogs } = require('../lib/db');
 
 const app = express();
 
@@ -62,6 +63,13 @@ function todayKey() {
 function fail(res, e, fallbackMsg) {
   console.error('⚠️  Lỗi:', e && e.message);
   res.status(500).json({ ok: false, error: fallbackMsg || ('Lỗi server: ' + (e && e.message)) });
+}
+
+// ── Ghi nhật ký hoạt động (không chờ, không để lỗi ghi log làm hỏng luồng chính) ──
+function logActivity(username, role, action, detail) {
+  insertActivityLog({ username, role, action, detail }).catch((e) => {
+    console.error('⚠️  Không ghi được nhật ký:', e && e.message);
+  });
 }
 
 app.use(express.json({ limit: '20mb' }));
@@ -132,6 +140,7 @@ app.post('/api/register', async (req, res) => {
       const known = countKnown(db.users[key].progress);
       return { ok: true, token, username, role: db.users[key].role, progress: db.users[key].progress, rank: getRank(known) };
     });
+    if (result.ok) logActivity(result.username, result.role, 'auth', 'Đăng ký tài khoản mới');
     res.json(result);
   } catch (e) { fail(res, e); }
 });
@@ -144,9 +153,15 @@ app.post('/api/login', async (req, res) => {
     const key = String(username).toLowerCase();
     const db = await readDB();
     const user = db.users[key];
-    if (!user) return res.json({ ok: false, error: 'Tài khoản không tồn tại' });
+    if (!user) {
+      logActivity(username, null, 'auth', 'Đăng nhập thất bại (tài khoản không tồn tại)');
+      return res.json({ ok: false, error: 'Tài khoản không tồn tại' });
+    }
     const match = await bcrypt.compare(String(password), user.passwordHash);
-    if (!match) return res.json({ ok: false, error: 'Sai mật khẩu' });
+    if (!match) {
+      logActivity(user.username, user.role, 'auth', 'Đăng nhập thất bại (sai mật khẩu)');
+      return res.json({ ok: false, error: 'Sai mật khẩu' });
+    }
     const token = makeToken();
     const result = await updateDB((db2) => {
       const u = db2.users[key];
@@ -156,6 +171,7 @@ app.post('/api/login', async (req, res) => {
       const known = countKnown(progress);
       return { ok: true, token, username: u.username, role: u.role, progress, rank: getRank(known) };
     });
+    if (result.ok) logActivity(result.username, result.role, 'auth', 'Đăng nhập');
     res.json(result);
   } catch (e) { fail(res, e); }
 });
@@ -166,6 +182,7 @@ app.post('/api/logout', async (req, res) => {
   if (!authed) return;
   try {
     await updateDB((db) => { delete db.tokens[authed.token]; });
+    logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'auth', 'Đăng xuất');
     res.json({ ok: true });
   } catch (e) { fail(res, e); }
 });
@@ -247,6 +264,26 @@ app.get('/api/admin/visits', async (req, res) => {
   });
 });
 
+// ── [ADMIN] Nhật ký hoạt động — tối đa 10 ngày gần nhất, gộp theo ngày (mới nhất trước) ──
+app.get('/api/admin/logs', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const rows = await getActivityLogs();
+    const byDay = new Map();
+    for (const row of rows) {
+      if (!byDay.has(row.day)) byDay.set(row.day, []);
+      byDay.get(row.day).push({
+        time: row.time, username: row.username, role: row.role,
+        action: row.action, detail: row.detail,
+      });
+    }
+    const days = [...byDay.entries()].map(([date, logs]) => ({ date, count: logs.length, logs }));
+    res.json({ ok: true, days });
+  } catch (e) { fail(res, e); }
+});
+
 // ── [ADMIN] Danh sách toàn bộ user ──
 app.get('/api/admin/users', async (req, res) => {
   const authed = await requireAuth(req, res);
@@ -282,6 +319,10 @@ app.post('/api/admin/users/:key/delete', async (req, res) => {
       for (const t in db.tokens) { if (db.tokens[t] === targetKey) delete db.tokens[t]; }
       return { ok: true };
     });
+    if (result.ok) {
+      const actingUser = authed.db.users[authed.username];
+      logActivity(authed.username, actingUser.role, 'admin', `Xoá tài khoản "${targetKey}"`);
+    }
     res.json(result);
   } catch (e) { fail(res, e); }
 });
@@ -302,6 +343,10 @@ app.post('/api/admin/users/:key/reset', async (req, res) => {
       db.users[targetKey].progress = emptyProgress();
       return { ok: true };
     });
+    if (result.ok) {
+      const actingUser = authed.db.users[authed.username];
+      logActivity(authed.username, actingUser.role, 'admin', `Reset tiến độ tài khoản "${targetKey}"`);
+    }
     res.json(result);
   } catch (e) { fail(res, e); }
 });
@@ -322,6 +367,10 @@ app.post('/api/admin/users/:key/role', async (req, res) => {
       db.users[targetKey].role = role;
       return { ok: true };
     });
+    if (result.ok) {
+      const actingUser = authed.db.users[authed.username];
+      logActivity(authed.username, actingUser.role, 'admin', `Đổi quyền tài khoản "${targetKey}" thành "${role}"`);
+    }
     res.json(result);
   } catch (e) { fail(res, e); }
 });
@@ -373,6 +422,9 @@ app.post('/api/admin/vocab/import', async (req, res) => {
   }
   try {
     const result = await importVocab(words, !!overwrite);
+    const actingUser = authed.db.users[authed.username];
+    logActivity(authed.username, actingUser.role, 'vocab',
+      `Nhập từ vựng: thêm ${result.added}, cập nhật ${result.updated}, bỏ qua ${result.skipped} (tổng ${result.total} từ)`);
     res.json({ ok: true, ...result });
   } catch (e) { fail(res, e); }
 });
@@ -388,6 +440,8 @@ app.post('/api/admin/vocab/delete-lesson', async (req, res) => {
   }
   try {
     const removed = await deleteVocabLesson(l);
+    const actingUser = authed.db.users[authed.username];
+    logActivity(authed.username, actingUser.role, 'vocab', `Xoá bài số ${l} (${removed} từ)`);
     res.json({ ok: true, removed });
   } catch (e) { fail(res, e); }
 });
@@ -399,6 +453,8 @@ app.post('/api/admin/vocab/clear', async (req, res) => {
   if (!requireAdmin(authed.db.users[authed.username], res)) return;
   try {
     const removed = await clearVocab();
+    const actingUser = authed.db.users[authed.username];
+    logActivity(authed.username, actingUser.role, 'vocab', `Xoá toàn bộ từ vựng đã thêm (${removed} từ)`);
     res.json({ ok: true, removed });
   } catch (e) { fail(res, e); }
 });
@@ -416,6 +472,7 @@ app.post('/api/change-password', async (req, res) => {
     if (!match) return res.json({ ok: false, error: 'Mật khẩu hiện tại không đúng' });
     const newHash = await bcrypt.hash(String(newPassword), 10);
     await updateDB((db) => { db.users[authed.username].passwordHash = newHash; });
+    logActivity(authed.username, user.role || 'user', 'auth', 'Đổi mật khẩu');
     res.json({ ok: true });
   } catch (e) { fail(res, e); }
 });
@@ -477,6 +534,65 @@ function callGemini(prompt) {
     });
     reqq.on('error', (e) => reject(new Error('Không kết nối được tới Gemini API: ' + e.message)));
     reqq.setTimeout(20000, () => { reqq.destroy(new Error('Gemini API timeout sau 20s')); });
+    reqq.write(payload);
+    reqq.end();
+  });
+}
+
+// Giống callGemini() nhưng gửi kèm file âm thanh (multimodal) — dùng để chấm phát âm.
+function callGeminiWithAudio(prompt, audioBase64, mimeType) {
+  return new Promise((resolve, reject) => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return reject(new Error('Chưa cấu hình GEMINI_API_KEY trên server'));
+    const payload = JSON.stringify({
+      contents: [{
+        parts: [
+          { text: prompt },
+          { inline_data: { mime_type: mimeType || 'audio/webm', data: audioBase64 } },
+        ],
+      }],
+      generationConfig: {
+        temperature: 0.4,
+        maxOutputTokens: 1024,
+        thinkingConfig: { thinkingBudget: 0 },
+        responseMimeType: 'application/json',
+      },
+    });
+    const options = {
+      hostname: 'generativelanguage.googleapis.com',
+      path: `/v1beta/models/${GEMINI_MODEL}:generateContent`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+        'x-goog-api-key': apiKey,
+      },
+    };
+    const reqq = https.request(options, (resp) => {
+      let body = '';
+      resp.on('data', (chunk) => (body += chunk));
+      resp.on('end', () => {
+        if (!body || !body.trim()) {
+          return reject(new Error(`Không nhận được phản hồi từ Gemini (HTTP ${resp.statusCode}).`));
+        }
+        try {
+          const json = JSON.parse(body);
+          if (resp.statusCode >= 400) {
+            return reject(new Error(json?.error?.message || `Gemini lỗi HTTP ${resp.statusCode}`));
+          }
+          const text = json?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
+          if (!text) {
+            const reason = json?.candidates?.[0]?.finishReason;
+            return reject(new Error(`Gemini không trả về nội dung (finishReason: ${reason || 'không rõ'})`));
+          }
+          resolve(text);
+        } catch (e) {
+          reject(new Error(`Phản hồi từ Gemini không hợp lệ (HTTP ${resp.statusCode}): ${e.message}`));
+        }
+      });
+    });
+    reqq.on('error', (e) => reject(new Error('Không kết nối được tới Gemini API: ' + e.message)));
+    reqq.setTimeout(25000, () => { reqq.destroy(new Error('Gemini API timeout sau 25s')); });
     reqq.write(payload);
     reqq.end();
   });
@@ -581,6 +697,31 @@ Trả lời CHỈ bằng JSON hợp lệ, đúng định dạng, đúng thứ t�
   return { batches, wordsDone, wordsRetried, errors, totalPending: pending.length };
 }
 
+// ── [AI] Chấm điểm phát âm — người dùng ghi âm đọc 1 từ, AI nghe và đánh giá thanh điệu/phát âm ──
+app.post('/api/pronunciation/grade', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const { hz, py, vi, audio, mimeType } = req.body || {};
+    if (!hz || !audio) return res.json({ ok: false, error: 'Thiếu dữ liệu ghi âm' });
+    if (audio.length > 4 * 1024 * 1024) return res.json({ ok: false, error: 'File ghi âm quá dài' });
+    const prompt = `Bạn là giáo viên tiếng Trung chấm phát âm cho người Việt mới học.
+Từ cần đọc: ${hz} (pinyin chuẩn: ${py || 'không rõ'}, nghĩa: ${vi || 'không rõ'}).
+Hãy nghe đoạn ghi âm đính kèm và đánh giá:
+- Người học có đọc đúng chữ Hán trên không (âm đầu, âm cuối)?
+- Thanh điệu (dấu giọng) có đúng không? Nếu sai, sai thành thanh mấy?
+- Cho điểm 0-10.
+- Viết 1 nhận xét ngắn gọn, khích lệ, bằng tiếng Việt, chỉ rõ cụ thể cần sửa gì (nếu có).
+Trả lời CHỈ bằng JSON hợp lệ, không thêm chữ nào khác, đúng định dạng:
+{"score": 8, "toneOk": true, "heardAs": "mô tả ngắn âm nghe được (có thể để trống nếu nghe rõ đúng)", "comment": "nhận xét ngắn gọn"}`;
+    const text = await callGeminiWithAudio(prompt, audio, mimeType || 'audio/webm');
+    const data = parseAiJson(text);
+    res.json({ ok: true, result: data });
+  } catch (e) {
+    res.json({ ok: false, error: 'Không chấm được phát âm: ' + e.message });
+  }
+});
+
 // ── Lấy toàn bộ chiết tự bộ thủ đã có (dữ liệu nhỏ gọn, gửi hết 1 lần, không cần lọc theo bài) ──
 app.get('/api/hanzi-parts', async (req, res) => {
   const authed = await requireAuth(req, res);
@@ -612,6 +753,9 @@ app.post('/api/admin/generate-hanzi-parts', async (req, res) => {
   if (!requireAdmin(authed.db.users[authed.username], res)) return;
   try {
     const result = await runHanziPartsGeneration(50000);
+    const actingUser = authed.db.users[authed.username];
+    logActivity(authed.username, actingUser.role, 'vocab',
+      `Chạy sinh chiết tự bộ thủ: ${result.done} chữ xong${result.errors ? `, ${result.errors} lỗi` : ''}`);
     res.json({ ok: true, ...result });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
@@ -653,6 +797,9 @@ app.post('/api/admin/generate-word-examples', async (req, res) => {
   if (!requireAdmin(authed.db.users[authed.username], res)) return;
   try {
     const result = await runWordExampleGeneration(50000);
+    const actingUser = authed.db.users[authed.username];
+    logActivity(authed.username, actingUser.role, 'vocab',
+      `Chạy sinh ví dụ theo từ: ${result.wordsDone} từ xong, ${result.wordsRetried} cần thử lại${result.errors ? `, ${result.errors} lỗi` : ''}`);
     res.json({ ok: true, ...result });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
@@ -679,6 +826,8 @@ app.get('/api/cron/generate-daily', async (req, res) => {
     if (remaining > 5000) {
       hanziResult = await runHanziPartsGeneration(remaining);
     }
+    logActivity(null, 'system', 'system',
+      `[Tự động - cron] Sinh ví dụ: ${wordResult.wordsDone} từ xong, ${wordResult.wordsRetried} cần thử lại; Chiết tự: ${hanziResult.done} chữ xong`);
     res.json({ ok: true, wordExamples: wordResult, hanziParts: hanziResult });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
