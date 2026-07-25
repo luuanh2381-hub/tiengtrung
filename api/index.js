@@ -10,7 +10,7 @@ const bcrypt = require('bcryptjs');
 const { readDB, updateDB, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson,
   getAllVocabWords, getWordExampleCounts, insertWordExamples, getWordExamplesForLessons,
   getAllHanziParts, getHanziPartsKeys, insertHanziParts,
-  insertActivityLog, getActivityLogs } = require('../lib/db');
+  insertActivityLog, getActivityLogs, reserveGeminiSlot } = require('../lib/db');
 
 const app = express();
 
@@ -492,14 +492,16 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
-// Luôn đảm bảo khoảng cách tối thiểu giữa 2 lần gọi Gemini để không vượt quota free tier.
-// Với gemini-3.5-flash (~15 request/phút) thì 4.5 giây/lần là đủ an toàn (~13 request/phút).
-const GEMINI_MIN_INTERVAL_MS = 4500;
-let lastGeminiCallAt = 0;
+// Luôn đảm bảo khoảng cách tối thiểu giữa 2 lần gọi Gemini để không vượt quota free tier —
+// dùng hàng đợi CHUNG lưu trong Postgres (reserveGeminiSlot ở lib/db.js) thay vì chỉ đếm trong RAM,
+// vì RAM của mỗi tiến trình là riêng biệt, không ngăn được việc nhiều tiến trình cùng vượt quota chung.
+// Google báo quota thật của gemini-3.5-flash là 20 request/phút → dùng 3.2s/lần (~19 request/phút,
+// có biên độ an toàn).
+const GEMINI_MIN_INTERVAL_MS = 3200;
 async function waitForGeminiSlot() {
-  const elapsed = Date.now() - lastGeminiCallAt;
-  if (elapsed < GEMINI_MIN_INTERVAL_MS) await sleep(GEMINI_MIN_INTERVAL_MS - elapsed);
-  lastGeminiCallAt = Date.now();
+  const mySlot = await reserveGeminiSlot(GEMINI_MIN_INTERVAL_MS);
+  const waitMs = mySlot.getTime() - Date.now();
+  if (waitMs > 0) await sleep(waitMs);
 }
 
 // Nhận diện các lỗi TẠM THỜI từ Gemini (model đang quá tải/high demand, lỗi 503, lỗi nội bộ...) —
