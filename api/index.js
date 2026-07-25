@@ -908,12 +908,15 @@ app.get('/api/cron/generate-daily', async (req, res) => {
   const overallStart = Date.now();
   const TOTAL_BUDGET_MS = 50000;
   try {
-    // Ưu tiên ví dụ theo từ trước (30s), phần còn lại dành cho chiết tự bộ thủ
-    const wordResult = await runWordExampleGeneration(30000);
+    // Ưu tiên chạy CHIẾT TỰ BỘ THỦ cho tới khi xong hẳn (có thể mất nhiều lượt cron liên tiếp),
+    // rồi mới bắt đầu chạy VÍ DỤ THEO TỪ — không chạy xen kẽ 2 việc cùng lúc.
+    const hanziResult = await runHanziPartsGeneration(TOTAL_BUDGET_MS);
+    const hanziStillPending = hanziResult.totalPending - hanziResult.done;
+    let wordResult = { batches: 0, wordsDone: 0, wordsRetried: 0, errors: 0, totalPending: 0, errorSamples: [] };
     const remaining = TOTAL_BUDGET_MS - (Date.now() - overallStart);
-    let hanziResult = { batches: 0, done: 0, errors: 0, totalPending: 0, errorSamples: [] };
-    if (remaining > 5000) {
-      hanziResult = await runHanziPartsGeneration(remaining);
+    // Chỉ đụng tới ví dụ theo từ khi chiết tự đã KHÔNG CÒN chữ nào cần xử lý
+    if (hanziStillPending <= 0 && remaining > 5000) {
+      wordResult = await runWordExampleGeneration(remaining);
     }
     const allErrSamples = [...(wordResult.errorSamples || []), ...(hanziResult.errorSamples || [])];
     const errText = allErrSamples.length ? ` — Lỗi mẫu: ${allErrSamples.join(' | ')}` : '';
