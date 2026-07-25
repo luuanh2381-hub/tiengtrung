@@ -56,8 +56,18 @@ function getRank(known) {
   };
 }
 
+// Luôn tính "ngày hôm nay" theo GIỜ VIỆT NAM (UTC+7), không phụ thuộc múi giờ của server đang chạy
+// (server Vercel mặc định chạy UTC — nếu không quy đổi, mốc "sang ngày mới" sẽ lệch 7 tiếng,
+// ảnh hưởng tới lượt truy cập theo ngày, nhật ký hoạt động, v.v.)
+const VN_TIMEZONE = 'Asia/Ho_Chi_Minh';
+function vnDateKey(date) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: VN_TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date || new Date());
+}
+function vnTimeKey(date) {
+  return new Intl.DateTimeFormat('vi-VN', { timeZone: VN_TIMEZONE, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(date || new Date());
+}
 function todayKey() {
-  return new Date().toISOString().slice(0, 10);
+  return vnDateKey();
 }
 
 function fail(res, e, fallbackMsg) {
@@ -252,7 +262,7 @@ app.get('/api/admin/visits', async (req, res) => {
   const today = todayKey();
   const last14 = [];
   for (let i = 13; i >= 0; i--) {
-    const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+    const d = vnDateKey(new Date(Date.now() - i * 86400000));
     last14.push({ date: d, count: visits.byDate[d] || 0 });
   }
   res.json({
