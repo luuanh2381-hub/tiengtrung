@@ -502,8 +502,41 @@ async function waitForGeminiSlot() {
   lastGeminiCallAt = Date.now();
 }
 
-async function callGemini(prompt) {
-  await waitForGeminiSlot();
+// Nhận diện các lỗi TẠM THỜI từ Gemini (model đang quá tải/high demand, lỗi 503, lỗi nội bộ...) —
+// khác với lỗi quota (429) là loại lỗi này Google khuyên "thử lại sau" và thường chỉ cần đợi vài giây
+// là qua ngay, nên có thể tự động thử lại thay vì bắt người dùng bấm lại.
+function isTransientGeminiError(msg) {
+  if (!msg) return false;
+  const m = msg.toLowerCase();
+  return m.includes('overloaded') || m.includes('high demand') || m.includes('unavailable')
+    || m.includes('try again later') || m.includes('internal error') || m.includes('503');
+}
+
+// Gọi hàm gemini thực tế (doFn), tự động thử lại tối đa 2 lần nếu gặp lỗi tạm thời ở trên,
+// đợi 3s rồi 6s giữa các lần thử — vẫn tôn trọng giãn cách quota (waitForGeminiSlot) ở mỗi lần gọi.
+async function callWithRetry(doFn) {
+  const MAX_RETRIES = 2;
+  let lastErr;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    await waitForGeminiSlot();
+    try {
+      return await doFn();
+    } catch (e) {
+      lastErr = e;
+      if (attempt < MAX_RETRIES && isTransientGeminiError(e.message)) {
+        await sleep(3000 * (attempt + 1));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
+}
+
+function callGemini(prompt) {
+  return callWithRetry(() => doCallGemini(prompt));
+}
+function doCallGemini(prompt) {
   return new Promise((resolve, reject) => {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return reject(new Error('Chưa cấu hình GEMINI_API_KEY trên server'));
@@ -558,8 +591,10 @@ async function callGemini(prompt) {
 
 // Giống callGemini() nhưng gửi kèm file âm thanh (multimodal) — dùng để chấm phát âm.
 // Dùng chung "hàng đợi" thời gian với callGemini() ở trên vì cùng chia sẻ 1 quota API key.
-async function callGeminiWithAudio(prompt, audioBase64, mimeType) {
-  await waitForGeminiSlot();
+function callGeminiWithAudio(prompt, audioBase64, mimeType) {
+  return callWithRetry(() => doCallGeminiWithAudio(prompt, audioBase64, mimeType));
+}
+function doCallGeminiWithAudio(prompt, audioBase64, mimeType) {
   return new Promise((resolve, reject) => {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return reject(new Error('Chưa cấu hình GEMINI_API_KEY trên server'));
@@ -640,12 +675,19 @@ function extractUniqueChars(words) {
 // (vd lỗi "quota exceeded... Please retry in 34.1s" và "...retry in 21.7s" chỉ khác số giây đếm ngược,
 // nên chỉ cần giữ 1 mẫu là đủ, tránh log bị lặp lại y hệt nhau hàng chục lần).
 const MAX_ERROR_SAMPLES = 5;
+// Bỏ bớt các URL dài dòng trong thông báo lỗi Gemini (vd link docs/rate-limits) — chúng chiếm rất
+// nhiều ký tự nhưng không có giá trị chẩn đoán, khiến phần quan trọng nhất (limit, tên model...)
+// bị cắt mất khi giới hạn độ dài hiển thị.
+function cleanErrorMsg(msg) {
+  return msg.replace(/https?:\/\/\S+/g, '').replace(/\s{2,}/g, ' ').trim();
+}
 function addErrorSample(errorSamples, msg) {
   if (errorSamples.length >= MAX_ERROR_SAMPLES) return;
+  const cleaned = cleanErrorMsg(msg);
   const normalize = (s) => s.replace(/[\d.]+/g, '#');
-  const key = normalize(msg);
+  const key = normalize(cleaned);
   if (errorSamples.some(s => normalize(s) === key)) return;
-  errorSamples.push(msg.length > 300 ? msg.slice(0, 300) + '…' : msg);
+  errorSamples.push(cleaned.length > 400 ? cleaned.slice(0, 400) + '…' : cleaned);
 }
 
 async function runHanziPartsGeneration(timeBudgetMs) {
