@@ -1604,13 +1604,14 @@ function fcUpdate() {
   inner.classList.remove('flipped'); fcFlipped = false;
 
   const tagStyle2 = lessonTagStyle(w.l);
+  const lyHopBadge = w.tag === 'ly_hop' ? `<span class="fc-lesson-tag" style="background:#fff0e0;color:#b5651d;margin-left:6px;">🧩 Ly hợp</span>` : '';
   document.getElementById('fc-front').innerHTML = `
-    <span class="fc-lesson-tag" style="${tagStyle2}">Bài ${w.l}</span>
+    <span class="fc-lesson-tag" style="${tagStyle2}">Bài ${w.l}</span>${lyHopBadge}
     <div class="fc-hz">${w.hz}</div>
     ${showPinyin ? `<div class="fc-py">${w.py}</div>` : ''}
     <div class="fc-hint">Nhấn để lật thẻ</div>`;
   document.getElementById('fc-back').innerHTML = `
-    <span class="fc-lesson-tag" style="${tagStyle2}">Bài ${w.l}</span>
+    <span class="fc-lesson-tag" style="${tagStyle2}">Bài ${w.l}</span>${lyHopBadge}
     <div class="fc-hz-back">${w.hz}</div>
     ${showPinyin ? `<div class="fc-py">${w.py}</div>` : ''}
     ${showMeaning ? `<div class="fc-vi">${w.vi}</div>` : `<button class="btn btn-sm" style="background:var(--l9b);color:var(--l9a);margin-bottom:6px;" onclick="event.stopPropagation();toggleMeaning();fcUpdate();">👁️ Hiện nghĩa</button>`}
@@ -2375,6 +2376,9 @@ function renderVocabAdmin() {
       <input type="number" id="vocab-manual-l" placeholder="Số bài (ví dụ 1)" min="1" style="padding:8px;border-radius:8px;border:1.5px solid #ddd;font-size:.9rem;">
     </div>
     <label style="display:flex;align-items:center;gap:6px;font-size:.78rem;color:var(--muted);margin-bottom:8px;">
+      <input type="checkbox" id="vocab-manual-lyhop"> 🧩 Đây là động từ ly hợp (离合词)
+    </label>
+    <label style="display:flex;align-items:center;gap:6px;font-size:.78rem;color:var(--muted);margin-bottom:8px;">
       <input type="checkbox" id="vocab-manual-overwrite"> Ghi đè nếu chữ Hán + số bài này đã tồn tại (cập nhật lại pinyin/nghĩa)
     </label>
     <button class="btn btn-sm" style="background:var(--l11c);color:var(--l11a);" onclick="addVocabManual()">➕ Thêm từ này</button>
@@ -2565,6 +2569,7 @@ async function addVocabManual() {
   const py = document.getElementById('vocab-manual-py').value.trim();
   const vi = document.getElementById('vocab-manual-vi').value.trim();
   const l = parseInt(document.getElementById('vocab-manual-l').value, 10);
+  const tag = document.getElementById('vocab-manual-lyhop').checked ? 'ly_hop' : null;
   const overwrite = document.getElementById('vocab-manual-overwrite').checked;
   if (!hz || !vi || !Number.isFinite(l) || l < 1) {
     resultEl.textContent = 'Vui lòng nhập đủ Chữ Hán, Nghĩa và Số bài (số nguyên ≥ 1).';
@@ -2575,7 +2580,7 @@ async function addVocabManual() {
     const res = await fetch('/api/admin/vocab/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ words: [{ hz, py, vi, l }], overwrite }),
+      body: JSON.stringify({ words: [{ hz, py, vi, l, tag }], overwrite }),
     });
     const data = await res.json();
     if (!data.ok) { resultEl.textContent = '❌ ' + (data.error || 'Có lỗi xảy ra'); return; }
@@ -2585,6 +2590,7 @@ async function addVocabManual() {
       document.getElementById('vocab-manual-py').value = '';
       document.getElementById('vocab-manual-vi').value = '';
       document.getElementById('vocab-manual-l').value = '';
+      document.getElementById('vocab-manual-lyhop').checked = false;
       loadVocabAdminList();
     } else if (data.updated > 0) {
       resultEl.innerHTML = `✅ Đã cập nhật lại từ <b>${hz}</b> (bài ${l}). <span style="color:var(--l9a);">Tải lại trang để dùng ngay.</span>`;
@@ -2595,10 +2601,22 @@ async function addVocabManual() {
     resultEl.textContent = '❌ Không kết nối được máy chủ: ' + e.message;
   }
 }
+// Chuẩn hoá cột "tag" khi đọc file Excel — chấp nhận nhiều cách viết khác nhau (tiếng Việt có dấu,
+// không dấu, hoặc chữ Hán) đều quy về 1 giá trị chuẩn duy nhất 'ly_hop' để web hiểu và hiển thị đúng.
+function normalizeVocabTag(raw) {
+  const s = String(raw || '').trim().toLowerCase();
+  if (!s) return null;
+  if (['ly_hop', 'lyhop', 'ly hợp', 'ly hop', 'động từ ly hợp', 'dong tu ly hop', '离合词', '离合动词']
+      .some(x => s === x || s.includes('ly hợp') || s.includes('ly hop') || s.includes('离合'))) {
+    return 'ly_hop';
+  }
+  return s; // giữ nguyên các loại tag khác trong tương lai, không chỉ riêng ly hợp
+}
 function downloadVocabTemplate() {
   const ws = XLSX.utils.json_to_sheet([
-    { hz: '你好', py: 'nǐ hǎo', vi: 'xin chào', l: 1 },
-    { hz: '谢谢', py: 'xièxie', vi: 'cảm ơn', l: 1 },
+    { hz: '你好', py: 'nǐ hǎo', vi: 'xin chào', l: 1, tag: '' },
+    { hz: '谢谢', py: 'xièxie', vi: 'cảm ơn', l: 1, tag: '' },
+    { hz: '睡觉', py: 'shuìjiào', vi: 'ngủ', l: 1, tag: 'ly_hop' },
   ]);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Từ vựng');
@@ -2621,6 +2639,7 @@ async function uploadVocabExcel() {
       py: String(r.py ?? r['Pinyin'] ?? '').trim(),
       vi: String(r.vi ?? r['Nghĩa'] ?? '').trim(),
       l: parseInt(r.l ?? r['Bài'], 10),
+      tag: normalizeVocabTag(r.tag ?? r['Loại từ'] ?? r['Nhãn'] ?? ''),
     }));
     resultEl.textContent = `Đang nhập ${words.length} dòng...`;
     const overwrite = document.getElementById('vocab-excel-overwrite').checked;
@@ -2927,6 +2946,6 @@ bootAuth().then(async () => {
   });
 })();
 
-</script>  
+</script>
 </body>
-</html> 
+</html>
