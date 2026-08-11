@@ -10,7 +10,7 @@ const bcrypt = require('bcryptjs');
 const { readDB, updateDB, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson,
   getAllVocabWords, updateVocabHanviet, getWordExampleCounts, insertWordExamples, getWordExamplesForLessons,
   getAllHanziParts, getHanziPartsKeys, insertHanziParts,
-  insertActivityLog, getActivityLogs, reserveGeminiSlot } = require('../lib/db');
+  insertActivityLog, getActivityLogs, reserveGeminiSlot, bumpGeminiRateLimit } = require('../lib/db');
 
 const app = express();
 
@@ -495,23 +495,49 @@ const https = require('https');
 // QUAN TRỌNG: Tài liệu chính thức của Google (ai.google.dev/gemini-api/docs/models) nói rõ
 // "gemini-flash-latest" CỐ TÌNH trỏ tới model thử nghiệm (experimental) — không dành cho production,
 // và có quota free tier rất hẹp (từng đo được chỉ 5 request/phút). Đó là lý do dù giãn cách bao lâu
-// vẫn bị "quota exceeded" liên tục. Model ổn định "gemini-3.5-flash" có quota free tier rộng rãi hơn
-// nhiều (~15 request/phút, ~1.500 request/ngày, theo dữ liệu công khai giữa 2026). Có thể ghi đè bằng
-// biến môi trường GEMINI_MODEL trên Vercel nếu sau này muốn đổi model mà không cần sửa code.
+// vẫn bị "quota exceeded" liên tục. Model ổn định "gemini-3.5-flash" ĐƯỢC CHỌN làm mặc định, nhưng
+// quota free tier THỰC TẾ đo được của model này qua lỗi Google trả về cũng chỉ là 5 request/phút
+// (không phải 15-20 request/phút như tài liệu công khai gợi ý cho các model Flash khác — quota free
+// tier có thể khác nhau tuỳ từng Google Cloud project). Có thể ghi đè bằng biến môi trường
+// GEMINI_MODEL trên Vercel nếu sau này muốn thử model khác (vd "gemini-3.1-flash-lite" thường có
+// quota free tier cao hơn) mà không cần sửa code.
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
 // Luôn đảm bảo khoảng cách tối thiểu giữa 2 lần gọi Gemini để không vượt quota free tier —
 // dùng hàng đợi CHUNG lưu trong Postgres (reserveGeminiSlot ở lib/db.js) thay vì chỉ đếm trong RAM,
-// vì RAM của mỗi tiến trình là riêng biệt, không ngăn được việc nhiều tiến trình cùng vượt quota chung.
-// Google báo quota thật của gemini-3.5-flash là 20 request/phút → dùng 3.2s/lần (~19 request/phút,
-// có biên độ an toàn).
-const GEMINI_MIN_INTERVAL_MS = 3200;
+// vì RAM của mỗi tiến trình là riêng biệt, không ngăn được việc nhiều tiến trình (vd nhiều lượt cron
+// GitHub Actions chồng nhau) cùng vượt quota chung.
+// Quota THỰC TẾ Google báo qua lỗi 429 là "limit: 5" (5 request/phút) — dùng 13s/lần (~4.6 request/
+// phút) để có biên độ an toàn, tránh sát ngưỡng gây lỗi liên tục. Có thể ghi đè bằng biến môi trường
+// GEMINI_MIN_INTERVAL_MS (đơn vị mili-giây) trên Vercel nếu quota thực tế của bạn khác.
+const GEMINI_MIN_INTERVAL_MS = Number(process.env.GEMINI_MIN_INTERVAL_MS) || 13000;
 async function waitForGeminiSlot() {
   const mySlot = await reserveGeminiSlot(GEMINI_MIN_INTERVAL_MS);
   const waitMs = mySlot.getTime() - Date.now();
   if (waitMs > 0) await sleep(waitMs);
+}
+
+// Gemini thường trả kèm số giây cụ thể cần đợi khi hết quota, dạng "...Please retry in 40.67s."
+// hoặc "retryDelay":"41s" — trích số giây này ra (làm tròn lên, cộng thêm 1s cho chắc) để biết
+// CHÍNH XÁC cần đợi bao lâu, thay vì đoán mò.
+function extractRetryDelayMs(msg) {
+  if (!msg) return null;
+  let m = msg.match(/retry in\s+([\d.]+)\s*s/i);
+  if (!m) m = msg.match(/"retryDelay"\s*:\s*"([\d.]+)s"/i);
+  if (!m) return null;
+  const seconds = parseFloat(m[1]);
+  if (!Number.isFinite(seconds)) return null;
+  return Math.ceil(seconds + 1) * 1000;
+}
+
+// Nhận diện lỗi HẾT QUOTA (429 / "quota exceeded" / "resource exhausted") — khác lỗi tạm thời ở dưới,
+// vì lỗi quota thì thử lại ngay lập tức chắc chắn vẫn lỗi, phải đẩy lùi HÀNG ĐỢI CHUNG ra xa hơn.
+function isQuotaGeminiError(msg) {
+  if (!msg) return false;
+  const m = msg.toLowerCase();
+  return m.includes('quota') || m.includes('resource_exhausted') || m.includes('429');
 }
 
 // Nhận diện các lỗi TẠM THỜI từ Gemini (model đang quá tải/high demand, lỗi 503, lỗi nội bộ...) —
@@ -524,8 +550,12 @@ function isTransientGeminiError(msg) {
     || m.includes('try again later') || m.includes('internal error') || m.includes('503');
 }
 
-// Gọi hàm gemini thực tế (doFn), tự động thử lại tối đa 2 lần nếu gặp lỗi tạm thời ở trên,
-// đợi 3s rồi 6s giữa các lần thử — vẫn tôn trọng giãn cách quota (waitForGeminiSlot) ở mỗi lần gọi.
+// Gọi hàm gemini thực tế (doFn):
+// - Lỗi HẾT QUOTA (429): không có ích gì khi thử lại ngay (chắc chắn vẫn lỗi) — đẩy lùi HÀNG ĐỢI
+//   CHUNG ra đúng khoảng thời gian Google yêu cầu đợi (đọc được từ nội dung lỗi), rồi báo lỗi luôn để
+//   vòng lặp xử lý lô tiếp theo (hoặc lượt cron kế tiếp) tự động tôn trọng khoảng đợi đó.
+// - Lỗi TẠM THỜI khác (quá tải, 503...): thử lại tối đa 2 lần, đợi 3s rồi 6s giữa các lần thử — vẫn
+//   tôn trọng giãn cách quota (waitForGeminiSlot) ở mỗi lần gọi.
 async function callWithRetry(doFn) {
   const MAX_RETRIES = 2;
   let lastErr;
@@ -535,6 +565,11 @@ async function callWithRetry(doFn) {
       return await doFn();
     } catch (e) {
       lastErr = e;
+      if (isQuotaGeminiError(e.message)) {
+        const delayMs = extractRetryDelayMs(e.message) || GEMINI_MIN_INTERVAL_MS * 4;
+        await bumpGeminiRateLimit(delayMs).catch(() => {});
+        throw e;
+      }
       if (attempt < MAX_RETRIES && isTransientGeminiError(e.message)) {
         await sleep(3000 * (attempt + 1));
         continue;
@@ -705,7 +740,7 @@ function addErrorSample(errorSamples, msg) {
 // Logic sinh NGHĨA HÁN VIỆT cho từng từ (âm Hán Việt ghép lại theo từng chữ, vd 学习 → "Học tập") —
 // khác với "vi" (nghĩa thuần Việt, do người nhập sẵn) — hanviet là cách đọc/nghĩa Hán Việt truyền
 // thống, giúp người học liên hệ từ Hán Việt đã biết trong tiếng Việt để nhớ nghĩa nhanh hơn.
-const HANVIET_BATCH_SIZE = 30;
+const HANVIET_BATCH_SIZE = 20;
 
 async function runHanVietGeneration(timeBudgetMs) {
   const startedAt = Date.now();
@@ -721,7 +756,15 @@ async function runHanVietGeneration(timeBudgetMs) {
     const batch = pending.slice(i, i + HANVIET_BATCH_SIZE);
     try {
       const wordList = batch.map((w, idx) => `${idx + 1}. ${w.hz} (${w.py}) = ${w.vi}`).join('\n');
-      const prompt = `Bạn là chuyên gia Hán Nôm dạy tiếng Trung cho người Việt. Với MỖI từ tiếng Trung sau, hãy cho biết ÂM HÁN VIỆT của từ đó — tức cách đọc/ghép nghĩa Hán Việt truyền thống của từng chữ Hán trong từ, viết hoa chữ cái đầu, các chữ còn lại viết thường, cách nhau bằng dấu cách (vd: "学习" → "Học tập", "老师" → "Lão sư", "中国" → "Trung Quốc" viết hoa cả 2 vì là danh từ riêng). Nếu 1 chữ trong từ không có âm Hán Việt rõ ràng/thông dụng, vẫn cố gắng cho âm Hán Việt gần đúng nhất, không được bỏ trống.
+      const prompt = `Bạn là chuyên gia Hán Nôm, thông thạo Từ điển Hán Nôm/Thiều Chửu, dạy tiếng Trung cho người Việt. Với MỖI từ tiếng Trung sau, hãy cho biết ÂM HÁN VIỆT CHUẨN, ĐÚNG VÀ PHỔ BIẾN NHẤT của từ đó — viết hoa chữ cái đầu, các chữ còn lại viết thường, cách nhau bằng dấu cách.
+
+QUY TẮC BẮT BUỘC (rất quan trọng, nhiều lỗi xảy ra vì bỏ qua các quy tắc này):
+1. ƯU TIÊN CAO NHẤT: nếu CẢ TỪ (không phải từng chữ riêng lẻ) đã có sẵn 1 cách đọc Hán Việt chuẩn, quen thuộc, được ghi nhận rộng rãi trong từ điển Hán Việt/Hán Nôm (vd trên hvdic.thivien.net, Thiều Chửu) hoặc trong tiếng Việt hàng ngày, thì PHẢI dùng đúng cách đọc đó của cả từ, TUYỆT ĐỐI KHÔNG tự ghép âm phổ biến của từng chữ riêng lẻ lại. Ví dụ kinh điển: chữ 你 tự nó có 2 âm (nhĩ, nễ), nhưng từ "你好" đã có sẵn cách đọc chuẩn ghi trong từ điển là "Nhĩ hảo" — PHẢI trả lời "Nhĩ hảo", KHÔNG được trả lời "Nễ hảo" dù "nễ" cũng là 1 âm hợp lệ của chữ 你 khi đứng riêng.
+2. Khi 1 chữ Hán có NHIỀU âm Hán Việt khác nhau và từ ghép đó KHÔNG có sẵn cách đọc chuẩn quen thuộc, hãy chọn âm được dùng NHIỀU NHẤT, PHỔ BIẾN NHẤT trong tiếng Việt hiện đại (âm xuất hiện trong các từ Hán Việt quen thuộc hàng ngày) — TUYỆT ĐỐI tránh âm cổ, âm hiếm, âm địa phương, âm ít người biết đến.
+3. Ví dụ khác cho chuẩn xác: "学习"→"Học tập", "老师"→"Lão sư", "中国"→"Trung Quốc" (viết hoa cả 2 vì là danh từ riêng), "谢谢"→"Tạ tạ", "什么"→"Thập ma".
+4. Nếu thực sự không tìm được âm Hán Việt hợp lý cho 1 chữ trong từ (rất hiếm gặp, thường chỉ với chữ giản thể/phương ngữ đặc biệt), vẫn cố gắng cho âm gần đúng nhất theo bộ thủ/thành phần biểu âm của chữ đó, không được bỏ trống.
+5. Trước khi trả lời mỗi từ, tự kiểm tra lại trong đầu: "Đây có phải cách đọc mà người học tiếng Trung/Hán Nôm ở Việt Nam thường thấy nhất không?" — nếu không chắc, chọn phương án phổ biến, an toàn hơn.
+
 Danh sách từ (giữ đúng số thứ tự):
 ${wordList}
 Trả lời CHỈ bằng JSON hợp lệ, đúng thứ tự, đúng định dạng, không thêm chữ nào khác:
