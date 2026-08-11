@@ -8,7 +8,7 @@ const express = require('express');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { readDB, updateDB, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson,
-  getAllVocabWords, getWordExampleCounts, insertWordExamples, getWordExamplesForLessons,
+  getAllVocabWords, updateVocabHanviet, getWordExampleCounts, insertWordExamples, getWordExamplesForLessons,
   getAllHanziParts, getHanziPartsKeys, insertHanziParts,
   insertActivityLog, getActivityLogs, reserveGeminiSlot } = require('../lib/db');
 
@@ -702,6 +702,57 @@ function addErrorSample(errorSamples, msg) {
   errorSamples.push(cleaned.length > 400 ? cleaned.slice(0, 400) + '…' : cleaned);
 }
 
+// Logic sinh NGHĨA HÁN VIỆT cho từng từ (âm Hán Việt ghép lại theo từng chữ, vd 学习 → "Học tập") —
+// khác với "vi" (nghĩa thuần Việt, do người nhập sẵn) — hanviet là cách đọc/nghĩa Hán Việt truyền
+// thống, giúp người học liên hệ từ Hán Việt đã biết trong tiếng Việt để nhớ nghĩa nhanh hơn.
+const HANVIET_BATCH_SIZE = 30;
+
+async function runHanVietGeneration(timeBudgetMs) {
+  const startedAt = Date.now();
+  const TIME_BUDGET_MS = timeBudgetMs || 50000;
+  const allWords = await getAllVocabWords();
+  // "Chưa xong" = chưa có hanviet, hoặc rỗng. Dùng key hz+l vì cùng chữ có thể ở nhiều bài.
+  const pending = allWords.filter(w => !w.hanviet || !String(w.hanviet).trim());
+  let batches = 0, done = 0, errors = 0;
+  const errorSamples = [];
+
+  for (let i = 0; i < pending.length; i += HANVIET_BATCH_SIZE) {
+    if (Date.now() - startedAt > TIME_BUDGET_MS) break;
+    const batch = pending.slice(i, i + HANVIET_BATCH_SIZE);
+    try {
+      const wordList = batch.map((w, idx) => `${idx + 1}. ${w.hz} (${w.py}) = ${w.vi}`).join('\n');
+      const prompt = `Bạn là chuyên gia Hán Nôm dạy tiếng Trung cho người Việt. Với MỖI từ tiếng Trung sau, hãy cho biết ÂM HÁN VIỆT của từ đó — tức cách đọc/ghép nghĩa Hán Việt truyền thống của từng chữ Hán trong từ, viết hoa chữ cái đầu, các chữ còn lại viết thường, cách nhau bằng dấu cách (vd: "学习" → "Học tập", "老师" → "Lão sư", "中国" → "Trung Quốc" viết hoa cả 2 vì là danh từ riêng). Nếu 1 chữ trong từ không có âm Hán Việt rõ ràng/thông dụng, vẫn cố gắng cho âm Hán Việt gần đúng nhất, không được bỏ trống.
+Danh sách từ (giữ đúng số thứ tự):
+${wordList}
+Trả lời CHỈ bằng JSON hợp lệ, đúng thứ tự, đúng định dạng, không thêm chữ nào khác:
+{"items":[{"n":1,"hv":"âm Hán Việt"}]}`;
+      const text = await callGemini(prompt);
+      const data = parseAiJson(text);
+      if (!Array.isArray(data.items)) {
+        errors++;
+        addErrorSample(errorSamples, 'Phản hồi AI không đúng định dạng JSON mong đợi (thiếu mảng "items")');
+        continue;
+      }
+      const toUpdate = [];
+      for (const item of data.items) {
+        const idx = (item.n | 0) - 1;
+        const w = batch[idx];
+        if (!w || !item.hv || !String(item.hv).trim()) continue;
+        toUpdate.push({ hz: w.hz, l: w.l, hanviet: String(item.hv).trim() });
+      }
+      if (toUpdate.length) {
+        const updated = await updateVocabHanviet(toUpdate);
+        done += updated;
+      }
+      batches++;
+    } catch (e) {
+      errors++;
+      addErrorSample(errorSamples, (e && e.message) || 'Lỗi không rõ');
+    }
+  }
+  return { batches, done, errors, totalPending: pending.length, errorSamples };
+}
+
 async function runHanziPartsGeneration(timeBudgetMs) {
   const startedAt = Date.now();
   const TIME_BUDGET_MS = timeBudgetMs || 50000;
@@ -819,6 +870,36 @@ Trả lời CHỈ bằng JSON hợp lệ, không thêm chữ nào khác, đúng 
   }
 });
 
+// ── [ADMIN] Tiến độ sinh nghĩa Hán Việt ──
+app.get('/api/admin/hanviet/progress', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const allWords = await getAllVocabWords();
+    const total = allWords.length;
+    const done = allWords.filter(w => w.hanviet && String(w.hanviet).trim()).length;
+    res.json({ ok: true, total, done });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Kích hoạt thủ công việc sinh nghĩa Hán Việt ──
+app.post('/api/admin/generate-hanviet', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const result = await runHanVietGeneration(50000);
+    const actingUser = authed.db.users[authed.username];
+    const errText = result.errorSamples && result.errorSamples.length ? ` — Lỗi mẫu: ${result.errorSamples.join(' | ')}` : '';
+    logActivity(authed.username, actingUser.role, 'vocab',
+      `Chạy sinh nghĩa Hán Việt: ${result.done} từ xong${result.errors ? `, ${result.errors} lỗi` : ''}${errText}`);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ── Lấy toàn bộ chiết tự bộ thủ đã có (dữ liệu nhỏ gọn, gửi hết 1 lần, không cần lọc theo bài) ──
 app.get('/api/hanzi-parts', async (req, res) => {
   const authed = await requireAuth(req, res);
@@ -918,21 +999,28 @@ app.get('/api/cron/generate-daily', async (req, res) => {
   const overallStart = Date.now();
   const TOTAL_BUDGET_MS = 50000;
   try {
-    // Ưu tiên chạy CHIẾT TỰ BỘ THỦ cho tới khi xong hẳn (có thể mất nhiều lượt cron liên tiếp),
-    // rồi mới bắt đầu chạy VÍ DỤ THEO TỪ — không chạy xen kẽ 2 việc cùng lúc.
-    const hanziResult = await runHanziPartsGeneration(TOTAL_BUDGET_MS);
-    const hanziStillPending = hanziResult.totalPending - hanziResult.done;
+    // Thứ tự ưu tiên: (1) NGHĨA HÁN VIỆT trước (rẻ, nhanh, nhiều người cần nhất), rồi tới (2) CHIẾT TỰ
+    // BỘ THỦ, cuối cùng mới (3) VÍ DỤ THEO TỪ — mỗi việc chạy cho tới khi xong hẳn (có thể mất nhiều
+    // lượt cron liên tiếp) rồi mới sang việc tiếp theo, không chạy xen kẽ nhiều việc cùng lúc.
+    const hanvietResult = await runHanVietGeneration(TOTAL_BUDGET_MS);
+    const hanvietStillPending = hanvietResult.totalPending - hanvietResult.done;
+    let hanziResult = { batches: 0, done: 0, errors: 0, totalPending: 0, errorSamples: [] };
     let wordResult = { batches: 0, wordsDone: 0, wordsRetried: 0, errors: 0, totalPending: 0, errorSamples: [] };
-    const remaining = TOTAL_BUDGET_MS - (Date.now() - overallStart);
-    // Chỉ đụng tới ví dụ theo từ khi chiết tự đã KHÔNG CÒN chữ nào cần xử lý
-    if (hanziStillPending <= 0 && remaining > 5000) {
-      wordResult = await runWordExampleGeneration(remaining);
+    let remaining = TOTAL_BUDGET_MS - (Date.now() - overallStart);
+    if (hanvietStillPending <= 0 && remaining > 5000) {
+      hanziResult = await runHanziPartsGeneration(remaining);
+      const hanziStillPending = hanziResult.totalPending - hanziResult.done;
+      remaining = TOTAL_BUDGET_MS - (Date.now() - overallStart);
+      // Chỉ đụng tới ví dụ theo từ khi chiết tự đã KHÔNG CÒN chữ nào cần xử lý
+      if (hanziStillPending <= 0 && remaining > 5000) {
+        wordResult = await runWordExampleGeneration(remaining);
+      }
     }
-    const allErrSamples = [...(wordResult.errorSamples || []), ...(hanziResult.errorSamples || [])];
+    const allErrSamples = [...(hanvietResult.errorSamples || []), ...(wordResult.errorSamples || []), ...(hanziResult.errorSamples || [])];
     const errText = allErrSamples.length ? ` — Lỗi mẫu: ${allErrSamples.join(' | ')}` : '';
     logActivity(null, 'system', 'system',
-      `[Tự động - cron] Sinh ví dụ: ${wordResult.wordsDone} từ xong, ${wordResult.wordsRetried} cần thử lại; Chiết tự: ${hanziResult.done} chữ xong${errText}`);
-    res.json({ ok: true, wordExamples: wordResult, hanziParts: hanziResult });
+      `[Tự động - cron] Hán Việt: ${hanvietResult.done} từ xong; Sinh ví dụ: ${wordResult.wordsDone} từ xong, ${wordResult.wordsRetried} cần thử lại; Chiết tự: ${hanziResult.done} chữ xong${errText}`);
+    res.json({ ok: true, hanviet: hanvietResult, wordExamples: wordResult, hanziParts: hanziResult });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
