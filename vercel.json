@@ -1,6 +1,10 @@
 {
   "rewrites": [
     {
+      "source": "/api/cron/(.*)",
+      "destination": "/api/cron/$1"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/index"
     }
@@ -13,7 +17,7 @@
   "crons": [
     {
       "path": "/api/cron/generate-daily",
-      "schedule": "0 */4 * * *"
+      "schedule": "0 0 * * *"
     }
   ]
 }
