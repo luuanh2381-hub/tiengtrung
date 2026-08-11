@@ -234,6 +234,7 @@
   .fc-hz{font-size:3.2rem;font-weight:900;line-height:1;}
   .fc-hz-back{font-size:2.1rem;font-weight:900;line-height:1;}
   .fc-py{font-size:1rem;color:var(--muted);font-style:italic;}
+  .fc-hv{font-size:.85rem;color:var(--active-dark);font-weight:600;}
   .fc-vi{font-size:1.3rem;font-weight:700;text-align:center;padding:0 16px;}
   .fc-lesson-tag{position:absolute;top:12px;right:12px;font-size:.7rem;font-weight:800;padding:4px 10px;border-radius:12px;}
   .fc-hint{font-size:.75rem;color:var(--muted);position:absolute;bottom:12px;}
@@ -257,6 +258,7 @@
   /* ── QUIZ ──────────────────────────────────────────────── */
   .quiz-q{font-size:1.5rem;font-weight:800;text-align:center;padding:26px 16px;min-height:90px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;}
   .quiz-sub{font-size:.85rem;color:var(--muted);font-weight:400;}
+  .quiz-hv{font-size:.78rem;color:var(--active-dark);font-weight:600;}
   .quiz-opts{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;}
   .quiz-opt{padding:15px 10px;background:var(--paper);border:2px solid var(--border);border-radius:var(--radius-sm);font-size:1rem;font-weight:700;cursor:pointer;text-align:center;}
   .quiz-opt.correct{background:var(--l8c);border-color:var(--l8a);color:var(--l8a);animation:popIn .3s cubic-bezier(.2,.8,.3,1);}
@@ -346,6 +348,7 @@
   .confuse-item{flex:1;min-width:84px;max-width:140px;text-align:center;background:var(--card);border-radius:var(--radius-sm);padding:12px 6px;border:2px solid var(--border);}
   .confuse-hz{font-size:2.1rem;font-weight:900;line-height:1;cursor:pointer;}
   .confuse-py{font-size:.78rem;color:var(--muted);font-style:italic;margin-top:4px;}
+  .confuse-hv{font-size:.72rem;color:var(--active-dark);font-weight:600;margin-top:2px;}
   .confuse-vi{font-size:.8rem;font-weight:700;margin-top:2px;}
   .confuse-vs{align-self:center;font-size:.85rem;color:var(--muted);font-weight:800;padding:0 2px;}
   .confuse-tip{font-size:.84rem;color:var(--ink);background:var(--l9b);border-radius:var(--radius-sm);padding:11px 13px;line-height:1.45;}
@@ -467,6 +470,7 @@
   </div>
   <button class="pinyin-toggle" onclick="togglePinyin()" id="py-toggle-btn">Ẩn Pinyin</button>
   <button class="pinyin-toggle" onclick="toggleMeaning()" id="vi-toggle-btn">Ẩn nghĩa</button>
+  <button class="pinyin-toggle" onclick="toggleHanViet()" id="hv-toggle-btn">Ẩn Hán Việt</button>
   <button class="theme-toggle" onclick="toggleTheme()" id="theme-toggle-btn" title="Chế độ tối/sáng">🌙</button>
 </div>
 
@@ -1223,6 +1227,7 @@ function playBuzz() {
 let currentTab = 'home'; // được applyUIState() ghi đè lại đúng giá trị đã lưu khi app khởi động
 let showPinyin = true;
 let showMeaning = true;
+let showHanViet = true;
 let questionCount = 10;
 
 function togglePinyin() {
@@ -1233,6 +1238,11 @@ function togglePinyin() {
 function toggleMeaning() {
   showMeaning = !showMeaning;
   document.getElementById('vi-toggle-btn').textContent = showMeaning ? 'Ẩn nghĩa' : 'Hiện nghĩa';
+  render();
+}
+function toggleHanViet() {
+  showHanViet = !showHanViet;
+  document.getElementById('hv-toggle-btn').textContent = showHanViet ? 'Ẩn Hán Việt' : 'Hiện Hán Việt';
   render();
 }
 
@@ -1610,11 +1620,13 @@ function fcUpdate() {
     <span class="fc-lesson-tag" style="${tagStyle2}">Bài ${w.l}</span>${lyHopBadge}
     <div class="fc-hz">${w.hz}</div>
     ${showPinyin ? `<div class="fc-py">${w.py}</div>` : ''}
+    ${showHanViet && w.hanviet ? `<div class="fc-hv">Hán Việt: ${w.hanviet}</div>` : ''}
     <div class="fc-hint">Nhấn để lật thẻ</div>`;
   document.getElementById('fc-back').innerHTML = `
     <span class="fc-lesson-tag" style="${tagStyle2}">Bài ${w.l}</span>${lyHopBadge}
     <div class="fc-hz-back">${w.hz}</div>
     ${showPinyin ? `<div class="fc-py">${w.py}</div>` : ''}
+    ${showHanViet && w.hanviet ? `<div class="fc-hv">Hán Việt: ${w.hanviet}</div>` : ''}
     ${showMeaning ? `<div class="fc-vi">${w.vi}</div>` : `<button class="btn btn-sm" style="background:var(--l9b);color:var(--l9a);margin-bottom:6px;" onclick="event.stopPropagation();toggleMeaning();fcUpdate();">👁️ Hiện nghĩa</button>`}
     <button class="btn btn-sound btn-sm" onclick="event.stopPropagation();speak('${w.hz}')">🔊 Nghe</button>
     ${renderHanziParts(w.hz)}`;
@@ -1784,11 +1796,11 @@ function qzRenderQ() {
   const opts = qzMakeOpts(w);
   let qHtml, optHtml;
   if (qzType === '漢→Việt') {
-    qHtml = `<div class="fc-hz">${w.hz}</div>${showPinyin?`<div class="fc-py">${w.py}</div>`:''}`;
+    qHtml = `<div class="fc-hz">${w.hz}</div>${showPinyin?`<div class="fc-py">${w.py}</div>`:''}${showHanViet && w.hanviet?`<div class="fc-hv">Hán Việt: ${w.hanviet}</div>`:''}`;
     optHtml = opts.map(o=>`<button class="quiz-opt" data-v="${o.vi}" onclick="qzPick(this,'${o.hz}')">${o.vi}</button>`).join('');
   } else if (qzType === 'Việt→漢') {
     qHtml = `<div class="fc-vi" style="font-size:1.3rem">${w.vi}</div>`;
-    optHtml = opts.map(o=>`<button class="quiz-opt" data-v="${o.hz}" onclick="qzPick(this,'${o.hz}')">${o.hz}${showPinyin?`<div class="quiz-sub">${o.py}</div>`:''}</button>`).join('');
+    optHtml = opts.map(o=>`<button class="quiz-opt" data-v="${o.hz}" onclick="qzPick(this,'${o.hz}')">${o.hz}${showPinyin?`<div class="quiz-sub">${o.py}</div>`:''}${showHanViet && o.hanviet?`<div class="quiz-hv">${o.hanviet}</div>`:''}</button>`).join('');
   } else {
     qHtml = `<div class="fc-py" style="font-size:1.4rem;font-style:normal;color:var(--ink)">${w.py}</div>`;
     optHtml = opts.map(o=>`<button class="quiz-opt" data-v="${o.hz}" onclick="qzPick(this,'${o.hz}')">${o.hz}</button>`).join('');
@@ -1943,7 +1955,8 @@ function tyRenderQ() {
     <div class="type-q">
       <div style="font-size:.9rem;color:var(--muted);margin-bottom:4px">Gõ chữ Hán nghĩa là:</div>
       <div style="font-size:1.4rem;font-weight:700;margin-bottom:6px">${w.vi}</div>
-      ${showPinyin?`<div class="fc-py" style="margin-bottom:10px">Gợi ý: ${w.py}</div>`:''}
+      ${showPinyin?`<div class="fc-py" style="margin-bottom:4px">Gợi ý: ${w.py}</div>`:''}
+      ${showHanViet && w.hanviet?`<div class="fc-hv" style="margin-bottom:10px">Hán Việt: ${w.hanviet}</div>`:''}
     </div>
     <input class="type-input" id="ty-input" placeholder="Gõ chữ Hán..." onkeydown="if(event.key==='Enter')tyCheck()">
     <div id="ty-fb"></div>
@@ -2041,7 +2054,7 @@ function lsRenderWord(w) {
   const distractors = qzMakeOpts(w).filter(x=>x.hz!==w.hz).slice(0,3);
   const opts = shuffle([w,...distractors]);
   const optHtml = opts.map(o=>`
-    <button class="listen-opt" onclick="lsPickWord(this,'${o.hz}','${w.hz}')">${o.hz}${showPinyin?`<div style="font-size:.7rem;color:var(--muted)">${o.py}</div>`:''}</button>`).join('');
+    <button class="listen-opt" onclick="lsPickWord(this,'${o.hz}','${w.hz}')">${o.hz}${showPinyin?`<div style="font-size:.7rem;color:var(--muted)">${o.py}</div>`:''}${showHanViet && o.hanviet?`<div style="font-size:.68rem;color:var(--active-dark);font-weight:600">${o.hanviet}</div>`:''}</button>`).join('');
   area.innerHTML=`<div class="panel">
     <div style="font-size:.75rem;color:var(--muted);margin-bottom:10px">${lsIdx+1}/${lsItems.length} · Nghe và chọn chữ Hán đúng</div>
     <button id="ls-play" class="listen-play" onclick="speak('${w.hz}')" title="Phát lại">🔊</button>
@@ -2166,7 +2179,7 @@ function renderStats() {
     .filter(w=>w.r!==null).sort((a,b)=>a.r-b.r).slice(0,8);
   const weakHtml=weak.map(w=>`<div class="weak-item">
     <span class="weak-hz" style="color:${lessonColor(w.l)}">${w.hz}</span>
-    <span class="weak-info">${w.vi}${showPinyin?` · ${w.py}`:''} · ${Math.round(w.r*100)}% đúng</span>
+    <span class="weak-info">${w.vi}${showPinyin?` · ${w.py}`:''}${showHanViet && w.hanviet?` · ${w.hanviet}`:''} · ${Math.round(w.r*100)}% đúng</span>
     <button class="btn-sound-sm" onclick="speak('${w.hz}')">🔊</button>
   </div>`).join('');
 
@@ -2208,12 +2221,17 @@ function bindCompare() {}
 
 function cpRenderList() {
   const appHz = new Set(WORDS.map(w => w.hz));
+  // Bản đồ tra nhanh chữ Hán -> Hán Việt (dùng lại dữ liệu Hán Việt AI đã sinh cho vốn từ của bài học,
+  // vì CONFUSE_GROUPS là danh sách chữ tĩnh, tự thân không có sẵn trường hanviet).
+  const hvMap = {};
+  WORDS.forEach(w => { if (w.hanviet && !hvMap[w.hz]) hvMap[w.hz] = w.hanviet; });
   return CONFUSE_GROUPS.map(g => {
     const itemsHtml = g.chars.map((c,i) => `
       ${i>0?'<span class="confuse-vs">vs</span>':''}
       <div class="confuse-item${appHz.has(c.hz)?' in-vocab':''}">
         <div class="confuse-hz" onclick="speak('${c.hz}')">${c.hz}</div>
         <div class="confuse-py">${c.py}</div>
+        ${showHanViet && hvMap[c.hz] ? `<div class="confuse-hv">${hvMap[c.hz]}</div>` : ''}
         <div class="confuse-vi">${c.vi}</div>
         ${appHz.has(c.hz)?'<div class="confuse-badge">✓ trong vốn từ</div>':''}
       </div>`).join('');
@@ -2408,6 +2426,15 @@ function renderVocabAdmin() {
     <div id="vocab-import-result" style="font-size:.8rem;color:var(--muted);"></div>
   </div>
   <div class="panel">
+    <div class="panel-title">🈶 Nghĩa Hán Việt (mỗi từ có sẵn 1 âm Hán Việt)</div>
+    <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px;">
+      AI tự sinh âm/nghĩa Hán Việt cho từng từ (vd 学习 → "Học tập"), hiện kèm Pinyin/nghĩa ở mọi nơi trong app (có nút Ẩn/Hiện Hán Việt riêng trên thanh menu).
+    </div>
+    <button class="btn btn-sm" style="background:var(--l9c);color:var(--l9a);margin-bottom:12px;" id="gen-hanviet-btn" onclick="triggerHanVietGeneration()">🚀 Chạy sinh nghĩa Hán Việt ngay</button>
+    <div id="gen-hanviet-result" style="font-size:.8rem;color:var(--muted);margin-bottom:10px;"></div>
+    <div id="hanviet-progress-area" style="color:var(--muted);padding:14px 0;text-align:center;">Đang tải...</div>
+  </div>
+  <div class="panel">
     <div class="panel-title">📖 Ví dụ theo từng từ (đảm bảo mỗi từ có sẵn 3 ví dụ)</div>
     <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px;">
       Khác với câu luyện dịch ở trên (theo cả bài), đây là kho ví dụ minh hoạ hiện trong Trắc nghiệm — mỗi từ được đảm bảo có sẵn 3 câu ví dụ riêng (AI tự kiểm tra câu có đúng chứa từ đó không trước khi lưu). Có thể mất nhiều ngày để phủ hết toàn bộ từ vựng.
@@ -2439,8 +2466,49 @@ function renderVocabAdmin() {
 function bindVocabAdmin() {
   if (isGuest || !isAdminRole()) return;
   loadVocabAdminList();
+  loadHanVietProgress();
   loadWordExampleProgress();
   loadHanziPartsProgress();
+}
+async function loadHanVietProgress() {
+  const area = document.getElementById('hanviet-progress-area');
+  if (!area) return;
+  try {
+    const res = await fetch('/api/admin/hanviet/progress', { headers: authHeaders() });
+    const data = await res.json();
+    if (!data.ok) { area.textContent = data.error || 'Không tải được dữ liệu.'; return; }
+    const pct = data.total ? Math.round(data.done / data.total * 100) : 0;
+    area.innerHTML = `
+      <div style="display:flex;justify-content:space-between;font-size:.85rem;font-weight:700;margin-bottom:6px;">
+        <span>${data.done} / ${data.total} từ đã có nghĩa Hán Việt</span>
+        <span style="color:var(--active-dark)">${pct}%</span>
+      </div>
+      <div class="prog-bar"><div class="prog-fill" style="width:${pct}%;background:var(--active);"></div></div>`;
+  } catch (e) {
+    area.textContent = 'Không kết nối được máy chủ: ' + e.message;
+  }
+}
+async function triggerHanVietGeneration() {
+  const btn = document.getElementById('gen-hanviet-btn');
+  const resultEl = document.getElementById('gen-hanviet-result');
+  btn.disabled = true;
+  btn.textContent = '⏳ Đang chạy... (có thể mất tới 50 giây, đừng rời trang)';
+  resultEl.textContent = '';
+  try {
+    const res = await fetch('/api/admin/generate-hanviet', { method: 'POST', headers: authHeaders() });
+    const data = await res.json();
+    if (!data.ok) { resultEl.innerHTML = `❌ ${data.error || 'Có lỗi xảy ra'}`; }
+    else {
+      resultEl.innerHTML = `✅ Đã xử lý ${data.batches} lô, thêm ${data.done} từ${data.errors ? `, lỗi: ${data.errors}` : ''}. Còn ${data.totalPending - data.done} từ đang chờ xử lý.` + renderErrorSamples(data.errorSamples);
+      loadHanVietProgress();
+      refreshVocabHanviet(); // nạp lại nghĩa Hán Việt vào WORDS đã tải để dùng ngay không cần tải lại trang
+    }
+  } catch (e) {
+    resultEl.innerHTML = `❌ Không kết nối được máy chủ: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🚀 Chạy sinh nghĩa Hán Việt ngay';
+  }
 }
 async function loadWordExampleProgress() {
   const area = document.getElementById('word-ex-progress-area');
@@ -2529,6 +2597,29 @@ async function triggerHanziPartsGeneration() {
   } finally {
     btn.disabled = false;
     btn.textContent = '🚀 Chạy sinh chiết tự ngay';
+  }
+}
+// Sau khi admin chạy sinh Hán Việt xong, các bài đã tải về máy (WORDS) vẫn đang giữ dữ liệu CŨ
+// (chưa có hanviet) vì ensureVocabLoaded() bỏ qua từ đã có trong WORDS theo key hz+l. Hàm này tải
+// lại đúng các bài đã tải và GHI ĐÈ trường hanviet vào những mục đã có sẵn trong WORDS, để admin
+// thấy kết quả ngay mà không cần tải lại trang.
+async function refreshVocabHanviet() {
+  if (!loadedLessonNumbers.size) return;
+  const url = (isGuest || !authToken)
+    ? '/api/vocab/public?lessons=' + [...loadedLessonNumbers].join(',')
+    : '/api/vocab?lessons=' + [...loadedLessonNumbers].join(',');
+  try {
+    const res = await fetch(url, (isGuest || !authToken) ? {} : { headers: authHeaders() });
+    const data = await res.json();
+    if (data.ok && Array.isArray(data.vocab)) {
+      const byKey = new Map(data.vocab.map(w => [w.hz + '-' + w.l, w]));
+      WORDS.forEach(w => {
+        const fresh = byKey.get(w.hz + '-' + w.l);
+        if (fresh && fresh.hanviet) w.hanviet = fresh.hanviet;
+      });
+    }
+  } catch {
+    // Không tải lại được thì thôi, dữ liệu vẫn đã lưu đúng trong DB, chỉ là chưa hiện ngay trên máy này
   }
 }
 async function loadVocabAdminList() {
