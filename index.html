@@ -1448,7 +1448,7 @@ function render() {
   else if (currentTab === 'listen'){ el.innerHTML = renderListen(); bindListen(); }
   else if (currentTab === 'stats') { el.innerHTML = renderStats(); }
   else if (currentTab === 'compare'){ el.innerHTML = renderCompare(); bindCompare(); }
-  else if (currentTab === 'hsk')   { el.innerHTML = renderHSK(); }
+  else if (currentTab === 'hsk')   { el.innerHTML = renderHSK(); bindHSK(); }
   else if (currentTab === 'admin') { el.innerHTML = renderAdmin(); bindAdmin(); }
   else if (currentTab === 'vocab') { el.innerHTML = renderVocabAdmin(); bindVocabAdmin(); }
   else if (currentTab === 'logs')  { el.innerHTML = renderLogs(); bindLogs(); }
@@ -2273,74 +2273,81 @@ function cpExitTest() {
 // ════════════════════════════════════════════════════
 // HSK4 PROGRESS TRACKER
 // ════════════════════════════════════════════════════
-// Tổng số từ theo TỪNG cấp trong CHUẨN CHÍNH THỨC HSK (2.0): HSK1 150 từ mới, HSK2 150 từ mới
-// (cộng dồn 300), HSK3 300 từ mới (cộng dồn 600), HSK4 600 từ mới (cộng dồn 1200 — đây là con số
-// "chuẩn HSK4 1200 từ" quen thuộc). Dùng cố định các số này làm MẪU SỐ so sánh, KHÔNG dùng độ dài
-// thực tế của danh sách HSK_OFFICIAL bên dưới (danh sách đối chiếu có thể thiếu vài từ so với chuẩn).
-const HSK_STANDARD_COUNTS = { 1: 150, 2: 150, 3: 300, 4: 600 };
-const HSK_STANDARD_TOTAL = 1200;
-
-function computeHSKCoverage() {
-  const appHz = new Set(WORDS.map(w => w.hz));
-  const srs = getSRS();
-  const result = {};
-  let totalCovered = 0, totalKnown = 0;
-  [1,2,3,4].forEach(lvl => {
-    const list = HSK_OFFICIAL[lvl] || [];
-    let covered = 0, known = 0;
-    list.forEach(hz => {
-      if (appHz.has(hz)) {
-        covered++;
-        const s = srs[hz];
-        if (s && s.step >= 3) known++;
-      }
-    });
-    result[lvl] = { total: HSK_STANDARD_COUNTS[lvl], listSize: list.length, covered, known };
-    totalCovered += covered; totalKnown += known;
-  });
-  result.overall = { total: HSK_STANDARD_TOTAL, covered: totalCovered, known: totalKnown };
-  return result;
-}
+// QUAN TRỌNG: KHÔNG dùng danh sách HSK_OFFICIAL viết cứng trong code JS nữa (danh sách đó chỉ là
+// ước lượng, không khớp 100% với dữ liệu thật). Thay vào đó, lấy đúng dữ liệu HSK1/HSK2/HSK3/HSK4
+// mà chính người dùng đã đẩy lên database ở các "bài" đặc biệt 32/33/34/35 (đúng như cách trang
+// "🎯 Luyện thi HSK" ở Trang chủ đang đếm số từ) — coi đây là chuẩn để tính toán.
+const HSK_LEVEL_LESSON = { 1: 32, 2: 33, 3: 34, 4: 35 };
 
 function renderHSK() {
-  const cov = computeHSKCoverage();
-  const knownPct = Math.round(cov.overall.known / cov.overall.total * 100);
-  const coveredPct = Math.round(cov.overall.covered / cov.overall.total * 100);
-
-  const levelRows = [1,2,3,4].map(lvl => {
-    const c = cov[lvl];
-    const p = Math.round(c.known / c.total * 100);
-    return `<div class="hsk-level-row">
-      <div class="hsk-level-label">
-        <span class="lv">HSK ${lvl}</span>
-        <span class="ct">${c.known}/${c.total} từ đã thuộc (${p}%)</span>
-      </div>
-      <div class="prog-bar"><div class="prog-fill" style="width:${p}%;background:${lessonColor(6+lvl)}"></div></div>
-    </div>`;
-  }).join('');
-
-  return `
-  <div class="panel">
-    <div class="hsk-hero">
-      <div class="hsk-hero-num">${cov.overall.known}/${cov.overall.total}</div>
-      <div class="hsk-hero-sub">từ đã thuộc so với chuẩn HSK4 (${knownPct}%)</div>
-      <div class="hsk-bigbar"><div class="hsk-bigbar-fill" style="width:${knownPct}%"></div></div>
-    </div>
-  </div>
-  <div class="panel">
-    <div class="panel-title">Từ đã có trong app (chưa chắc đã thuộc)</div>
-    <div class="stat-grid" style="grid-template-columns:1fr 1fr;">
-      <div class="stat-box"><div class="stat-num" style="color:var(--l8a)">${cov.overall.covered}</div><div class="stat-lbl">Từ đã có trong app</div></div>
-      <div class="stat-box"><div class="stat-num">${coveredPct}%</div><div class="stat-lbl">% trên chuẩn 1200 từ HSK4</div></div>
-    </div>
-  </div>
-  <div class="panel">
-    <div class="panel-title">Chi tiết theo cấp độ (so với chuẩn chính thức)</div>
-    ${levelRows}
-    <div class="hsk-note">
-      📌 Mẫu số mỗi cấp lấy theo TIÊU CHUẨN CHÍNH THỨC HSK 2.0: HSK1 150 từ, HSK2 150 từ mới (cộng dồn 300), HSK3 300 từ mới (cộng dồn 600), HSK4 600 từ mới (cộng dồn <b>1200 từ</b>). "Đã thuộc" là từ đã vượt mốc ôn ≥1 ngày trong SRS. Danh sách đối chiếu nội bộ có thể thiếu vài từ so với chuẩn (không ảnh hưởng nhiều), số liệu chỉ mang tính ước lượng tham khảo, không thay thế kết quả thi thật.
-    </div>
+  return `<div class="panel">
+    <div id="hsk-area" style="text-align:center;color:var(--muted);padding:24px 0;">Đang tải dữ liệu HSK1-4 từ database...</div>
   </div>`;
+}
+
+async function bindHSK() {
+  const area = document.getElementById('hsk-area');
+  if (!area) return;
+  try {
+    const lessons = Object.values(HSK_LEVEL_LESSON).join(',');
+    const res = await fetch('/api/vocab?lessons=' + lessons, { headers: authHeaders() });
+    const data = await res.json();
+    if (!data.ok) { area.textContent = data.error || 'Không tải được dữ liệu HSK.'; return; }
+
+    const lessonToLevel = {};
+    Object.entries(HSK_LEVEL_LESSON).forEach(([lvl, l]) => { lessonToLevel[l] = Number(lvl); });
+    const byLevel = { 1: [], 2: [], 3: [], 4: [] };
+    for (const w of data.vocab) {
+      const lvl = lessonToLevel[w.l];
+      if (lvl) byLevel[lvl].push(w);
+    }
+
+    const srs = getSRS();
+    const cov = {};
+    let totalWords = 0, totalKnown = 0;
+    [1, 2, 3, 4].forEach(lvl => {
+      const list = byLevel[lvl];
+      let known = 0;
+      list.forEach(w => { const s = srs[w.hz]; if (s && s.step >= 3) known++; });
+      cov[lvl] = { total: list.length, known };
+      totalWords += list.length; totalKnown += known;
+    });
+
+    if (totalWords === 0) {
+      area.innerHTML = `⚠️ Chưa có dữ liệu HSK1-4 trong database (bài 32-35 đang trống). Vào Quản trị → Từ vựng để nhập từ HSK cho các bài này.`;
+      return;
+    }
+
+    const knownPct = Math.round(totalKnown / totalWords * 100);
+    const levelRows = [1, 2, 3, 4].map(lvl => {
+      const c = cov[lvl];
+      const p = c.total ? Math.round(c.known / c.total * 100) : 0;
+      return `<div class="hsk-level-row">
+        <div class="hsk-level-label">
+          <span class="lv">HSK ${lvl}</span>
+          <span class="ct">${c.known}/${c.total} từ đã thuộc (${p}%)</span>
+        </div>
+        <div class="prog-bar"><div class="prog-fill" style="width:${p}%;background:${lessonColor(6 + lvl)}"></div></div>
+      </div>`;
+    }).join('');
+
+    area.outerHTML = `<div id="hsk-area">
+      <div class="hsk-hero">
+        <div class="hsk-hero-num">${totalKnown}/${totalWords}</div>
+        <div class="hsk-hero-sub">từ đã thuộc trên tổng số từ HSK1-4 trong database (${knownPct}%)</div>
+        <div class="hsk-bigbar"><div class="hsk-bigbar-fill" style="width:${knownPct}%"></div></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Chi tiết theo cấp độ</div>
+      ${levelRows}
+      <div class="hsk-note">
+        📌 Danh sách từ HSK1-4 lấy TRỰC TIẾP từ dữ liệu bạn đã nhập vào database (bài 32=HSK1, 33=HSK2, 34=HSK3, 35=HSK4) — đúng số liệu đang hiện ở mục "🎯 Luyện thi HSK" trên Trang chủ. "Đã thuộc" là từ đã vượt mốc ôn ≥1 ngày trong SRS.
+      </div>
+    </div>`;
+  } catch (e) {
+    area.textContent = 'Không kết nối được máy chủ: ' + e.message;
+  }
 }
 
 // ════════════════════════════════════════════════════
