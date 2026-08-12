@@ -273,17 +273,6 @@
   .quiz-type-btn{padding:6px 13px;border-radius:16px;border:2px solid var(--border);background:var(--card);font-size:.78rem;font-weight:700;cursor:pointer;}
   .quiz-type-btn.active{background:var(--active);color:#fff;border-color:var(--active);}
 
-  /* ── QUIZ FIT-TO-SCREEN ────────────────────────────────────────────────
-     Toàn bộ phần thân Trắc nghiệm (số câu + loại câu hỏi + thẻ câu hỏi) được ép
-     vừa đúng chiều cao còn lại dưới thanh công cụ cố định (chiều cao thật do JS
-     đo và gán qua fitQuizArea() trong index.html). #qz-area chiếm hết phần còn
-     lại (flex:1) và CĂN GIỮA thẻ câu hỏi theo chiều dọc; JS sẽ scale thẻ câu hỏi
-     (.panel) xuống nếu nội dung cao hơn chỗ trống, để không bao giờ phải cuộn. */
-  .quiz-fit-wrap{display:flex;flex-direction:column;overflow:hidden;}
-  .quiz-fit-wrap .count-row,.quiz-fit-wrap .quiz-type-row{flex-shrink:0;}
-  #qz-area{flex:1;min-height:0;overflow:hidden;display:flex;align-items:flex-start;justify-content:center;}
-  #qz-area>.panel{width:100%;transform-origin:top center;transition:transform .15s ease;}
-
   /* ── TYPE INPUT ────────────────────────────────────────── */
   .type-q{text-align:center;padding:22px 16px;}
   .type-hz-big{font-size:2.2rem;font-weight:900;}
@@ -1811,7 +1800,6 @@ let qzWordExamples = []; // ví dụ theo từng từ (kho đảm bảo mỗi t�
 
 function renderQuiz() {
   return `
-  <div class="quiz-fit-wrap" id="quiz-fit-wrap">
   <div class="count-row">
     <label>Số câu:</label>
     <select onchange="qzSetCount(this.value)">${[5,10,15,20,30].map(n=>`<option value="${n}"${n==qzQuestionCount?' selected':''}>${n}</option>`).join('')}</select>
@@ -1819,8 +1807,7 @@ function renderQuiz() {
   <div class="quiz-type-row">
     ${['漢→Việt','Việt→漢','Âm→漢'].map(t=>`<button class="quiz-type-btn${qzType===t?' active':''}" onclick="qzSetType('${t}')">${t}</button>`).join('')}
   </div>
-  <div id="qz-area"></div>
-  </div>`;
+  <div id="qz-area"></div>`;
 }
 
 function qzSetCount(v) {
@@ -1873,7 +1860,6 @@ function qzRenderQ() {
       <div class="exam-rank">${qzRank(qzScore/qzWords.length)}</div>
       <button class="btn btn-primary" onclick="bindQuiz()">Làm lại</button>
     </div>`;
-    fitQuizArea();
     return;
   }
   const w = qzWords[qzIdx];
@@ -1907,34 +1893,7 @@ function qzRenderQ() {
   document.querySelectorAll('#qz-opts .quiz-opt').forEach(b=>{
     b._correct = (b.dataset.v === (qzType==='漢→Việt' ? w.vi : w.hz));
   });
-  fitQuizArea();
 }
-
-// Co giãn nội dung màn hình Trắc nghiệm (thẻ câu hỏi + đáp án) để LUÔN VỪA KHÍT phần màn hình còn
-// lại phía dưới thanh công cụ cố định — không cần cuộn trang. Đo chiều cao thật của #app-header
-// (đã dính cố định) để biết còn lại bao nhiêu chỗ, rồi chỉ THU NHỎ (scale) nội dung thẻ câu hỏi cho
-// vừa, KHÔNG cắt/ẩn bớt nội dung. Gọi lại mỗi khi vẽ câu hỏi mới hoặc khi xoay màn hình/đổi kích cỡ.
-function fitQuizArea() {
-  const wrap = document.getElementById('quiz-fit-wrap');
-  const area = document.getElementById('qz-area');
-  if (!wrap || !area) return;
-  const header = document.getElementById('app-header');
-  const headerH = header ? header.offsetHeight : 0;
-  const bottomGap = 14; // chừa 1 khoảng nhỏ phía dưới cho thoáng, không sát mép màn hình
-  const availableH = window.innerHeight - headerH - bottomGap;
-  wrap.style.height = Math.max(240, availableH) + 'px';
-  const panel = area.querySelector('.panel');
-  if (!panel) return;
-  panel.style.transform = 'none'; // reset để đo đúng chiều cao thật (không tính scale cũ)
-  const areaH = area.clientHeight;
-  const panelH = panel.scrollHeight;
-  if (areaH > 0 && panelH > areaH) {
-    const scale = Math.max(0.5, areaH / panelH);
-    panel.style.transform = `scale(${scale})`;
-  }
-}
-window.addEventListener('resize', () => { if (currentTab === 'quiz') fitQuizArea(); });
-window.addEventListener('orientationchange', () => { if (currentTab === 'quiz') setTimeout(fitQuizArea, 200); });
 
 function qzPick(btn, hz) {
   const w = qzWords[qzIdx];
