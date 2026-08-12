@@ -10,8 +10,7 @@
     "start": "node api/index.js",
     "dev": "node api/index.js",
     "test": "node test/fsrs.test.js",
-    "verify:fsrs6": "node scripts/verify-fsrs6.js",
-    "build": "node -e \"console.log('no bundling step — plain Node/Express, nothing to build')\""
+    "verify:fsrs6": "node scripts/verify-fsrs6.js"
   },
   "dependencies": {
     "express": "^4.19.2",
