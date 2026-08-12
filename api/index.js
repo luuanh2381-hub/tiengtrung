@@ -5,6 +5,7 @@
 // vì Vercel không giữ file lâu dài giữa các lần chạy.
 // ════════════════════════════════════════════════════
 const express = require('express');
+const compression = require('compression');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { readDB, updateDB, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson,
@@ -82,6 +83,9 @@ function logActivity(username, role, action, detail) {
   });
 }
 
+// Nén gzip/brotli các response JSON (đặc biệt danh sách từ vựng, ví dụ, chiết tự — có thể khá
+// lớn) — giảm dung lượng truyền qua mạng, giúp tải nhanh hơn nhất là mạng chậm/di động.
+app.use(compression());
 app.use(express.json({ limit: '20mb' }));
 
 // ── Xác thực: kiểm tra token, KHÔNG khoá dữ liệu (chỉ đọc) ──
@@ -406,6 +410,9 @@ app.get('/api/vocab', async (req, res) => {
     if (!raw) return res.json({ ok: true, vocab: [] });
     const lessons = raw.split(',').map(s => parseInt(s, 10)).filter(Number.isFinite);
     const vocab = await getVocabByLessons(lessons);
+    // Từ vựng hiếm khi đổi (chỉ đổi khi admin nhập/xoá bài) — cho phép trình duyệt lưu tạm
+    // (private vì có gắn token) để mở lại app trong ít phút không phải tải lại qua mạng.
+    res.set('Cache-Control', 'private, max-age=60');
     res.json({ ok: true, vocab });
   } catch (e) { fail(res, e); }
 });
@@ -420,6 +427,7 @@ app.get('/api/vocab/public', async (req, res) => {
     const lessons = raw.split(',').map(s => parseInt(s, 10)).filter(n => Number.isFinite(n) && n >= 1 && n <= GUEST_MAX_LESSON_SERVER);
     if (lessons.length === 0) return res.json({ ok: true, vocab: [] });
     const vocab = await getVocabByLessons(lessons);
+    res.set('Cache-Control', 'public, max-age=60');
     res.json({ ok: true, vocab });
   } catch (e) { fail(res, e); }
 });
@@ -429,6 +437,7 @@ app.get('/api/vocab/public', async (req, res) => {
 app.get('/api/vocab/counts', async (req, res) => {
   try {
     const counts = await getVocabCounts();
+    res.set('Cache-Control', 'public, max-age=60');
     res.json({ ok: true, counts });
   } catch (e) { fail(res, e); }
 });
@@ -961,6 +970,7 @@ app.get('/api/hanzi-parts', async (req, res) => {
   if (!authed) return;
   try {
     const rows = await getAllHanziParts();
+    res.set('Cache-Control', 'private, max-age=120');
     res.json({ ok: true, parts: rows });
   } catch (e) { fail(res, e); }
 });
@@ -1006,6 +1016,7 @@ app.get('/api/word-examples', async (req, res) => {
     if (!raw) return res.json({ ok: true, examples: [] });
     const lessons = raw.split(',').map(s => parseInt(s, 10)).filter(Number.isFinite);
     const examples = await getWordExamplesForLessons(lessons);
+    res.set('Cache-Control', 'private, max-age=60');
     res.json({ ok: true, examples });
   } catch (e) { fail(res, e); }
 });
