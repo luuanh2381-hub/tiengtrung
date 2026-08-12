@@ -10,6 +10,7 @@
     "start": "node api/index.js",
     "dev": "node api/index.js",
     "test": "node test/fsrs.test.js",
+    "test:integration": "node test/fsrs.concurrency.integration.js",
     "verify:fsrs6": "node scripts/verify-fsrs6.js"
   },
   "dependencies": {
