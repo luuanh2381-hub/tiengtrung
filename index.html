@@ -1802,8 +1802,7 @@ function renderQuiz() {
   return `
   <div class="quiz-type-row">
     <div class="count-row" style="margin-bottom:0;">
-      <label>Số câu:</label>
-      <select onchange="qzSetCount(this.value)">${[5,10,15,20,30].map(n=>`<option value="${n}"${n==qzQuestionCount?' selected':''}>${n}</option>`).join('')}</select>
+      <select onchange="qzSetCount(this.value)" title="Số câu">${[5,10,15,20,30].map(n=>`<option value="${n}"${n==qzQuestionCount?' selected':''}>${n}</option>`).join('')}</select>
     </div>
     ${['漢→Việt','Việt→漢','Âm→漢'].map(t=>`<button class="quiz-type-btn${qzType===t?' active':''}" onclick="qzSetType('${t}')">${t}</button>`).join('')}
   </div>
