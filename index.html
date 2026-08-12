@@ -269,7 +269,7 @@
   .quiz-opt{padding:15px 10px;background:var(--paper);border:2px solid var(--border);border-radius:var(--radius-sm);font-size:1rem;font-weight:700;cursor:pointer;text-align:center;}
   .quiz-opt.correct{background:var(--l8c);border-color:var(--l8a);color:var(--l8a);animation:popIn .3s cubic-bezier(.2,.8,.3,1);}
   .quiz-opt.wrong{background:var(--l10c);border-color:var(--l10a);color:var(--l10a);animation:shakeX .4s;}
-  .quiz-type-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}
+  .quiz-type-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;}
   .quiz-type-btn{padding:6px 13px;border-radius:16px;border:2px solid var(--border);background:var(--card);font-size:.78rem;font-weight:700;cursor:pointer;}
   .quiz-type-btn.active{background:var(--active);color:#fff;border-color:var(--active);}
 
@@ -470,6 +470,7 @@
   <h1>🀄 學中文</h1>
   <span id="streak-badge">🔥 0 ngày</span>
   <button id="user-badge" onclick="authOpenMenu()">👤 Khách</button>
+  <button class="theme-toggle" onclick="toggleTheme()" id="theme-toggle-btn" title="Chế độ tối/sáng">🌙</button>
   <div class="speed-control">
     <label>🐢</label>
     <input type="range" id="speed-slider" min="0.3" max="1.0" step="0.05" value="0.65" oninput="updateSpeed(this.value)">
@@ -478,7 +479,6 @@
   <button class="pinyin-toggle" onclick="togglePinyin()" id="py-toggle-btn">Ẩn Pinyin</button>
   <button class="pinyin-toggle" onclick="toggleMeaning()" id="vi-toggle-btn">Ẩn nghĩa</button>
   <button class="pinyin-toggle" onclick="toggleHanViet()" id="hv-toggle-btn">Ẩn Hán Việt</button>
-  <button class="theme-toggle" onclick="toggleTheme()" id="theme-toggle-btn" title="Chế độ tối/sáng">🌙</button>
 </div>
 
 <div id="nav">
@@ -1800,11 +1800,11 @@ let qzWordExamples = []; // ví dụ theo từng từ (kho đảm bảo mỗi t�
 
 function renderQuiz() {
   return `
-  <div class="count-row">
-    <label>Số câu:</label>
-    <select onchange="qzSetCount(this.value)">${[5,10,15,20,30].map(n=>`<option value="${n}"${n==qzQuestionCount?' selected':''}>${n}</option>`).join('')}</select>
-  </div>
   <div class="quiz-type-row">
+    <div class="count-row" style="margin-bottom:0;">
+      <label>Số câu:</label>
+      <select onchange="qzSetCount(this.value)">${[5,10,15,20,30].map(n=>`<option value="${n}"${n==qzQuestionCount?' selected':''}>${n}</option>`).join('')}</select>
+    </div>
     ${['漢→Việt','Việt→漢','Âm→漢'].map(t=>`<button class="quiz-type-btn${qzType===t?' active':''}" onclick="qzSetType('${t}')">${t}</button>`).join('')}
   </div>
   <div id="qz-area"></div>`;
