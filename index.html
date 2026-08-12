@@ -107,8 +107,14 @@
     transform:scale(.96);
   }
 
+  /* ── APP HEADER (topbar + nav gộp chung 1 khối dính cố định) ─────────────
+     Trước đây chỉ #topbar có position:sticky, còn #nav nằm ngoài nên khi cuộn
+     trang, #nav bị trôi/lẫn dưới #topbar gây cảm giác thanh công cụ "di chuyển".
+     Gộp cả 2 vào 1 wrapper dính cố định chung để chúng luôn đứng yên cùng nhau. */
+  #app-header{position:sticky;top:0;z-index:100;}
+
   /* ── TOPBAR ────────────────────────────────────────────── */
-  #topbar{position:sticky;top:0;z-index:100;background:var(--card);border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 14px;box-shadow:0 1px 8px rgba(0,0,0,.05);}
+  #topbar{background:var(--card);border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 14px;box-shadow:0 1px 8px rgba(0,0,0,.05);}
   #topbar h1{flex:1 1 100%;font-size:1.05rem;font-weight:900;letter-spacing:-.5px;margin-bottom:2px;}
   #streak-badge{background:var(--l7c);padding:5px 12px;border-radius:20px;font-size:.82rem;font-weight:800;color:var(--l7a);animation:popIn .4s cubic-bezier(.2,.8,.3,1);}
   .pinyin-toggle{background:var(--active-bg);color:var(--active-dark);border:none;padding:6px 13px;border-radius:20px;font-size:.8rem;font-weight:800;cursor:pointer;}
@@ -266,6 +272,17 @@
   .quiz-type-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}
   .quiz-type-btn{padding:6px 13px;border-radius:16px;border:2px solid var(--border);background:var(--card);font-size:.78rem;font-weight:700;cursor:pointer;}
   .quiz-type-btn.active{background:var(--active);color:#fff;border-color:var(--active);}
+
+  /* ── QUIZ FIT-TO-SCREEN ────────────────────────────────────────────────
+     Toàn bộ phần thân Trắc nghiệm (số câu + loại câu hỏi + thẻ câu hỏi) được ép
+     vừa đúng chiều cao còn lại dưới thanh công cụ cố định (chiều cao thật do JS
+     đo và gán qua fitQuizArea() trong index.html). #qz-area chiếm hết phần còn
+     lại (flex:1) và CĂN GIỮA thẻ câu hỏi theo chiều dọc; JS sẽ scale thẻ câu hỏi
+     (.panel) xuống nếu nội dung cao hơn chỗ trống, để không bao giờ phải cuộn. */
+  .quiz-fit-wrap{display:flex;flex-direction:column;overflow:hidden;}
+  .quiz-fit-wrap .count-row,.quiz-fit-wrap .quiz-type-row{flex-shrink:0;}
+  #qz-area{flex:1;min-height:0;overflow:hidden;display:flex;align-items:flex-start;justify-content:center;}
+  #qz-area>.panel{width:100%;transform-origin:top center;transition:transform .15s ease;}
 
   /* ── TYPE INPUT ────────────────────────────────────────── */
   .type-q{text-align:center;padding:22px 16px;}
@@ -459,6 +476,7 @@
   </div>
 </div>
 
+<div id="app-header">
 <div id="topbar">
   <h1>🀄 學中文</h1>
   <span id="streak-badge">🔥 0 ngày</span>
@@ -487,6 +505,7 @@
   <button onclick="goTab('vocab')" id="tab-vocab" style="display:none;">📚 Từ vựng</button>
   <button onclick="goTab('logs')" id="tab-logs" style="display:none;">🧾 Nhật ký</button>
 </div>
+</div>
 
 <div id="content"></div>
 
@@ -498,17 +517,25 @@
   const saved = localStorage.getItem('theme');
   if (saved === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
 })();
+// Áp dụng theme (sáng/tối) vào cả DOM lẫn localStorage (localStorage vẫn giữ để tránh chớp sai
+// theme lúc trang vừa tải xong, trước khi kịp lấy progressState.ui.theme từ DB/cache).
+function applyTheme(theme) {
+  if (theme === 'dark') {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
+  localStorage.setItem('theme', theme === 'dark' ? 'dark' : 'light');
+  const btn = document.getElementById('theme-toggle-btn');
+  if (btn) btn.textContent = theme === 'dark' ? '☀️' : '🌙';
+}
 function toggleTheme() {
   const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-  if (isDark) {
-    document.documentElement.removeAttribute('data-theme');
-    localStorage.setItem('theme', 'light');
-  } else {
-    document.documentElement.setAttribute('data-theme', 'dark');
-    localStorage.setItem('theme', 'dark');
-  }
-  const btn = document.getElementById('theme-toggle-btn');
-  if (btn) btn.textContent = document.documentElement.getAttribute('data-theme') === 'dark' ? '☀️' : '🌙';
+  const newTheme = isDark ? 'light' : 'dark';
+  applyTheme(newTheme);
+  progressState.ui.theme = newTheme;
+  cacheProgressLocally();
+  scheduleSync();
 }
 document.addEventListener('DOMContentLoaded', () => {
   const btn = document.getElementById('theme-toggle-btn');
@@ -771,7 +798,11 @@ let isGuest = localStorage.getItem('authGuest') === '1';
 // "ui" lưu lại trạng thái đang thao tác dở (tab đang xem, Quyển/level + bài đang chọn) —
 // được đồng bộ lên server cùng tiến độ học, để mở lại app (kể cả trên máy khác) vẫn đúng chỗ cũ.
 function defaultProgress() {
-  return { srs: {}, streak: 0, lastDate: null, ui: { lastTab: 'home', selectedBookIds: [1], selectedLessons: [], lessonsAllMode: true } };
+  return { srs: {}, streak: 0, lastDate: null, ui: {
+    lastTab: 'home', selectedBookIds: [1], selectedLessons: [], lessonsAllMode: true,
+    showPinyin: true, showMeaning: true, showHanViet: true, theme: 'light', ttsRate: 0.65,
+    qzType: '漢→Việt', qzQuestionCount: 30, questionCount: 10,
+  } };
 }
 function normalizeProgress(p) {
   if (!p || typeof p !== 'object') return defaultProgress();
@@ -783,10 +814,19 @@ function normalizeProgress(p) {
   if (!Array.isArray(p.ui.selectedBookIds)) p.ui.selectedBookIds = [1];
   if (!Array.isArray(p.ui.selectedLessons)) p.ui.selectedLessons = [];
   if (typeof p.ui.lessonsAllMode !== 'boolean') p.ui.lessonsAllMode = (p.ui.selectedLessons.length === 0);
+  if (typeof p.ui.showPinyin !== 'boolean') p.ui.showPinyin = true;
+  if (typeof p.ui.showMeaning !== 'boolean') p.ui.showMeaning = true;
+  if (typeof p.ui.showHanViet !== 'boolean') p.ui.showHanViet = true;
+  if (p.ui.theme !== 'dark' && p.ui.theme !== 'light') p.ui.theme = 'light';
+  if (typeof p.ui.ttsRate !== 'number' || p.ui.ttsRate < 0.3 || p.ui.ttsRate > 1.0) p.ui.ttsRate = 0.65;
+  if (!['漢→Việt', 'Việt→漢', 'Âm→漢'].includes(p.ui.qzType)) p.ui.qzType = '漢→Việt';
+  if (!Number.isFinite(p.ui.qzQuestionCount)) p.ui.qzQuestionCount = 30;
+  if (!Number.isFinite(p.ui.questionCount)) p.ui.questionCount = 10;
   return p;
 }
 let progressState = defaultProgress();
-// Áp dụng lại trạng thái đang thao tác dở (tab, Quyển/level, bài đang chọn) từ progressState.ui
+// Áp dụng lại trạng thái đang thao tác dở (tab, Quyển/level, bài đang chọn, các cài đặt hiển thị)
+// từ progressState.ui — gọi mỗi khi mở lại app hoặc đăng nhập xong, để khỏi phải chọn lại từ đầu.
 function applyUIState() {
   normalizeProgress(progressState);
   const ui = progressState.ui;
@@ -795,6 +835,24 @@ function applyUIState() {
   selectedBookIds = new Set(ui.selectedBookIds);
   selectedLessons = new Set(ui.selectedLessons);
   lessonsAllMode = ui.lessonsAllMode;
+  showPinyin = ui.showPinyin;
+  showMeaning = ui.showMeaning;
+  showHanViet = ui.showHanViet;
+  qzType = ui.qzType;
+  qzQuestionCount = ui.qzQuestionCount;
+  questionCount = ui.questionCount;
+  ttsRate = ui.ttsRate;
+  const pyBtn = document.getElementById('py-toggle-btn');
+  if (pyBtn) pyBtn.textContent = showPinyin ? 'Ẩn Pinyin' : 'Hiện Pinyin';
+  const viBtn = document.getElementById('vi-toggle-btn');
+  if (viBtn) viBtn.textContent = showMeaning ? 'Ẩn nghĩa' : 'Hiện nghĩa';
+  const hvBtn = document.getElementById('hv-toggle-btn');
+  if (hvBtn) hvBtn.textContent = showHanViet ? 'Ẩn Hán Việt' : 'Hiện Hán Việt';
+  const speedSlider = document.getElementById('speed-slider');
+  if (speedSlider) speedSlider.value = ttsRate;
+  const speedVal = document.getElementById('speed-val');
+  if (speedVal) speedVal.textContent = ttsRate.toFixed(2);
+  applyTheme(ui.theme);
   const navBtn = document.getElementById('tab-' + currentTab);
   if (navBtn) {
     document.querySelectorAll('#nav button').forEach(b => b.classList.remove('active'));
@@ -1142,6 +1200,9 @@ function updateSpeed(val) {
   ttsRate = parseFloat(val);
   const el = document.getElementById('speed-val');
   if (el) el.textContent = ttsRate.toFixed(2);
+  progressState.ui.ttsRate = ttsRate;
+  cacheProgressLocally();
+  scheduleSync(); // scheduleSync tự debounce ~700ms nên kéo thanh trượt liên tục vẫn không gửi dồn dập
 }
 
 // Split text into natural phrase chunks at Chinese punctuation + commas
@@ -1233,16 +1294,25 @@ let questionCount = 10;
 function togglePinyin() {
   showPinyin = !showPinyin;
   document.getElementById('py-toggle-btn').textContent = showPinyin ? 'Ẩn Pinyin' : 'Hiện Pinyin';
+  progressState.ui.showPinyin = showPinyin;
+  cacheProgressLocally();
+  scheduleSync();
   render();
 }
 function toggleMeaning() {
   showMeaning = !showMeaning;
   document.getElementById('vi-toggle-btn').textContent = showMeaning ? 'Ẩn nghĩa' : 'Hiện nghĩa';
+  progressState.ui.showMeaning = showMeaning;
+  cacheProgressLocally();
+  scheduleSync();
   render();
 }
 function toggleHanViet() {
   showHanViet = !showHanViet;
   document.getElementById('hv-toggle-btn').textContent = showHanViet ? 'Ẩn Hán Việt' : 'Hiện Hán Việt';
+  progressState.ui.showHanViet = showHanViet;
+  cacheProgressLocally();
+  scheduleSync();
   render();
 }
 
@@ -1741,6 +1811,7 @@ let qzWordExamples = []; // ví dụ theo từng từ (kho đảm bảo mỗi t�
 
 function renderQuiz() {
   return `
+  <div class="quiz-fit-wrap" id="quiz-fit-wrap">
   <div class="count-row">
     <label>Số câu:</label>
     <select onchange="qzSetCount(this.value)">${[5,10,15,20,30].map(n=>`<option value="${n}"${n==qzQuestionCount?' selected':''}>${n}</option>`).join('')}</select>
@@ -1748,11 +1819,22 @@ function renderQuiz() {
   <div class="quiz-type-row">
     ${['漢→Việt','Việt→漢','Âm→漢'].map(t=>`<button class="quiz-type-btn${qzType===t?' active':''}" onclick="qzSetType('${t}')">${t}</button>`).join('')}
   </div>
-  <div id="qz-area"></div>`;
+  <div id="qz-area"></div>
+  </div>`;
 }
 
-function qzSetCount(v) { qzQuestionCount=parseInt(v); qzIdx=0; qzScore=0; bindQuiz(); }
-function qzSetType(t) { qzType=t; qzIdx=0; qzScore=0; bindQuiz(); }
+function qzSetCount(v) {
+  qzQuestionCount=parseInt(v); qzIdx=0; qzScore=0;
+  progressState.ui.qzQuestionCount = qzQuestionCount;
+  cacheProgressLocally(); scheduleSync();
+  bindQuiz();
+}
+function qzSetType(t) {
+  qzType=t; qzIdx=0; qzScore=0;
+  progressState.ui.qzType = qzType;
+  cacheProgressLocally(); scheduleSync();
+  bindQuiz();
+}
 
 // Tải toàn bộ ví dụ theo từ (kho đảm bảo mỗi từ có sẵn vài câu) cho các bài đang học
 async function qzLoadSentencePool() {
@@ -1790,7 +1872,9 @@ function qzRenderQ() {
       <div class="exam-score">${qzScore}/${qzWords.length}</div>
       <div class="exam-rank">${qzRank(qzScore/qzWords.length)}</div>
       <button class="btn btn-primary" onclick="bindQuiz()">Làm lại</button>
-    </div>`; return;
+    </div>`;
+    fitQuizArea();
+    return;
   }
   const w = qzWords[qzIdx];
   const opts = qzMakeOpts(w);
@@ -1823,7 +1907,34 @@ function qzRenderQ() {
   document.querySelectorAll('#qz-opts .quiz-opt').forEach(b=>{
     b._correct = (b.dataset.v === (qzType==='漢→Việt' ? w.vi : w.hz));
   });
+  fitQuizArea();
 }
+
+// Co giãn nội dung màn hình Trắc nghiệm (thẻ câu hỏi + đáp án) để LUÔN VỪA KHÍT phần màn hình còn
+// lại phía dưới thanh công cụ cố định — không cần cuộn trang. Đo chiều cao thật của #app-header
+// (đã dính cố định) để biết còn lại bao nhiêu chỗ, rồi chỉ THU NHỎ (scale) nội dung thẻ câu hỏi cho
+// vừa, KHÔNG cắt/ẩn bớt nội dung. Gọi lại mỗi khi vẽ câu hỏi mới hoặc khi xoay màn hình/đổi kích cỡ.
+function fitQuizArea() {
+  const wrap = document.getElementById('quiz-fit-wrap');
+  const area = document.getElementById('qz-area');
+  if (!wrap || !area) return;
+  const header = document.getElementById('app-header');
+  const headerH = header ? header.offsetHeight : 0;
+  const bottomGap = 14; // chừa 1 khoảng nhỏ phía dưới cho thoáng, không sát mép màn hình
+  const availableH = window.innerHeight - headerH - bottomGap;
+  wrap.style.height = Math.max(240, availableH) + 'px';
+  const panel = area.querySelector('.panel');
+  if (!panel) return;
+  panel.style.transform = 'none'; // reset để đo đúng chiều cao thật (không tính scale cũ)
+  const areaH = area.clientHeight;
+  const panelH = panel.scrollHeight;
+  if (areaH > 0 && panelH > areaH) {
+    const scale = Math.max(0.5, areaH / panelH);
+    panel.style.transform = `scale(${scale})`;
+  }
+}
+window.addEventListener('resize', () => { if (currentTab === 'quiz') fitQuizArea(); });
+window.addEventListener('orientationchange', () => { if (currentTab === 'quiz') setTimeout(fitQuizArea, 200); });
 
 function qzPick(btn, hz) {
   const w = qzWords[qzIdx];
@@ -1939,7 +2050,12 @@ function renderType() {
   </div>
   <div id="ty-area"></div>`;
 }
-function tySetCount(v) { questionCount=parseInt(v); bindType(); }
+function tySetCount(v) {
+  questionCount=parseInt(v);
+  progressState.ui.questionCount = questionCount;
+  cacheProgressLocally(); scheduleSync();
+  bindType();
+}
 function bindType() {
   tyWords = shuffle(sortByPriority(getFilteredWords())).slice(0,questionCount);
   tyIdx=0; tyScore=0; tyRenderQ();
@@ -2000,7 +2116,12 @@ function renderListen() {
   </div>
   <div id="ls-area"></div>`;
 }
-function lsSetCount(v) { questionCount=parseInt(v); bindListen(); }
+function lsSetCount(v) {
+  questionCount=parseInt(v);
+  progressState.ui.questionCount = questionCount;
+  cacheProgressLocally(); scheduleSync();
+  bindListen();
+}
 
 function bindListen() {
   // Chỉ dùng TỪ VỰNG của (các) bài đang chọn — không trộn câu ví dụ nữa
@@ -2106,7 +2227,12 @@ function renderTrans() {
   </div>
   <div id="tr-area"></div>`;
 }
-function trSetCount(v) { questionCount=parseInt(v); bindTrans(); }
+function trSetCount(v) {
+  questionCount=parseInt(v);
+  progressState.ui.questionCount = questionCount;
+  cacheProgressLocally(); scheduleSync();
+  bindTrans();
+}
 function bindTrans() {
   const filtered = SENTENCES.filter(s=>isLessonInSelection(s.l));
   trItems = shuffle(filtered).slice(0,questionCount);
