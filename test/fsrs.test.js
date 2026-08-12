@@ -195,15 +195,29 @@ test('personalBaselineMs(): tự sort theo reviewed_at, không phụ thuộc th�
     `(nếu ra 5499.5 nghĩa là hàm chưa tự sort mà đang tin thứ tự input)`);
 });
 
-// ── Concurrent review: xử lý ở tầng DB (SELECT ... FOR UPDATE trong lib/db.js::reviewFsrsCard),
-//     KHÔNG thể unit-test thuần ở tầng scheduler vì không chạm DB. Cần Postgres thật để test tích
-//     hợp 2 request đồng thời cùng 1 thẻ — ghi chú rõ ràng thay vì giả lập kết quả PASS. ──
-test('Concurrent review (ghi chú: cần Postgres thật để test tích hợp)', () => {
-  // Không throw -> coi là "đã ghi nhận yêu cầu", nhưng đây KHÔNG phải bằng chứng concurrency an
-  // toàn. Xem báo cáo cuối cùng, mục TEST, dòng "Concurrent review".
-  assert.ok(true);
-});
+// ── Concurrent review / reset / delete: xử lý ở tầng DB (SELECT ... FOR UPDATE, transaction
+//     xoá fsrs_cards+review_history trong lib/db.js), KHÔNG thể unit-test thuần ở tầng scheduler
+//     vì không chạm DB thật. FIX (audit V68, Phần 22): "assert.ok(true)" là TEST GIẢ — không được
+//     coi là bằng chứng behavior. Test này KHÔNG chạy giả một kết quả PASS nữa; nó SKIP một cách
+//     tường minh (không tính vào passed/failed) và trỏ sang script tích hợp thật:
+//     test/fsrs.concurrency.integration.js — script đó CHỈ chạy khi có DATABASE_URL trỏ tới
+//     Postgres thật (npm run test:integration), và tự fail rõ ràng nếu behavior sai, không bao
+//     giờ tự báo PASS khi chưa thực sự chứng minh được.
+let skipped = 0;
+function skip(name, reason) {
+  skipped += 1;
+  results.push([name, 'SKIP']);
+  console.log(`SKIP  ${name}`);
+  console.log(`      Lý do: ${reason}`);
+}
+skip(
+  'Concurrent review / reset / delete (cần Postgres thật)',
+  'Không có DATABASE_URL trong môi trường chạy "npm test" (unit test thuần, không chạm DB). ' +
+  'Đây KHÔNG phải bằng chứng concurrency an toàn — chỉ là ghi nhận rằng test integration thật ' +
+  'chưa chạy ở bước này. Chạy "DATABASE_URL=... node test/fsrs.concurrency.integration.js" ' +
+  '(hoặc "npm run test:integration") để kiểm tra thật trên Postgres.'
+);
 
 console.log('\n──────────────────────────────');
-console.log(`${passed} passed, ${failed} failed`);
+console.log(`${passed} passed, ${failed} failed, ${skipped} skipped`);
 if (failed > 0) process.exitCode = 1;
