@@ -114,20 +114,20 @@
   #app-header{position:sticky;top:0;z-index:100;}
 
   /* ── TOPBAR ────────────────────────────────────────────── */
-  #topbar{background:var(--card);border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 14px;box-shadow:0 1px 8px rgba(0,0,0,.05);}
-  #topbar h1{flex:1 1 100%;font-size:1.05rem;font-weight:900;letter-spacing:-.5px;margin-bottom:2px;}
-  #streak-badge{background:var(--l7c);padding:5px 12px;border-radius:20px;font-size:.82rem;font-weight:800;color:var(--l7a);animation:popIn .4s cubic-bezier(.2,.8,.3,1);}
-  .pinyin-toggle{background:var(--active-bg);color:var(--active-dark);border:none;padding:6px 13px;border-radius:20px;font-size:.8rem;font-weight:800;cursor:pointer;}
-  .speed-control{display:flex;align-items:center;gap:5px;background:var(--paper);border-radius:20px;padding:4px 11px;}
-  .speed-control label{font-size:.72rem;font-weight:700;color:var(--muted);}
-  .speed-control input[type=range]{width:60px;accent-color:var(--active);cursor:pointer;}
-  .speed-val{font-size:.72rem;font-weight:700;color:var(--active-dark);min-width:28px;}
-  .theme-toggle{background:var(--paper);border:1.5px solid var(--border);color:var(--ink);border-radius:20px;padding:6px 11px;font-size:.9rem;cursor:pointer;line-height:1;}
+  #topbar{background:var(--card);border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:6px 12px;box-shadow:0 1px 8px rgba(0,0,0,.05);}
+  #topbar h1{font-size:.88rem;font-weight:900;letter-spacing:-.5px;margin-right:2px;}
+  #streak-badge{background:var(--l7c);padding:3px 9px;border-radius:16px;font-size:.7rem;font-weight:800;color:var(--l7a);animation:popIn .4s cubic-bezier(.2,.8,.3,1);}
+  .pinyin-toggle{background:var(--active-bg);color:var(--active-dark);border:none;padding:4px 10px;border-radius:16px;font-size:.7rem;font-weight:800;cursor:pointer;}
+  .speed-control{display:flex;align-items:center;gap:4px;background:var(--paper);border-radius:16px;padding:3px 9px;}
+  .speed-control label{font-size:.62rem;font-weight:700;color:var(--muted);}
+  .speed-control input[type=range]{width:46px;accent-color:var(--active);cursor:pointer;}
+  .speed-val{font-size:.62rem;font-weight:700;color:var(--active-dark);min-width:22px;}
+  .theme-toggle{background:var(--paper);border:1.5px solid var(--border);color:var(--ink);border-radius:16px;padding:4px 9px;font-size:.78rem;cursor:pointer;line-height:1;}
 
   /* ── NAV TABS ──────────────────────────────────────────── */
-  #nav{display:flex;overflow-x:auto;gap:6px;padding:10px 14px;background:var(--card);border-bottom:1px solid var(--border);scrollbar-width:none;}
+  #nav{display:flex;overflow-x:auto;gap:4px;padding:6px 12px;background:var(--card);border-bottom:1px solid var(--border);scrollbar-width:none;}
   #nav::-webkit-scrollbar{display:none;}
-  #nav button{flex-shrink:0;padding:8px 15px;border:none;background:transparent;font-size:.8rem;font-weight:800;color:var(--muted);border-radius:14px;cursor:pointer;}
+  #nav button{flex-shrink:0;padding:6px 12px;border:none;background:transparent;font-size:.74rem;font-weight:800;color:var(--muted);border-radius:12px;cursor:pointer;}
   #nav button.active{color:var(--active-dark);background:var(--active-bg);}
 
   /* ── MAIN CONTENT ──────────────────────────────────────── */
@@ -153,7 +153,7 @@
   .auth-submit:active{transform:translateY(2px);box-shadow:0 2px 0 var(--active-dark);}
   .auth-submit:disabled{opacity:.6;cursor:default;box-shadow:none;transform:none;}
   .auth-guest{width:100%;padding:9px;border:none;background:none;color:var(--muted);font-size:.78rem;font-weight:600;cursor:pointer;margin-top:10px;text-decoration:underline;}
-  #user-badge{background:var(--l11c);padding:5px 12px;border-radius:20px;font-size:.8rem;font-weight:800;color:var(--l11a);cursor:pointer;border:none;}
+  #user-badge{background:var(--l11c);padding:3px 9px;border-radius:16px;font-size:.7rem;font-weight:800;color:var(--l11a);cursor:pointer;border:none;}
   .sync-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--active);margin-right:4px;vertical-align:middle;}
   .sync-dot.offline{background:var(--wrong);}
   .panel-title{font-size:.75rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:14px;}
