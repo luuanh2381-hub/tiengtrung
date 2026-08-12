@@ -15,6 +15,7 @@ const { readDB, updateDB, getVocabByLessons, getVocabCounts, importVocab, clearV
   countDueFsrsCards, getDueFsrsCards, getNewWordsByLessonOrder, countNewWordsInLessons,
   getTodayStudyCounts, getWeakFsrsCards, reviewFsrsCard, getFsrsCardsDebug,
   getWordForAnswerCheck } = require('../lib/db');
+const { getFsrsVerificationInfo } = require('../lib/fsrs');
 
 const app = express();
 
@@ -688,6 +689,43 @@ app.get('/api/study/debug', async (req, res) => {
     const lessons = raw ? raw.split(',').map(s => parseInt(s, 10)).filter(Number.isFinite) : null;
     const cards = await getFsrsCardsDebug(authed.username, lessons);
     res.json({ ok: true, cards });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Xác minh FSRS-6 đang chạy thật trên production (không cần chạy code ở máy khác) ──
+// Trả về version package "ts-fsrs" thực tế đã cài + số lượng parameters (w) mà scheduler đang
+// dùng + so khớp với bộ default FSRS-6 công bố chính thức. Nếu module `lib/fsrs.js` load thành
+// công (tức app đang chạy, không lỗi 500 hàng loạt) thì điều đó đã tự chứng minh assertion "21
+// parameters" trong buildScheduler() đã pass lúc cold start — endpoint này chỉ hiển thị lại chi
+// tiết đó cho admin xem trực tiếp, không tính toán gì thêm.
+app.get('/api/study/fsrs-verify', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const info = getFsrsVerificationInfo();
+    let pkgVersion = 'unknown';
+    try { pkgVersion = require('ts-fsrs/package.json').version; } catch (e) { /* ignore */ }
+
+    const OFFICIAL_FSRS6_DEFAULT_W = [
+      0.212, 1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001, 1.8722, 0.1666,
+      0.796, 1.4835, 0.0614, 0.2629, 1.6483, 0.6014, 1.8729, 0.5425, 0.0912, 0.0658, 0.1542,
+    ];
+    const matchesOfficialDefault = info.w.length === OFFICIAL_FSRS6_DEFAULT_W.length &&
+      info.w.every((v, i) => Math.abs(v - OFFICIAL_FSRS6_DEFAULT_W[i]) < 1e-6);
+
+    res.json({
+      ok: true,
+      tsFsrsPackageVersion: pkgVersion,
+      paramCount: info.paramCount,
+      isFsrs6: info.isFsrs6,
+      matchesOfficialFsrs6Default: matchesOfficialDefault,
+      requestRetention: info.requestRetention,
+      enableFuzz: info.enableFuzz,
+      enableShortTerm: info.enableShortTerm,
+      w: info.w,
+      nodeVersion: process.version,
+    });
   } catch (e) { fail(res, e); }
 });
 
