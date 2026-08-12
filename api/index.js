@@ -11,7 +11,10 @@ const bcrypt = require('bcryptjs');
 const { readDB, updateDB, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson,
   getAllVocabWords, updateVocabHanviet, getWordExampleCounts, insertWordExamples, getWordExamplesForLessons,
   getAllHanziParts, getHanziPartsKeys, insertHanziParts,
-  insertActivityLog, getActivityLogs, reserveGeminiSlot, bumpGeminiRateLimit } = require('../lib/db');
+  insertActivityLog, getActivityLogs, reserveGeminiSlot, bumpGeminiRateLimit,
+  countDueFsrsCards, getDueFsrsCards, getNewWordsByLessonOrder, countNewWordsInLessons,
+  getTodayStudyCounts, getWeakFsrsCards, reviewFsrsCard, getFsrsCardsDebug } = require('../lib/db');
+const { ratingFromString } = require('../lib/fsrs');
 
 const app = express();
 
@@ -439,6 +442,215 @@ app.get('/api/vocab/counts', async (req, res) => {
     const counts = await getVocabCounts();
     res.set('Cache-Control', 'public, max-age=60');
     res.json({ ok: true, counts });
+  } catch (e) { fail(res, e); }
+});
+
+// ════════════════════════════════════════════════════
+// FSRS STUDY — hệ thống ôn tập cá nhân hoá: FSRS quyết định khi nào ôn, lesson-priority chỉ
+// quyết định NEW word nào được học trước. Xem docs/fsrs.md để biết chi tiết kiến trúc.
+// ════════════════════════════════════════════════════
+
+// Giữ ĐỒNG BỘ THỦ CÔNG với mảng BOOKS trong index.html (chỉ cần from/to để biết ranh giới
+// Quyển/HSK — server cần thông tin này để lesson-priority không "tràn" sang Quyển khác khi
+// user đang lessonsAllMode). Nếu sửa BOOKS trong index.html (thêm Quyển mới), nhớ sửa cả ở đây.
+const BOOKS_RANGES = [
+  { id: 1, from: 1, to: 15 }, { id: 2, from: 16, to: 30 },
+  { id: 12, from: 100, to: 109 }, { id: 13, from: 110, to: 119 },
+  { id: 3, from: 31, to: 31 }, { id: 14, from: 90, to: 90 },
+  { id: 15, from: 91, to: 91 }, { id: 16, from: 120, to: 120 },
+  { id: 4, from: 32, to: 32 }, { id: 5, from: 33, to: 33 },
+  { id: 6, from: 34, to: 34 }, { id: 7, from: 35, to: 35 },
+  { id: 8, from: 36, to: 36 }, { id: 9, from: 37, to: 37 },
+  { id: 10, from: 38, to: 38 }, { id: 11, from: 39, to: 39 },
+];
+function bookOfLessonServer(l) {
+  const b = BOOKS_RANGES.find(x => l >= x.from && l <= x.to);
+  return b ? b.id : 1;
+}
+
+// Xác định phạm vi bài (scope) đang học của user, dựa TRÊN DỮ LIỆU lựa chọn Quyển/bài đã có sẵn
+// trong progress.ui (Phần 6: tận dụng dữ liệu hiện tại, không tạo hệ thống current-lesson mới).
+async function resolveStudyScope(ui) {
+  const vocabCounts = await getVocabCounts();
+  const allLessonsWithVocab = Object.keys(vocabCounts).map(Number).filter(n => vocabCounts[n] > 0);
+  const bookIds = (Array.isArray(ui.selectedBookIds) && ui.selectedBookIds.length) ? ui.selectedBookIds : [1];
+  const lessonsAllMode = ui.lessonsAllMode !== false;
+  let scopeLessons;
+  if (lessonsAllMode) {
+    scopeLessons = allLessonsWithVocab.filter(l => bookIds.includes(bookOfLessonServer(l)));
+  } else {
+    const sel = Array.isArray(ui.selectedLessons) ? ui.selectedLessons : [];
+    scopeLessons = allLessonsWithVocab.filter(l => sel.includes(l));
+  }
+  return { scopeLessons, allLessonsWithVocab };
+}
+
+// "Current lesson" (Phần 6): ưu tiên giá trị đã lưu (ui.currentLesson, được cập nhật mỗi khi user
+// học NEW word ở bài nào), nếu không có/không còn hợp lệ thì lấy bài lớn nhất trong phạm vi đang chọn.
+function resolveCurrentLesson(ui, scopeLessons) {
+  if (Number.isFinite(ui.currentLesson) && scopeLessons.includes(ui.currentLesson)) return ui.currentLesson;
+  if (scopeLessons.length) return Math.max(...scopeLessons);
+  return 1;
+}
+
+// Thứ tự ưu tiên NEW word (Phần 7/10/23): current lesson → lùi dần trong PHẠM VI đang chọn.
+// Chỉ khi phạm vi này không đủ mới lùi ra ngoài (mở rộng), ưu tiên bài GẦN current lesson nhất.
+function buildLessonPriorityOrder(currentLesson, scopeLessons, allLessonsWithVocab) {
+  const scopeSet = new Set(scopeLessons);
+  const inScopeDesc = [...scopeSet].filter(l => l <= currentLesson).sort((a, b) => b - a);
+  const inScopeAsc = [...scopeSet].filter(l => l > currentLesson).sort((a, b) => a - b);
+  const inScopeOrder = [...inScopeDesc, ...inScopeAsc];
+  // Phần mở rộng (chỉ dùng nếu trong scope không đủ NEW word): mọi bài NGOÀI scope, sắp theo
+  // khoảng cách gần current lesson nhất trước (Phần 10 bước 5, Phần 23 "chỉ mở rộng nếu cần").
+  const outside = allLessonsWithVocab
+    .filter(l => !scopeSet.has(l))
+    .sort((a, b) => Math.abs(a - currentLesson) - Math.abs(b - currentLesson) || b - a);
+  return { inScopeOrder, outside };
+}
+
+function studySettings(ui) {
+  return {
+    dailyReviewLimit: Number.isFinite(ui.dailyReviewLimit) ? ui.dailyReviewLimit : 50,
+    dailyNewLimit: Number.isFinite(ui.dailyNewLimit) ? ui.dailyNewLimit : 10,
+    newOnlyAfterDue: typeof ui.newOnlyAfterDue === 'boolean' ? ui.newOnlyAfterDue : true,
+  };
+}
+
+function formatVocabWord(row) {
+  return { hz: row.hz, py: row.py, vi: row.vi, l: row.l, tag: row.tag, hanviet: row.hanviet };
+}
+function formatFsrsCard(row) {
+  return {
+    hz: row.hz, l: row.l, py: row.py, vi: row.vi, tag: row.tag, hanviet: row.hanviet,
+    state: row.state, due: row.due, stability: row.stability, difficulty: row.difficulty,
+    elapsed_days: row.elapsed_days, scheduled_days: row.scheduled_days,
+    reps: row.reps, lapses: row.lapses, last_review: row.last_review,
+  };
+}
+
+// ── Dashboard "Hôm nay học" (Phần 13) ──
+app.get('/api/study/today', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const user = authed.db.users[authed.username];
+    const ui = (user.progress && user.progress.ui) || {};
+    const { scopeLessons, allLessonsWithVocab } = await resolveStudyScope(ui);
+    const currentLesson = resolveCurrentLesson(ui, scopeLessons);
+    const [dueCount, newInCurrentLesson, weakCards] = await Promise.all([
+      countDueFsrsCards(authed.username),
+      countNewWordsInLessons(authed.username, [currentLesson]),
+      getWeakFsrsCards(authed.username, 200),
+    ]);
+    res.json({
+      ok: true,
+      dueCount,
+      newInCurrentLesson,
+      currentLesson,
+      hasScope: scopeLessons.length > 0 || allLessonsWithVocab.length > 0,
+      weakCount: weakCards.length,
+    });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Lấy 1 session học (Phần 14/21): REVIEW trước, NEW sau; FSRS luôn ưu tiên hơn NEW (Phần 5/9) ──
+app.get('/api/study/session', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const user = authed.db.users[authed.username];
+    const ui = (user.progress && user.progress.ui) || {};
+    const { dailyReviewLimit, dailyNewLimit, newOnlyAfterDue } = studySettings(ui);
+    const todayKey2 = todayKey();
+    const [{ scopeLessons, allLessonsWithVocab }, { newToday, reviewToday }] = await Promise.all([
+      resolveStudyScope(ui),
+      getTodayStudyCounts(authed.username, todayKey2),
+    ]);
+    const currentLesson = resolveCurrentLesson(ui, scopeLessons);
+
+    const remainingReviewSlots = Math.max(0, dailyReviewLimit - reviewToday);
+    const remainingNewSlots = Math.max(0, dailyNewLimit - newToday);
+
+    // 1) FSRS review/due trước — luôn ưu tiên cao nhất (Phần 5).
+    const totalDue = await countDueFsrsCards(authed.username);
+    const dueCards = remainingReviewSlots > 0 ? await getDueFsrsCards(authed.username, remainingReviewSlots) : [];
+
+    // 2) NEW word chỉ được lấy nếu còn chỗ — và nếu "newOnlyAfterDue" đang bật thì còn phải chờ
+    //    backlog due được xử lý hết trong ngân sách hôm nay (Phần 9), tránh NEW đè lên review.
+    let newCards = [];
+    const blockedByBacklog = newOnlyAfterDue && totalDue > remainingReviewSlots;
+    if (remainingNewSlots > 0 && !blockedByBacklog) {
+      const { inScopeOrder, outside } = buildLessonPriorityOrder(currentLesson, scopeLessons, allLessonsWithVocab);
+      newCards = await getNewWordsByLessonOrder(authed.username, inScopeOrder, remainingNewSlots);
+      if (newCards.length < remainingNewSlots && outside.length) {
+        const more = await getNewWordsByLessonOrder(
+          authed.username, outside, remainingNewSlots - newCards.length
+        );
+        newCards = newCards.concat(more);
+      }
+    }
+
+    const session = [
+      ...dueCards.map(c => ({ type: 'review', word: formatFsrsCard(c) })),
+      ...newCards.map(w => ({ type: 'new', word: formatVocabWord(w) })),
+    ];
+    res.json({
+      ok: true, session,
+      reviewCount: dueCards.length, newCount: newCards.length,
+      currentLesson, totalDue,
+      blockedByBacklog,
+    });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Ghi nhận 1 lượt review — SERVER là nguồn sự thật duy nhất, gọi FSRS thật (Phần 3/21) ──
+app.post('/api/study/review', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const { wordId, rating, answerCorrect } = req.body || {};
+  const hz = wordId && wordId.hz;
+  const l = wordId && Number(wordId.l);
+  if (!hz || !Number.isFinite(l)) return res.json({ ok: false, error: 'Thiếu wordId {hz, l} hợp lệ' });
+  if (ratingFromString(rating) === null) return res.json({ ok: false, error: 'Rating phải là again/hard/good/easy' });
+  if (typeof answerCorrect !== 'boolean') return res.json({ ok: false, error: 'Thiếu answerCorrect (boolean)' });
+  try {
+    const result = await reviewFsrsCard({ userId: authed.username, hz, l, ratingStr: rating, answerCorrect });
+    // Cập nhật "current lesson" CHỈ khi đây là 1 NEW word vừa được học lần đầu — tự động lùi/tiến
+    // theo đúng bài user vừa thực sự học, không cần thao tác thủ công (Phần 6). Review của các từ
+    // cũ không được phép đổi current lesson.
+    if (result.wasNew) {
+      await updateDB((db) => {
+        const u = db.users[authed.username];
+        if (!u) return;
+        if (!u.progress) u.progress = emptyProgress();
+        if (!u.progress.ui) u.progress.ui = emptyProgress().ui;
+        u.progress.ui.currentLesson = l;
+      });
+    }
+    res.json({ ok: result.ok, card: result.card });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Weak words (Phần 17) — chỉ là view lọc theo lapses/difficulty, không đổi FSRS state ──
+app.get('/api/study/weak-words', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const cards = await getWeakFsrsCards(authed.username, 200);
+    res.json({ ok: true, words: cards.map(formatFsrsCard) });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [DEV/ADMIN] Debug thẻ FSRS thô — xem đúng state/due/stability/difficulty (Phần 30) ──
+app.get('/api/study/debug', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const raw = String(req.query.lessons || '').trim();
+    const lessons = raw ? raw.split(',').map(s => parseInt(s, 10)).filter(Number.isFinite) : null;
+    const cards = await getFsrsCardsDebug(authed.username, lessons);
+    res.json({ ok: true, cards });
   } catch (e) { fail(res, e); }
 });
 
