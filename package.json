@@ -3,15 +3,21 @@
   "version": "2.0.0",
   "description": "App học từ vựng tiếng Trung có đăng nhập, lưu tiến độ theo tài khoản (bản deploy Vercel + Postgres)",
   "main": "api/index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "start": "node api/index.js",
-    "dev": "node api/index.js"
+    "dev": "node api/index.js",
+    "test": "node test/fsrs.test.js",
+    "verify:fsrs6": "node scripts/verify-fsrs6.js",
+    "build": "node -e \"console.log('no bundling step — plain Node/Express, nothing to build')\""
   },
   "dependencies": {
     "express": "^4.19.2",
     "bcryptjs": "^2.4.3",
     "pg": "^8.12.0",
     "compression": "^1.7.4",
-    "ts-fsrs": "^4.4.0"
+    "ts-fsrs": "5.4.1"
   }
 }
