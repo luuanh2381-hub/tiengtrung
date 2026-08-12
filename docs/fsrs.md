@@ -15,9 +15,18 @@ FSRS thật, quyết định user nên ôn từ nào hôm nay và ưu tiên NEW 
 
 ## 2. Thư viện
 
-`ts-fsrs` (npm) — implement đúng thuật toán FSRS (v4/v5 weights mặc định). Toàn bộ tính toán
-`due/stability/difficulty/state` nằm trong `lib/fsrs.js`, đây là **nơi duy nhất** gọi `ts-fsrs`.
-Desired retention mặc định = **0.90**, dùng default weights của thư viện — không tự tối ưu.
+`ts-fsrs` (npm, `^5.4.1`) — implement đúng thuật toán **FSRS-6** (21 parameters `w[0]..w[20]`,
+gồm cả tham số `decay` mới ở v6). Toàn bộ tính toán `due/stability/difficulty/state` nằm trong
+`lib/fsrs.js`, đây là **nơi duy nhất** gọi `ts-fsrs`. Desired retention mặc định = **0.90**, dùng
+default weights của thư viện — không tự tối ưu.
+
+> **Nâng cấp FSRS-6 (từ `ts-fsrs@4.4.0` → `^5.4.1`)**: API `fsrs()/generatorParameters()/
+> createEmptyCard()/repeat()/Rating/State` không đổi giữa các version, chỉ mặc định của bộ weights
+> đổi từ 17 (FSRS-4.5) sang 21 tham số (FSRS-6) — nên không cần migrate schema/dữ liệu, thẻ cũ
+> (`state/difficulty/stability/due/...`) được giữ nguyên và tiếp tục evolve dưới weights mới ngay
+> từ lượt review tiếp theo. `lib/fsrs.js` tự assert số lượng `w` = 21 khi khởi tạo scheduler
+> (`getFsrsVerificationInfo()`), fail sớm nếu dependency không phải FSRS-6. Chạy
+> `npm run verify:fsrs6` để xem bằng chứng scheduling thực tế.
 
 ## 3. Database
 
