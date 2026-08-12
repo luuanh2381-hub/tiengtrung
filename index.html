@@ -286,30 +286,16 @@
   .rv-vi{font-size:1.5rem;font-weight:800;}
   .rv-hv{font-size:.95rem;color:var(--active-dark);font-weight:700;}
   .rv-ex{font-size:.95rem;color:var(--ink);background:var(--paper);border-radius:var(--radius-sm);padding:10px 14px;margin-top:4px;}
-  .rv-recall-row{display:flex;gap:12px;width:100%;margin-top:16px;}
-  .rv-recall-btn{flex:1;padding:16px 8px;border:none;border-radius:16px;font-size:1rem;font-weight:800;cursor:pointer;}
-  .rv-recall-yes{background:var(--l8c);color:var(--l8a);box-shadow:0 4px 0 var(--l8a);}
-  .rv-recall-yes:active{transform:translateY(3px);box-shadow:0 1px 0 var(--l8a);}
-  .rv-recall-no{background:var(--l10c);color:var(--l10a);box-shadow:0 4px 0 var(--l10a);}
-  .rv-recall-no:active{transform:translateY(3px);box-shadow:0 1px 0 var(--l10a);}
-  .rv-rate-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%;margin-top:16px;}
-  .rv-rate-btn{padding:16px 6px;border:none;border-radius:16px;font-size:.95rem;font-weight:800;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px;}
-  .rv-rate-btn small{font-weight:600;font-size:.68rem;opacity:.85;}
-  .rv-rate-again{background:var(--l10c);color:var(--l10a);box-shadow:0 4px 0 var(--l10a);}
-  .rv-rate-again:active{transform:translateY(3px);box-shadow:0 1px 0 var(--l10a);}
-  .rv-rate-hard{background:#fde68a;color:#92400e;box-shadow:0 4px 0 #d97706;}
-  .rv-rate-hard:active{transform:translateY(3px);box-shadow:0 1px 0 #d97706;}
-  .rv-rate-good{background:var(--l8c);color:var(--l8a);box-shadow:0 4px 0 var(--l8a);}
-  .rv-rate-good:active{transform:translateY(3px);box-shadow:0 1px 0 var(--l8a);}
-  .rv-rate-easy{background:var(--l9b);color:var(--l9a);box-shadow:0 4px 0 var(--l9a);}
-  .rv-rate-easy:active{transform:translateY(3px);box-shadow:0 1px 0 var(--l9a);}
+  /* V67: KHÔNG còn nút Again/Hard/Good/Easy hay nút "Nhớ/Quên" tự báo cáo — FSRS rating được suy
+     ra tự động ở server (Phần 2/6). Màn review dùng lại đúng style trắc nghiệm .quiz-opts/.quiz-opt
+     (định nghĩa ở phần Trắc nghiệm) để giữ giao diện nhất quán, không tạo thêm bộ nút mới. */
+  .rv-feedback{font-size:1.1rem;font-weight:800;}
+  .rv-saved-line{font-size:.78rem;color:var(--muted);margin-top:6px;}
   .rv-done{text-align:center;padding:40px 16px;}
   .rv-done-num{font-size:3rem;}
   @media (max-width:480px){
     .rv-hz{font-size:3.3rem;}
     .rv-card{min-height:240px;padding:20px 14px;}
-    .rv-recall-btn{padding:15px 6px;font-size:.92rem;}
-    .rv-rate-btn{padding:14px 4px;font-size:.85rem;}
   }
 
   /* ── QUIZ ──────────────────────────────────────────────── */
@@ -1721,22 +1707,28 @@ function updateStudySetting(key, value) {
 }
 
 // ════════════════════════════════════════════════════
-// REVIEW SESSION — phiên học FSRS thật (Phần 14/15/16/24/25)
-// Flow: Hanzi → tự nhớ (recall) → bấm Đúng/Sai (answerCorrect) → lộ đáp án (pinyin/nghĩa/Hán
-// Việt/chiết tự/ví dụ) → chọn Again/Hard/Good/Easy (rating FSRS, TÁCH RIÊNG khỏi answerCorrect).
+// REVIEW SESSION — V67: AUTO FSRS RATING, không còn nút Again/Hard/Good/Easy.
+// Flow mới (Phần 1/2/17): hiện chữ Hán → user chọn 1 trong 4 đáp án trắc nghiệm → hệ thống tự
+// xác định đúng/sai + đo responseTime → gửi lên server → server tự suy ra FSRS rating, gọi
+// ts-fsrs, lưu lịch → lộ đáp án đầy đủ (pinyin/nghĩa/Hán Việt/chiết tự/ví dụ) → tự chuyển câu kế.
+// Người dùng KHÔNG bao giờ thấy rating Again/Hard/Good/Easy trong chế độ mặc định (Phần 2/18).
 // ════════════════════════════════════════════════════
 let rvSession = [];
 let rvIdx = 0;
-let rvPhase = 'recall'; // 'recall' | 'revealed'
-let rvAnswerCorrect = null;
+let rvPhase = 'question'; // 'question' (đang chờ chọn đáp án) | 'answered' (đã có kết quả)
 let rvWeakMode = false;
 let rvSummary = { reviewCount: 0, newCount: 0 };
 let rvExamplePool = [];
 let rvSubmitting = false;
+let rvOptions = [];      // 4 lựa chọn trắc nghiệm của câu hiện tại (sinh 1 lần/câu, không sinh lại mỗi lần render)
+let rvStartedAt = 0;     // performance.now() tại thời điểm câu hỏi THỰC SỰ hiển thị cho user (Phần 4)
+let rvAnswerChanges = 0; // UI hiện tại chọn là chốt ngay (không cho đổi trước khi submit) nên luôn 0 (Phần 16/17)
+let rvLastAnswer = null; // { correct, card, autoRating } — kết quả lượt vừa submit, để hiện feedback (Phần 18)
+const RV_QUIZ_TYPE = 'hz2vi'; // Phần 1: mặc định hỏi "chữ Hán → nghĩa", khớp đúng ví dụ trong yêu cầu V67
 
 async function startStudySession(weakMode) {
   rvWeakMode = !!weakMode;
-  rvIdx = 0; rvPhase = 'recall'; rvAnswerCorrect = null; rvExamplePool = [];
+  rvIdx = 0; rvExamplePool = []; rvLastAnswer = null;
   goTab('review');
   const el = document.getElementById('content');
   if (el) el.innerHTML = `<div class="study-empty">Đang tải phiên học...</div>`;
@@ -1766,6 +1758,7 @@ async function startStudySession(weakMode) {
       .then(r => r.json()).then(d => { if (d.ok) rvExamplePool = d.examples || []; })
       .catch(() => {});
   }
+  rvPrepareCurrentCard();
   render();
 }
 
@@ -1773,6 +1766,30 @@ function rvFindExample(hz) {
   const matches = rvExamplePool.filter(e => e.hz === hz);
   if (!matches.length) return null;
   return matches[Math.floor(Math.random() * matches.length)];
+}
+
+// Sinh 4 lựa chọn trắc nghiệm cho từ đang đứng ở rvIdx, và bắt đầu đo responseTime NGAY tại đây
+// (thời điểm câu hỏi thực sự sẵn sàng cho user — Phần 4, không tính thời gian từ lúc mở session).
+function rvPrepareCurrentCard() {
+  if (rvIdx >= rvSession.length) return;
+  const w = rvSession[rvIdx].word;
+  rvOptions = rvMakeOpts(w);
+  rvAnswerChanges = 0;
+  rvPhase = 'question';
+  rvLastAnswer = null;
+  rvStartedAt = performance.now();
+}
+
+// Ước lượng còn bao lâu tới lần ôn tiếp theo, chỉ để hiển thị thông tin cho user (Phần 18) —
+// KHÔNG dùng để quyết định gì thêm, due thật đã được server/FSRS tính và lưu xong.
+function rvSavedLine(r) {
+  if (!r) return '';
+  if (!r.card || !r.card.due) return '📌 Đã lưu lịch ôn';
+  const diffMs = new Date(r.card.due).getTime() - Date.now();
+  const diffDays = Math.round(diffMs / 86400000);
+  if (diffDays <= 0) return '📌 Đã lưu lịch ôn — sẽ xuất hiện lại rất sớm';
+  if (diffDays === 1) return '📌 Đã lưu lịch ôn — ôn lại sau 1 ngày';
+  return `📌 Đã lưu lịch ôn — ôn lại sau ${diffDays} ngày`;
 }
 
 function renderReview() {
@@ -1789,31 +1806,36 @@ function renderReview() {
   const pct = Math.round((rvIdx / rvSession.length) * 100);
   const tagLabel = item.type === 'new' ? '🆕 Từ mới' : '🔁 Ôn tập';
   let body;
-  if (rvPhase === 'recall') {
+  if (rvPhase === 'question') {
+    // Chỉ 1 bước duy nhất: nhìn chữ Hán → chọn nghĩa đúng (Phần 1/17). Không có bước "tự nhớ rồi
+    // bấm Đúng/Sai" riêng như v66 — hệ thống tự xác định đúng/sai khi user chọn đáp án.
+    const optHtml = rvOptions.map(o =>
+      `<button class="quiz-opt" data-v="${o.vi}" onclick="rvPick(this,'${o.hz}')" ${rvSubmitting ? 'disabled' : ''}>${o.vi}</button>`
+    ).join('');
     body = `
       <div class="rv-tag">${tagLabel} · Bài ${w.l}</div>
       <div class="rv-hz">${w.hz}</div>
-      <div class="rv-prompt">${w.hz} là gì? (nhớ trong đầu trước khi bấm)</div>
-      <div class="rv-recall-row">
-        <button class="rv-recall-btn rv-recall-no" onclick="rvReveal(false)">❌ Quên rồi</button>
-        <button class="rv-recall-btn rv-recall-yes" onclick="rvReveal(true)">✅ Nhớ được</button>
-      </div>`;
+      ${showPinyin ? `<div class="rv-py">${w.py || ''}</div>` : ''}
+      <div class="rv-prompt">${w.hz} là gì?</div>
+      <div class="quiz-opts" id="rv-opts">${optHtml}</div>`;
   } else {
+    // Đã có kết quả: lộ đáp án đầy đủ + trạng thái lưu FSRS. KHÔNG hiện Again/Hard/Good/Easy
+    // (Phần 2/18) — chỉ hiện khi bật chế độ debug/advanced dành cho admin (Phần 19/22).
+    const r = rvLastAnswer;
     const ex = rvFindExample(w.hz);
     body = `
       <div class="rv-tag">${tagLabel} · Bài ${w.l}</div>
       <div class="rv-hz">${w.hz}</div>
+      <div class="rv-feedback" style="color:${r && r.correct ? 'var(--l8a)' : 'var(--l10a)'};">
+        ${r && r.correct ? '✅ Chính xác' : '❌ Chưa đúng'}
+      </div>
       ${showPinyin ? `<div class="rv-py">${w.py || ''}</div>` : ''}
       ${showMeaning ? `<div class="rv-vi">${w.vi || ''}</div>` : ''}
       ${showHanViet && w.hanviet ? `<div class="rv-hv">Hán Việt: ${w.hanviet}</div>` : ''}
       ${renderHanziParts(w.hz)}
       ${ex ? `<div class="rv-ex">${ex.zh}<br><span style="color:var(--muted);font-size:.85rem;">${ex.vi}</span></div>` : ''}
-      <div class="rv-rate-row">
-        <button class="rv-rate-btn rv-rate-again" onclick="rvRate('again')" ${rvSubmitting?'disabled':''}>Again<small>Quên hẳn</small></button>
-        <button class="rv-rate-btn rv-rate-hard" onclick="rvRate('hard')" ${rvSubmitting?'disabled':''}>Hard<small>Khó nhớ</small></button>
-        <button class="rv-rate-btn rv-rate-good" onclick="rvRate('good')" ${rvSubmitting?'disabled':''}>Good<small>Nhớ tốt</small></button>
-        <button class="rv-rate-btn rv-rate-easy" onclick="rvRate('easy')" ${rvSubmitting?'disabled':''}>Easy<small>Rất dễ</small></button>
-      </div>`;
+      <div class="rv-saved-line">${rvSavedLine(r)}</div>
+      ${(!isGuest && isAdminRole() && r && r.autoRating) ? `<div class="rv-saved-line">🐞 debug: auto rating = ${r.autoRating}</div>` : ''}`;
   }
   return `
     <div class="rv-progress-wrap"><div class="rv-progress-fill" style="width:${pct}%;"></div></div>
@@ -1821,35 +1843,78 @@ function renderReview() {
     <div class="rv-card">${body}</div>
   `;
 }
-function bindReview() {}
 
-function rvReveal(correct) {
-  rvAnswerCorrect = correct;
-  rvPhase = 'revealed';
-  render();
+// Đánh dấu đáp án đúng lên từng nút NGAY SAU KHI render xong (Phần 17), giống cách bindQuiz đang
+// làm cho tab Trắc nghiệm — để rvPick() biết ngay đáp án vừa chọn đúng hay sai mà không cần chờ
+// server trả lời (server vẫn là nguồn sự thật cuối cùng, việc này chỉ để phản hồi UI tức thời).
+function bindReview() {
+  if (rvPhase !== 'question' || rvIdx >= rvSession.length) return;
+  const w = rvSession[rvIdx].word;
+  document.querySelectorAll('#rv-opts .quiz-opt').forEach(b => {
+    b._correct = (b.dataset.v === w.vi);
+  });
 }
 
-async function rvRate(rating) {
-  if (rvSubmitting) return;
+// ── Phần 1/3/4/17/20: user chọn 1 đáp án → khoá UI, hiện đúng/sai tức thời → gửi
+//     selectedAnswer + responseTimeMs lên server (server tự xác định lại đúng/sai + tự suy ra
+//     FSRS rating + gọi ts-fsrs + lưu — KHÔNG có bước nào cần user bấm thêm). ──
+async function rvPick(btn, hz) {
+  if (rvSubmitting || rvPhase !== 'question') return;
   rvSubmitting = true;
+  const responseTimeMs = Math.round(performance.now() - rvStartedAt); // Phần 4
   const item = rvSession[rvIdx];
   const w = item.word;
-  render(); // vẽ lại để disable nút, tránh double-click double-submit (Phần 27)
+  const isCorrectLocally = !!btn._correct;
+  const selectedAnswer = btn.dataset.v;
+
+  document.querySelectorAll('#rv-opts .quiz-opt').forEach(b => {
+    if (b._correct) b.classList.add('correct');
+    else if (b === btn && !isCorrectLocally) b.classList.add('wrong');
+    b.disabled = true;
+  });
+  if (isCorrectLocally) playDing(); else playBuzz();
+  speak(w.hz);
+  recordAnswer(w.hz, isCorrectLocally);
+
+  let result = { correct: isCorrectLocally, card: null, autoRating: null };
   try {
     const res = await fetch('/api/study/review', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ wordId: { hz: w.hz, l: w.l }, rating, answerCorrect: !!rvAnswerCorrect }),
+      body: JSON.stringify({
+        wordId: { hz: w.hz, l: w.l },
+        quizType: RV_QUIZ_TYPE,
+        selectedAnswer,
+        responseTimeMs,
+        answerChanges: rvAnswerChanges,
+      }),
     });
     const data = await res.json();
-    if (!data.ok) alert(data.error || 'Không lưu được kết quả review');
+    if (data.ok) {
+      result = {
+        correct: data.answerCorrect, // server là nguồn sự thật cuối cùng (Phần 3/20)
+        card: data.card,
+        autoRating: data.debug ? data.debug.autoRating : null,
+      };
+    } else {
+      console.error('Không lưu được kết quả review:', data.error);
+    }
   } catch (e) {
-    alert('Lỗi kết nối — kết quả review này có thể chưa được lưu: ' + e.message);
+    console.error('Lỗi kết nối — kết quả review này có thể chưa được lưu:', e);
   }
+
+  rvLastAnswer = result;
+  rvPhase = 'answered';
   rvSubmitting = false;
+  render();
+  // Chuyển câu tiếp theo tự động sau 1 khoảng ngắn — không cần user bấm gì thêm (Phần 17).
+  setTimeout(rvAdvance, 1600);
+}
+
+function rvAdvance() {
+  if (currentTab !== 'review') return; // user đã rời màn hình, tránh render nhầm chỗ
   rvIdx++;
-  rvPhase = 'recall';
-  rvAnswerCorrect = null;
+  rvPrepareCurrentCard();
   render();
 }
 
@@ -2231,8 +2296,11 @@ function viTokens(vi) {
     .filter(t => t.length > 1 && !VI_STOPWORDS.has(t));
 }
 
-function qzMakeOpts(w) {
-  const all = getFilteredWords();
+// V67: dùng chung cho cả tab Trắc nghiệm (pool = getFilteredWords, theo đúng phạm vi bài user
+// đang chọn) và phiên Review/FSRS (pool = toàn bộ WORDS, vì 1 thẻ due có thể thuộc bài NGOÀI
+// phạm vi filter hiện tại — lesson-priority chỉ quyết định NEW word, không giới hạn distractors).
+function makeQuizOpts(w, pool) {
+  const all = pool;
   const confuseSet = getConfuseMap()[w.hz];
   const wTokens = viTokens(w.vi);
   // Chấm điểm mức độ "dễ nhầm" của mỗi từ so với từ đang hỏi:
@@ -2262,6 +2330,8 @@ function qzMakeOpts(w) {
   }
   return shuffle([w, ...distractors]);
 }
+function qzMakeOpts(w) { return makeQuizOpts(w, getFilteredWords()); }
+function rvMakeOpts(w) { return makeQuizOpts(w, WORDS.filter(x => isLoggedIn() || x.l <= GUEST_MAX_LESSON)); }
 
 function qzRank(r) {
   if(r>=.9) return '🏆 Xuất sắc'; if(r>=.7) return '👍 Tốt'; if(r>=.5) return '📚 Cần ôn'; return '🔄 Học lại';
