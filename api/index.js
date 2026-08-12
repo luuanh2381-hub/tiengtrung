@@ -221,7 +221,19 @@ app.post('/api/progress', async (req, res) => {
         selectedLessons: Array.isArray(ui.selectedLessons)
           ? ui.selectedLessons.filter(n => Number.isFinite(n)) : [],
         lessonsAllMode: typeof ui.lessonsAllMode === 'boolean' ? ui.lessonsAllMode : true,
-      } : { lastTab: 'home', selectedBookIds: [1], selectedLessons: [], lessonsAllMode: true };
+        // Các cài đặt hiển thị (Ẩn/Hiện Pinyin, nghĩa, Hán Việt, giao diện tối/sáng, tốc độ đọc,
+        // chế độ + số câu Trắc nghiệm mặc định) — lưu để mở lại app khỏi phải chọn lại từ đầu.
+        showPinyin: typeof ui.showPinyin === 'boolean' ? ui.showPinyin : true,
+        showMeaning: typeof ui.showMeaning === 'boolean' ? ui.showMeaning : true,
+        showHanViet: typeof ui.showHanViet === 'boolean' ? ui.showHanViet : true,
+        theme: (ui.theme === 'dark' || ui.theme === 'light') ? ui.theme : 'light',
+        ttsRate: (typeof ui.ttsRate === 'number' && ui.ttsRate >= 0.3 && ui.ttsRate <= 1.0) ? ui.ttsRate : 0.65,
+        qzType: ['漢→Việt', 'Việt→漢', 'Âm→漢'].includes(ui.qzType) ? ui.qzType : '漢→Việt',
+        qzQuestionCount: Number.isFinite(ui.qzQuestionCount) ? ui.qzQuestionCount : 30,
+        questionCount: Number.isFinite(ui.questionCount) ? ui.questionCount : 10,
+      } : { lastTab: 'home', selectedBookIds: [1], selectedLessons: [], lessonsAllMode: true,
+        showPinyin: true, showMeaning: true, showHanViet: true, theme: 'light', ttsRate: 0.65,
+        qzType: '漢→Việt', qzQuestionCount: 30, questionCount: 10 };
       db.users[authed.username].progress = {
         srs: (srs && typeof srs === 'object') ? srs : {},
         streak: typeof streak === 'number' ? streak : 0,
