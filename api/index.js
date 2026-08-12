@@ -8,7 +8,7 @@ const express = require('express');
 const compression = require('compression');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
-const { readDB, updateDB, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson,
+const { readDB, updateDB, updateDBWithFsrsCleanup, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson,
   getAllVocabWords, updateVocabHanviet, getWordExampleCounts, insertWordExamples, getWordExamplesForLessons,
   getAllHanziParts, getHanziPartsKeys, insertHanziParts,
   insertActivityLog, getActivityLogs, reserveGeminiSlot, bumpGeminiRateLimit,
@@ -341,7 +341,10 @@ app.post('/api/admin/users/:key/delete', async (req, res) => {
   if (!requireAdmin(authed.db.users[authed.username], res)) return;
   const targetKey = req.params.key.toLowerCase();
   try {
-    const result = await updateDB((db) => {
+    // FIX (audit V68, Phần 5): xoá tài khoản PHẢI xoá luôn fsrs_cards + review_history của user
+    // đó trong CÙNG 1 transaction với việc xoá user khỏi app_store — nếu không sẽ để lại
+    // fsrs_cards/review_history "mồ côi" (orphan) trỏ tới 1 user_id không còn tồn tại nữa.
+    const result = await updateDBWithFsrsCleanup(targetKey, (db) => {
       if (targetKey === authed.username) return { ok: false, error: 'Không thể tự xoá chính mình' };
       if (!db.users[targetKey]) return { ok: false, error: 'Không tìm thấy tài khoản' };
       if (db.users[targetKey].role === 'superadmin') return { ok: false, error: 'Không thể xoá tài khoản quản trị cao nhất' };
@@ -351,7 +354,8 @@ app.post('/api/admin/users/:key/delete', async (req, res) => {
     });
     if (result.ok) {
       const actingUser = authed.db.users[authed.username];
-      logActivity(authed.username, actingUser.role, 'admin', `Xoá tài khoản "${targetKey}"`);
+      logActivity(authed.username, actingUser.role, 'admin',
+        `Xoá tài khoản "${targetKey}" (fsrs_cards: ${result.fsrsCardsDeleted}, review_history: ${result.reviewHistoryDeleted})`);
     }
     res.json(result);
   } catch (e) { fail(res, e); }
@@ -364,7 +368,11 @@ app.post('/api/admin/users/:key/reset', async (req, res) => {
   if (!requireAdmin(authed.db.users[authed.username], res)) return;
   const targetKey = req.params.key.toLowerCase();
   try {
-    const result = await updateDB((db) => {
+    // FIX (audit V68, Phần 4): reset tiến độ PHẢI xoá luôn fsrs_cards + review_history của user
+    // đó trong CÙNG 1 transaction với việc reset "progress" trong app_store — nếu không, sau khi
+    // reset, các thẻ FSRS cũ (due/stability/difficulty/state cũ) vẫn còn nguyên, "reset" không
+    // thực sự đưa user về trạng thái học từ đầu.
+    const result = await updateDBWithFsrsCleanup(targetKey, (db) => {
       if (!db.users[targetKey]) return { ok: false, error: 'Không tìm thấy tài khoản' };
       const actingUser = db.users[authed.username];
       if (db.users[targetKey].role === 'superadmin' && actingUser.role !== 'superadmin') {
@@ -375,7 +383,8 @@ app.post('/api/admin/users/:key/reset', async (req, res) => {
     });
     if (result.ok) {
       const actingUser = authed.db.users[authed.username];
-      logActivity(authed.username, actingUser.role, 'admin', `Reset tiến độ tài khoản "${targetKey}"`);
+      logActivity(authed.username, actingUser.role, 'admin',
+        `Reset tiến độ tài khoản "${targetKey}" (fsrs_cards: ${result.fsrsCardsDeleted}, review_history: ${result.reviewHistoryDeleted})`);
     }
     res.json(result);
   } catch (e) { fail(res, e); }
