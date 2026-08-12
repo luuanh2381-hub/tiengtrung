@@ -3086,12 +3086,20 @@ async function ensureVocabLoaded(bookIds) {
   }
 }
 
-bootAuth().then(async () => {
-  // Chạy song song 2 việc không phụ thuộc nhau (trước đây chờ tuần tự, tốn thêm 1 lượt round-trip)
-  await Promise.all([
-    loadVocabCounts(),
-    ensureVocabLoaded(selectedBookIds), // tải đúng phần cần cho lựa chọn đã khôi phục lúc mở app
-  ]);
+// Nếu máy đã có cache tiến độ từ lần trước (trường hợp phổ biến nhất: mở lại app đã đăng nhập
+// rồi) hoặc đang ở chế độ khách, bootAuth() sẽ khôi phục selectedBookIds NGAY LẬP TỨC (đồng bộ,
+// trước khi có await nào chạy) — nên có thể bắt đầu tải từ vựng SONG SONG với việc xác thực lại
+// token với server, thay vì đợi round-trip xác thực xong mới bắt đầu tải như trước (tốn thêm hẳn
+// 1 lượt đi-về mạng mỗi lần mở app). Chỉ trường hợp lần đầu đăng nhập trên máy này (chưa có cache)
+// mới cần đợi bootAuth xong để biết đúng Quyển/bài đã chọn trước khi tải.
+const hasCachedProgress = isGuest || (authToken && authUsername && !!localStorage.getItem('progressCache_' + authUsername));
+const bootPromise = bootAuth();
+const vocabLoadPromise = hasCachedProgress
+  ? Promise.all([loadVocabCounts(), ensureVocabLoaded(selectedBookIds)])
+  : bootPromise.then(() => Promise.all([loadVocabCounts(), ensureVocabLoaded(selectedBookIds)]));
+
+bootPromise.then(async () => {
+  await vocabLoadPromise;
   mergeDiscoveredLessonsIntoBooks(); // tự nhận diện các bài mới chưa có trong danh mục, thêm vào mục chọn
   updateStreak();
   render();
