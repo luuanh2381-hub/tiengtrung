@@ -2179,10 +2179,19 @@ function qzFindExample(hz) {
   return matches[Math.floor(Math.random() * matches.length)];
 }
 
+// FIX (audit V68, Phần 7): tab "Trắc nghiệm" trước đây CHỈ ghi vào hệ SRS cũ (progressState.srs,
+// local/app_store JSON) qua recordAnswer() — KHÔNG bao giờ gọi /api/study/review, nên FSRS
+// (fsrs_cards/review_history trên Neon) không hề nhận được lượt review nào từ tab này. qzPick()
+// bên dưới giờ gọi đúng API đó (giống hệt rvPick() ở tab Ôn tập) khi user đã đăng nhập, để mọi
+// lượt trắc nghiệm đều thực sự tính FSRS và ghi vào Neon — giao diện/luồng UI giữ nguyên 100%.
+let qzStartedAt = 0;   // performance.now() lúc câu hỏi hiện tại THỰC SỰ hiển thị (đo responseTime)
+let qzTimedIdx = -1;   // qzIdx tại lúc qzStartedAt được đặt, tránh reset nhầm khi render lại cùng câu
+let qzSubmitting = false; // chặn double-click gửi 2 request cho cùng 1 câu
+
 function bindQuiz() {
   const base = getFilteredWords();
   qzWords = shuffle(sortByPriority(base)).slice(0, qzQuestionCount);
-  qzIdx = 0; qzScore = 0;
+  qzIdx = 0; qzScore = 0; qzTimedIdx = -1;
   qzRenderQ();
   qzLoadSentencePool().then(() => qzRenderQ()); // nạp xong thì vẽ lại để hiện câu ví dụ nếu có
 }
@@ -2198,6 +2207,10 @@ function qzRenderQ() {
     </div>`;
     return;
   }
+  // Chỉ đặt lại mốc thời gian khi THỰC SỰ chuyển sang câu mới — qzRenderQ() còn bị gọi lại 1 lần
+  // nữa sau khi qzLoadSentencePool() tải xong (để hiện câu ví dụ) cho ĐÚNG câu đang hỏi, không
+  // được tính đó là "câu mới" kẻo responseTimeMs bị reset sai (Phần 4/12).
+  if (qzTimedIdx !== qzIdx) { qzStartedAt = performance.now(); qzTimedIdx = qzIdx; }
   const w = qzWords[qzIdx];
   const opts = qzMakeOpts(w);
   let qHtml, optHtml;
@@ -2231,17 +2244,56 @@ function qzRenderQ() {
   });
 }
 
-function qzPick(btn, hz) {
+// FIX (audit V68, Phần 7): trước đây hàm này chỉ đổi UI + recordAnswer() (hệ SRS cũ, local) — KHÔNG
+// gọi server nên FSRS/Neon không bao giờ nhận được lượt review từ tab Trắc nghiệm. Giờ gọi
+// /api/study/review giống hệt rvPick() khi user đã đăng nhập: server tự xác định đúng/sai + tự
+// suy ra FSRS rating + gọi ts-fsrs + ghi fsrs_cards/review_history (Phần 3/20) — UI/luồng hiện tại
+// (chọn 1 lần, tô đúng/sai ngay, tự chuyển câu sau 1.4s) giữ nguyên 100%, không đổi trải nghiệm.
+async function qzPick(btn, hz) {
+  if (qzSubmitting) return; // chặn double-click gửi 2 request cho cùng 1 câu (Phần 11)
+  qzSubmitting = true;
   const w = qzWords[qzIdx];
-  const isCorrect = btn._correct;
+  const isCorrectLocally = btn._correct;
+  const selectedAnswer = btn.dataset.v;
+  const responseTimeMs = Math.round(performance.now() - qzStartedAt);
   document.querySelectorAll('#qz-opts .quiz-opt').forEach(b=>{
     if (b._correct) b.classList.add('correct');
-    else if (b === btn && !isCorrect) b.classList.add('wrong');
+    else if (b === btn && !isCorrectLocally) b.classList.add('wrong');
     b.disabled=true;
   });
-  if (isCorrect) { playDing(); qzScore++; } else playBuzz();
+  if (isCorrectLocally) playDing(); else playBuzz();
   speak(w.hz);
-  recordAnswer(w.hz, isCorrect);
+
+  let isCorrect = isCorrectLocally;
+  if (isLoggedIn()) {
+    // Đã đăng nhập: server là nguồn sự thật (Phần 3/20) — gửi lên để tính FSRS thật + lưu Neon.
+    const quizType = qzType === 'Việt→漢' ? 'vi2hz' : (qzType === 'Âm→漢' ? 'py2hz' : 'hz2vi');
+    try {
+      const res = await fetch('/api/study/review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          wordId: { hz: w.hz, l: w.l },
+          quizType,
+          selectedAnswer,
+          responseTimeMs,
+          answerChanges: 0, // UI hiện tại chọn là chốt ngay, không cho đổi trước khi submit
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) isCorrect = data.answerCorrect; // server xác nhận lại đúng/sai
+      else console.error('Không lưu được kết quả trắc nghiệm (FSRS):', data.error);
+    } catch (e) {
+      console.error('Lỗi kết nối — lượt trắc nghiệm này có thể chưa được lưu vào Neon:', e);
+    }
+  }
+  // recordAnswer() (streak + hệ SRS cũ dùng cho thống kê local) vẫn gọi cho MỌI user — kể cả đã
+  // đăng nhập — giống đúng cách rvPick() ở tab Ôn tập đang làm (Phần 15: không xoá cột/hệ thống
+  // cũ nếu không chắc backward-compat, giữ nguyên hành vi streak hiện có).
+  recordAnswer(w.hz, isCorrectLocally);
+
+  if (isCorrect) qzScore++;
+  qzSubmitting = false;
   setTimeout(()=>{ qzIdx++; qzRenderQ(); }, 1400);
 }
 
