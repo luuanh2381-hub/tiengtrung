@@ -261,6 +261,57 @@
   .fc-parts-chip{display:inline-block;background:var(--paper);border-radius:6px;padding:1px 7px;margin:1px 3px 1px 0;font-weight:700;white-space:nowrap;}
   .fc-parts-note{color:var(--muted);font-style:italic;}
 
+  /* ── HÔM NAY HỌC (FSRS dashboard) ─────────────────────────── */
+  .study-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;}
+  .study-stat{background:var(--card);border-radius:var(--radius-sm);padding:16px 12px;text-align:center;box-shadow:0 4px 10px rgba(0,0,0,.06);}
+  .study-stat-num{font-size:1.8rem;font-weight:900;line-height:1;}
+  .study-stat-label{font-size:.72rem;color:var(--muted);font-weight:700;margin-top:4px;}
+  .study-stat.due .study-stat-num{color:var(--l10a);}
+  .study-stat.new .study-stat-num{color:var(--active-dark);}
+  .study-stat.lesson .study-stat-num{color:var(--l9a);font-size:1.3rem;}
+  .study-stat.weak .study-stat-num{color:#c026d3;}
+  .study-empty{text-align:center;color:var(--muted);padding:20px 10px;font-size:.9rem;}
+  .study-settings-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;font-size:.85rem;border-top:1px solid var(--border);}
+  .study-settings-row input[type="number"]{width:62px;padding:6px;border:1.5px solid var(--border);border-radius:8px;background:var(--card);color:var(--ink);text-align:center;font-family:inherit;}
+
+  /* ── REVIEW SESSION (mobile-first: chữ lớn, nút lớn, ít thông tin) ── */
+  .rv-progress-wrap{height:8px;background:var(--border);border-radius:6px;overflow:hidden;margin-bottom:14px;}
+  .rv-progress-fill{height:100%;background:var(--active);border-radius:6px;transition:width .35s ease;}
+  .rv-counter{text-align:center;font-size:.78rem;color:var(--muted);font-weight:700;margin-bottom:10px;}
+  .rv-card{background:var(--card);border-radius:var(--radius-lg);box-shadow:var(--shadow-md);min-height:280px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px 18px;text-align:center;}
+  .rv-hz{font-size:4rem;font-weight:900;line-height:1;}
+  .rv-tag{font-size:.72rem;font-weight:800;padding:4px 12px;border-radius:12px;background:var(--paper);color:var(--muted);}
+  .rv-prompt{font-size:.95rem;color:var(--muted);font-weight:600;}
+  .rv-py{font-size:1.15rem;color:var(--muted);font-style:italic;}
+  .rv-vi{font-size:1.5rem;font-weight:800;}
+  .rv-hv{font-size:.95rem;color:var(--active-dark);font-weight:700;}
+  .rv-ex{font-size:.95rem;color:var(--ink);background:var(--paper);border-radius:var(--radius-sm);padding:10px 14px;margin-top:4px;}
+  .rv-recall-row{display:flex;gap:12px;width:100%;margin-top:16px;}
+  .rv-recall-btn{flex:1;padding:16px 8px;border:none;border-radius:16px;font-size:1rem;font-weight:800;cursor:pointer;}
+  .rv-recall-yes{background:var(--l8c);color:var(--l8a);box-shadow:0 4px 0 var(--l8a);}
+  .rv-recall-yes:active{transform:translateY(3px);box-shadow:0 1px 0 var(--l8a);}
+  .rv-recall-no{background:var(--l10c);color:var(--l10a);box-shadow:0 4px 0 var(--l10a);}
+  .rv-recall-no:active{transform:translateY(3px);box-shadow:0 1px 0 var(--l10a);}
+  .rv-rate-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%;margin-top:16px;}
+  .rv-rate-btn{padding:16px 6px;border:none;border-radius:16px;font-size:.95rem;font-weight:800;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px;}
+  .rv-rate-btn small{font-weight:600;font-size:.68rem;opacity:.85;}
+  .rv-rate-again{background:var(--l10c);color:var(--l10a);box-shadow:0 4px 0 var(--l10a);}
+  .rv-rate-again:active{transform:translateY(3px);box-shadow:0 1px 0 var(--l10a);}
+  .rv-rate-hard{background:#fde68a;color:#92400e;box-shadow:0 4px 0 #d97706;}
+  .rv-rate-hard:active{transform:translateY(3px);box-shadow:0 1px 0 #d97706;}
+  .rv-rate-good{background:var(--l8c);color:var(--l8a);box-shadow:0 4px 0 var(--l8a);}
+  .rv-rate-good:active{transform:translateY(3px);box-shadow:0 1px 0 var(--l8a);}
+  .rv-rate-easy{background:var(--l9b);color:var(--l9a);box-shadow:0 4px 0 var(--l9a);}
+  .rv-rate-easy:active{transform:translateY(3px);box-shadow:0 1px 0 var(--l9a);}
+  .rv-done{text-align:center;padding:40px 16px;}
+  .rv-done-num{font-size:3rem;}
+  @media (max-width:480px){
+    .rv-hz{font-size:3.3rem;}
+    .rv-card{min-height:240px;padding:20px 14px;}
+    .rv-recall-btn{padding:15px 6px;font-size:.92rem;}
+    .rv-rate-btn{padding:14px 4px;font-size:.85rem;}
+  }
+
   /* ── QUIZ ──────────────────────────────────────────────── */
   .quiz-q{font-size:1.5rem;font-weight:800;text-align:center;padding:26px 16px;min-height:90px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;}
   .quiz-sub{font-size:.85rem;color:var(--muted);font-weight:400;}
@@ -483,6 +534,7 @@
 
 <div id="nav">
   <button onclick="goTab('home')" class="active" id="tab-home">🏠 Trang chủ</button>
+  <button onclick="goTab('today')" id="tab-today">🎯 Hôm nay học</button>
   <button onclick="goTab('flash')" id="tab-flash">📖 Flashcard</button>
   <button onclick="goTab('quiz')" id="tab-quiz">📝 Trắc nghiệm</button>
   <button onclick="goTab('type')" id="tab-type">⌨️ Gõ chữ</button>
@@ -791,6 +843,8 @@ function defaultProgress() {
     lastTab: 'home', selectedBookIds: [1], selectedLessons: [], lessonsAllMode: true,
     showPinyin: true, showMeaning: true, showHanViet: true, theme: 'light', ttsRate: 0.65,
     qzType: '漢→Việt', qzQuestionCount: 30, questionCount: 10,
+    // Cài đặt hệ thống học FSRS (Phần 22): daily limit + current lesson tự động cập nhật.
+    dailyReviewLimit: 50, dailyNewLimit: 10, newOnlyAfterDue: true, currentLesson: null,
   } };
 }
 function normalizeProgress(p) {
@@ -811,6 +865,10 @@ function normalizeProgress(p) {
   if (!['漢→Việt', 'Việt→漢', 'Âm→漢'].includes(p.ui.qzType)) p.ui.qzType = '漢→Việt';
   if (!Number.isFinite(p.ui.qzQuestionCount)) p.ui.qzQuestionCount = 30;
   if (!Number.isFinite(p.ui.questionCount)) p.ui.questionCount = 10;
+  if (!Number.isFinite(p.ui.dailyReviewLimit) || p.ui.dailyReviewLimit < 1) p.ui.dailyReviewLimit = 50;
+  if (!Number.isFinite(p.ui.dailyNewLimit) || p.ui.dailyNewLimit < 0) p.ui.dailyNewLimit = 10;
+  if (typeof p.ui.newOnlyAfterDue !== 'boolean') p.ui.newOnlyAfterDue = true;
+  if (!Number.isFinite(p.ui.currentLesson)) p.ui.currentLesson = null;
   return p;
 }
 let progressState = defaultProgress();
@@ -819,7 +877,7 @@ let progressState = defaultProgress();
 function applyUIState() {
   normalizeProgress(progressState);
   const ui = progressState.ui;
-  const validTabs = ['home','flash','quiz','type','listen','stats','compare','hsk','admin','vocab','logs'];
+  const validTabs = ['home','today','flash','quiz','type','listen','stats','compare','hsk','admin','vocab','logs'];
   currentTab = validTabs.includes(ui.lastTab) ? ui.lastTab : 'home';
   selectedBookIds = new Set(ui.selectedBookIds);
   selectedLessons = new Set(ui.selectedLessons);
@@ -1307,11 +1365,14 @@ function toggleHanViet() {
 
 function goTab(tab) {
   currentTab = tab;
-  progressState.ui.lastTab = tab;
+  // Tab 'review' là phiên học FSRS đang chạy dở — không lưu làm lastTab (mở lại app không nên
+  // tự nhảy vào giữa 1 session cũ), khi tải lại trang sẽ quay về 'today'.
+  progressState.ui.lastTab = (tab === 'review') ? 'today' : tab;
   cacheProgressLocally();
   scheduleSync();
   document.querySelectorAll('#nav button').forEach(b => b.classList.remove('active'));
-  document.getElementById('tab-' + tab).classList.add('active');
+  const navBtn = document.getElementById('tab-' + tab);
+  if (navBtn) navBtn.classList.add('active');
   // Hiệu ứng fade/slide nhẹ CHỈ khi thực sự chuyển tab — không áp dụng khi chỉ đổi lựa chọn
   // trong cùng 1 tab (tránh bị "nháy" mỗi lần bấm chọn bài/Quyển).
   const el = document.getElementById('content');
@@ -1512,6 +1573,8 @@ function render() {
   document.getElementById('streak-badge').textContent = '🔥 ' + getStreak() + ' ngày';
   const el = document.getElementById('content');
   if (currentTab === 'home')   { el.innerHTML = renderHome(); bindHome(); }
+  else if (currentTab === 'today') { el.innerHTML = renderToday(); bindToday(); }
+  else if (currentTab === 'review') { el.innerHTML = renderReview(); bindReview(); }
   else if (currentTab === 'flash') { el.innerHTML = renderFlash(); bindFlash(); }
   else if (currentTab === 'quiz')  { el.innerHTML = renderQuiz(); bindQuiz(); }
   else if (currentTab === 'type')  { el.innerHTML = renderType(); bindType(); }
@@ -1580,6 +1643,215 @@ function renderHome() {
   </div>`;
 }
 function bindHome() {}
+
+// ════════════════════════════════════════════════════
+// HÔM NAY HỌC — dashboard FSRS (Phần 13)
+// ════════════════════════════════════════════════════
+function renderToday() {
+  if (!isLoggedIn()) {
+    return `<div class="panel">
+      <div class="panel-title">今日学习 · Hôm nay học</div>
+      <div class="study-empty">🔒 Cần đăng nhập để dùng hệ thống ôn tập FSRS cá nhân hoá và lưu tiến độ.</div>
+      <button class="btn btn-primary" style="width:100%;" onclick="openAuthGate()">Đăng nhập / Đăng ký</button>
+    </div>`;
+  }
+  const ui = progressState.ui;
+  return `
+  <div class="panel">
+    <div class="panel-title">今日学习 · Hôm nay học</div>
+    <div id="study-dash-area" class="study-empty">Đang tải...</div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">Cài đặt hằng ngày</div>
+    <div class="study-settings-row">
+      <span>🔁 Giới hạn ôn tập / ngày</span>
+      <input type="number" min="1" value="${ui.dailyReviewLimit}" onchange="updateStudySetting('dailyReviewLimit', this.value)">
+    </div>
+    <div class="study-settings-row">
+      <span>🆕 Giới hạn từ mới / ngày</span>
+      <input type="number" min="0" value="${ui.dailyNewLimit}" onchange="updateStudySetting('dailyNewLimit', this.value)">
+    </div>
+    <div class="study-settings-row">
+      <span>Chỉ học từ mới sau khi hết backlog ôn tập</span>
+      <input type="checkbox" ${ui.newOnlyAfterDue ? 'checked' : ''} onchange="updateStudySetting('newOnlyAfterDue', this.checked)">
+    </div>
+  </div>`;
+}
+function bindToday() {
+  if (!isLoggedIn()) return;
+  loadStudyDashboard();
+}
+async function loadStudyDashboard() {
+  const area = document.getElementById('study-dash-area');
+  if (!area) return;
+  try {
+    const res = await fetch('/api/study/today', { headers: authHeaders() });
+    const data = await res.json();
+    if (!data.ok) { area.innerHTML = `<div class="study-empty">${data.error || 'Không tải được dữ liệu'}</div>`; return; }
+    if (!data.hasScope) {
+      area.innerHTML = `<div class="study-empty">Chưa có từ vựng trong phạm vi Quyển/bài bạn đang chọn.<br>Vào <b>Trang chủ</b> để chọn Quyển/bài trước.</div>`;
+      return;
+    }
+    if (data.dueCount === 0 && data.newInCurrentLesson === 0) {
+      area.innerHTML = `<div class="study-empty">🎉 Bạn đã ôn hết từ đến hạn và học hết từ mới của Bài ${data.currentLesson}!<br>Quay lại sau hoặc chọn thêm Quyển/bài ở Trang chủ.</div>`;
+      return;
+    }
+    area.innerHTML = `
+      <div class="study-grid">
+        <div class="study-stat due"><div class="study-stat-num">🔴 ${data.dueCount}</div><div class="study-stat-label">Từ cần ôn</div></div>
+        <div class="study-stat new"><div class="study-stat-num">🆕 ${data.newInCurrentLesson}</div><div class="study-stat-label">Từ mới</div></div>
+        <div class="study-stat lesson"><div class="study-stat-num">📖 Bài ${data.currentLesson}</div><div class="study-stat-label">Bài hiện tại</div></div>
+        <div class="study-stat weak"><div class="study-stat-num">🔥 ${data.weakCount}</div><div class="study-stat-label">Từ hay quên</div></div>
+      </div>
+      <button class="btn btn-primary" style="width:100%;font-size:1.05rem;padding:15px;" onclick="startStudySession()">▶️ Bắt đầu học</button>
+      ${data.weakCount > 0 ? `<button class="btn" style="width:100%;margin-top:8px;background:var(--l10c);color:var(--l10a);" onclick="startStudySession(true)">⚠️ Luyện từ hay quên (${data.weakCount})</button>` : ''}
+    `;
+  } catch (e) {
+    area.innerHTML = `<div class="study-empty">Lỗi kết nối: ${e.message}</div>`;
+  }
+}
+function updateStudySetting(key, value) {
+  if (key === 'newOnlyAfterDue') progressState.ui[key] = !!value;
+  else {
+    const n = parseInt(value, 10);
+    if (Number.isFinite(n) && n >= 0) progressState.ui[key] = n;
+  }
+  cacheProgressLocally();
+  scheduleSync();
+}
+
+// ════════════════════════════════════════════════════
+// REVIEW SESSION — phiên học FSRS thật (Phần 14/15/16/24/25)
+// Flow: Hanzi → tự nhớ (recall) → bấm Đúng/Sai (answerCorrect) → lộ đáp án (pinyin/nghĩa/Hán
+// Việt/chiết tự/ví dụ) → chọn Again/Hard/Good/Easy (rating FSRS, TÁCH RIÊNG khỏi answerCorrect).
+// ════════════════════════════════════════════════════
+let rvSession = [];
+let rvIdx = 0;
+let rvPhase = 'recall'; // 'recall' | 'revealed'
+let rvAnswerCorrect = null;
+let rvWeakMode = false;
+let rvSummary = { reviewCount: 0, newCount: 0 };
+let rvExamplePool = [];
+let rvSubmitting = false;
+
+async function startStudySession(weakMode) {
+  rvWeakMode = !!weakMode;
+  rvIdx = 0; rvPhase = 'recall'; rvAnswerCorrect = null; rvExamplePool = [];
+  goTab('review');
+  const el = document.getElementById('content');
+  if (el) el.innerHTML = `<div class="study-empty">Đang tải phiên học...</div>`;
+  try {
+    if (rvWeakMode) {
+      const res = await fetch('/api/study/weak-words', { headers: authHeaders() });
+      const data = await res.json();
+      if (!data.ok) { alert(data.error || 'Không tải được từ hay quên'); goTab('today'); return; }
+      rvSession = data.words.map(w => ({ type: 'review', word: w }));
+      rvSummary = { reviewCount: rvSession.length, newCount: 0 };
+    } else {
+      const res = await fetch('/api/study/session', { headers: authHeaders() });
+      const data = await res.json();
+      if (!data.ok) { alert(data.error || 'Không tải được phiên học'); goTab('today'); return; }
+      rvSession = data.session || [];
+      rvSummary = { reviewCount: data.reviewCount || 0, newCount: data.newCount || 0 };
+    }
+  } catch (e) {
+    alert('Lỗi kết nối: ' + e.message);
+    goTab('today');
+    return;
+  }
+  // Nạp trước kho ví dụ cho các bài xuất hiện trong session (Phần 24) — không chặn hiển thị.
+  const lessonsInSession = [...new Set(rvSession.map(it => it.word.l))];
+  if (lessonsInSession.length && !isGuest && authToken) {
+    fetch('/api/word-examples?lessons=' + lessonsInSession.join(','), { headers: authHeaders() })
+      .then(r => r.json()).then(d => { if (d.ok) rvExamplePool = d.examples || []; })
+      .catch(() => {});
+  }
+  render();
+}
+
+function rvFindExample(hz) {
+  const matches = rvExamplePool.filter(e => e.hz === hz);
+  if (!matches.length) return null;
+  return matches[Math.floor(Math.random() * matches.length)];
+}
+
+function renderReview() {
+  if (!rvSession.length || rvIdx >= rvSession.length) {
+    return `<div class="rv-done">
+      <div class="rv-done-num">🎉</div>
+      <div style="font-size:1.3rem;font-weight:800;margin:10px 0;">Xong phiên học!</div>
+      <div style="color:var(--muted);margin-bottom:20px;">Đã ôn ${rvSummary.reviewCount} từ, học ${rvSummary.newCount} từ mới.</div>
+      <button class="btn btn-primary" onclick="goTab('today')">Về Hôm nay học</button>
+    </div>`;
+  }
+  const item = rvSession[rvIdx];
+  const w = item.word;
+  const pct = Math.round((rvIdx / rvSession.length) * 100);
+  const tagLabel = item.type === 'new' ? '🆕 Từ mới' : '🔁 Ôn tập';
+  let body;
+  if (rvPhase === 'recall') {
+    body = `
+      <div class="rv-tag">${tagLabel} · Bài ${w.l}</div>
+      <div class="rv-hz">${w.hz}</div>
+      <div class="rv-prompt">${w.hz} là gì? (nhớ trong đầu trước khi bấm)</div>
+      <div class="rv-recall-row">
+        <button class="rv-recall-btn rv-recall-no" onclick="rvReveal(false)">❌ Quên rồi</button>
+        <button class="rv-recall-btn rv-recall-yes" onclick="rvReveal(true)">✅ Nhớ được</button>
+      </div>`;
+  } else {
+    const ex = rvFindExample(w.hz);
+    body = `
+      <div class="rv-tag">${tagLabel} · Bài ${w.l}</div>
+      <div class="rv-hz">${w.hz}</div>
+      ${showPinyin ? `<div class="rv-py">${w.py || ''}</div>` : ''}
+      ${showMeaning ? `<div class="rv-vi">${w.vi || ''}</div>` : ''}
+      ${showHanViet && w.hanviet ? `<div class="rv-hv">Hán Việt: ${w.hanviet}</div>` : ''}
+      ${renderHanziParts(w.hz)}
+      ${ex ? `<div class="rv-ex">${ex.zh}<br><span style="color:var(--muted);font-size:.85rem;">${ex.vi}</span></div>` : ''}
+      <div class="rv-rate-row">
+        <button class="rv-rate-btn rv-rate-again" onclick="rvRate('again')" ${rvSubmitting?'disabled':''}>Again<small>Quên hẳn</small></button>
+        <button class="rv-rate-btn rv-rate-hard" onclick="rvRate('hard')" ${rvSubmitting?'disabled':''}>Hard<small>Khó nhớ</small></button>
+        <button class="rv-rate-btn rv-rate-good" onclick="rvRate('good')" ${rvSubmitting?'disabled':''}>Good<small>Nhớ tốt</small></button>
+        <button class="rv-rate-btn rv-rate-easy" onclick="rvRate('easy')" ${rvSubmitting?'disabled':''}>Easy<small>Rất dễ</small></button>
+      </div>`;
+  }
+  return `
+    <div class="rv-progress-wrap"><div class="rv-progress-fill" style="width:${pct}%;"></div></div>
+    <div class="rv-counter">${rvIdx + 1} / ${rvSession.length}</div>
+    <div class="rv-card">${body}</div>
+  `;
+}
+function bindReview() {}
+
+function rvReveal(correct) {
+  rvAnswerCorrect = correct;
+  rvPhase = 'revealed';
+  render();
+}
+
+async function rvRate(rating) {
+  if (rvSubmitting) return;
+  rvSubmitting = true;
+  const item = rvSession[rvIdx];
+  const w = item.word;
+  render(); // vẽ lại để disable nút, tránh double-click double-submit (Phần 27)
+  try {
+    const res = await fetch('/api/study/review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ wordId: { hz: w.hz, l: w.l }, rating, answerCorrect: !!rvAnswerCorrect }),
+    });
+    const data = await res.json();
+    if (!data.ok) alert(data.error || 'Không lưu được kết quả review');
+  } catch (e) {
+    alert('Lỗi kết nối — kết quả review này có thể chưa được lưu: ' + e.message);
+  }
+  rvSubmitting = false;
+  rvIdx++;
+  rvPhase = 'recall';
+  rvAnswerCorrect = null;
+  render();
+}
 
 // ════════════════════════════════════════════════════
 // FLASHCARD
