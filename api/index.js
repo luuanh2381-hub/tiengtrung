@@ -13,8 +13,8 @@ const { readDB, updateDB, getVocabByLessons, getVocabCounts, importVocab, clearV
   getAllHanziParts, getHanziPartsKeys, insertHanziParts,
   insertActivityLog, getActivityLogs, reserveGeminiSlot, bumpGeminiRateLimit,
   countDueFsrsCards, getDueFsrsCards, getNewWordsByLessonOrder, countNewWordsInLessons,
-  getTodayStudyCounts, getWeakFsrsCards, reviewFsrsCard, getFsrsCardsDebug } = require('../lib/db');
-const { ratingFromString } = require('../lib/fsrs');
+  getTodayStudyCounts, getWeakFsrsCards, reviewFsrsCard, getFsrsCardsDebug,
+  getWordForAnswerCheck } = require('../lib/db');
 
 const app = express();
 
@@ -603,18 +603,46 @@ app.get('/api/study/session', async (req, res) => {
   } catch (e) { fail(res, e); }
 });
 
-// ── Ghi nhận 1 lượt review — SERVER là nguồn sự thật duy nhất, gọi FSRS thật (Phần 3/21) ──
+// ── V67: xác định đáp án đúng theo đúng "chiều" câu hỏi mà client đang hỏi (Phần 3) — hz→vi
+//     (nhìn chữ Hán đoán nghĩa), vi→hz (nhìn nghĩa đoán chữ Hán), py→hz (nhìn pinyin đoán chữ Hán).
+//     Không nhận thêm quizType nào khác ngoài 3 giá trị này (Phần 20: server luôn tự xác định
+//     đúng/sai, không tin giá trị answerCorrect nào từ client).
+function correctAnswerForQuizType(word, quizType) {
+  if (quizType === 'vi2hz' || quizType === 'py2hz') return word.hz;
+  return word.vi; // mặc định/'hz2vi': nhìn chữ Hán → chọn nghĩa
+}
+
+// ── Ghi nhận 1 lượt trả lời trắc nghiệm (V67 — AUTO RATING) ──────────────────────────────
+// SERVER là nguồn sự thật duy nhất (Phần 3/20): client CHỈ gửi selectedAnswer + responseTimeMs
+// (+ answerChanges nếu có) — KHÔNG gửi rating/answerCorrect/due/stability/difficulty/state.
+// Server tự tra DB để xác định đáp án đúng, tự suy ra FSRS rating (lib/fsrs-auto-rating.js), rồi
+// mới gọi ts-fsrs thật (lib/fsrs.js) để tính lịch ôn tiếp theo (Phần 20/23).
 app.post('/api/study/review', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
-  const { wordId, rating, answerCorrect } = req.body || {};
+  const { wordId, quizType, selectedAnswer, responseTimeMs, answerChanges } = req.body || {};
   const hz = wordId && wordId.hz;
   const l = wordId && Number(wordId.l);
   if (!hz || !Number.isFinite(l)) return res.json({ ok: false, error: 'Thiếu wordId {hz, l} hợp lệ' });
-  if (ratingFromString(rating) === null) return res.json({ ok: false, error: 'Rating phải là again/hard/good/easy' });
-  if (typeof answerCorrect !== 'boolean') return res.json({ ok: false, error: 'Thiếu answerCorrect (boolean)' });
+  if (typeof selectedAnswer !== 'string' || !selectedAnswer.trim()) {
+    return res.json({ ok: false, error: 'Thiếu selectedAnswer' });
+  }
+  // responseTimeMs/answerChanges là input hành vi, không phải nguồn sự thật FSRS — vẫn phải làm
+  // sạch (sanitize) trước khi dùng, không tin tuyệt đối số client gửi lên (Phần 3/4).
+  const rtRaw = Number(responseTimeMs);
+  const rt = Number.isFinite(rtRaw) && rtRaw >= 0 ? Math.min(rtRaw, 10 * 60 * 1000) : null; // trần 10 phút, tránh giá trị rác
+  const chRaw = Number(answerChanges);
+  const changes = Number.isFinite(chRaw) && chRaw >= 0 ? Math.min(Math.round(chRaw), 50) : 0;
   try {
-    const result = await reviewFsrsCard({ userId: authed.username, hz, l, ratingStr: rating, answerCorrect });
+    // Server tự xác định đáp án đúng từ DB (Phần 3) — không tin bất kỳ answerCorrect nào từ client.
+    const word = await getWordForAnswerCheck(hz, l);
+    if (!word) return res.json({ ok: false, error: 'Không tìm thấy từ vựng' });
+    const correctAnswer = correctAnswerForQuizType(word, quizType);
+    const answerCorrect = String(selectedAnswer).trim() === String(correctAnswer).trim();
+
+    const result = await reviewFsrsCard({
+      userId: authed.username, hz, l, answerCorrect, responseTimeMs: rt, answerChanges: changes,
+    });
     // Cập nhật "current lesson" CHỈ khi đây là 1 NEW word vừa được học lần đầu — tự động lùi/tiến
     // theo đúng bài user vừa thực sự học, không cần thao tác thủ công (Phần 6). Review của các từ
     // cũ không được phép đổi current lesson.
@@ -627,7 +655,16 @@ app.post('/api/study/review', async (req, res) => {
         u.progress.ui.currentLesson = l;
       });
     }
-    res.json({ ok: result.ok, card: result.card });
+    const userRole = authed.db.users[authed.username] && authed.db.users[authed.username].role;
+    const isAdmin = userRole === 'admin' || userRole === 'superadmin';
+    res.json({
+      ok: result.ok,
+      answerCorrect,
+      correctAnswer, // để UI hiện đáp án đúng khi user chọn sai, không cần đoán lại ở client
+      card: result.card,
+      // Debug data (Phần 22) — CHỈ trả về cho admin, không hiện ở production cho user thường.
+      debug: isAdmin ? result.debug : undefined,
+    });
   } catch (e) { fail(res, e); }
 });
 
