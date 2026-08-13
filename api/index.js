@@ -586,15 +586,19 @@ app.get('/api/study/today', async (req, res) => {
     const ui = (user.progress && user.progress.ui) || {};
     const { scopeLessons, allLessonsWithVocab } = await resolveStudyScope(ui);
     const currentLesson = resolveCurrentLesson(ui, scopeLessons);
-    const [dueCount, newInCurrentLesson, weakCards] = await Promise.all([
+    // V71 (sửa lỗi "Từ mới: 0" gây hiểu lầm hết bài): đếm từ mới trên TOÀN BỘ phạm vi bài đang
+    // chọn (scopeLessons), KHÔNG chỉ riêng currentLesson — trước đây chỉ đếm đúng 1 bài hiện tại,
+    // nên nếu bài đó đã học hết thì hiện "Từ mới: 0" dù các bài khác trong phạm vi đã chọn vẫn còn
+    // rất nhiều từ chưa học (và còn khiến điều kiện "đã ôn hết" ở dưới báo sai).
+    const [dueCount, newInScope, weakCards] = await Promise.all([
       countDueFsrsCards(authed.username),
-      countNewWordsInLessons(authed.username, [currentLesson]),
+      countNewWordsInLessons(authed.username, scopeLessons),
       getWeakFsrsCards(authed.username, 200),
     ]);
     res.json({
       ok: true,
       dueCount,
-      newInCurrentLesson,
+      newInCurrentLesson: newInScope,
       currentLesson,
       hasScope: scopeLessons.length > 0 || allLessonsWithVocab.length > 0,
       weakCount: weakCards.length,
