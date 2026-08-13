@@ -13,9 +13,14 @@ const { readDB, updateDB, updateDBWithFsrsCleanup, getVocabByLessons, getVocabCo
   getAllHanziParts, getHanziPartsKeys, insertHanziParts,
   insertActivityLog, getActivityLogs, reserveGeminiSlot, bumpGeminiRateLimit,
   countDueFsrsCards, getDueFsrsCards, getNewWordsByLessonOrder, countNewWordsInLessons,
-  getTodayStudyCounts, getWeakFsrsCards, reviewFsrsCard, getFsrsCardsDebug,
-  getWordForAnswerCheck } = require('../lib/db');
+  getTodayStudyCounts, getWeakFsrsCards, getFsrsCardsDebug,
+  getWordForAnswerCheck, countKnownFsrsWords, getKnownCountsForUsers } = require('../lib/db');
 const { getFsrsVerificationInfo } = require('../lib/fsrs');
+// V69: mọi review + toàn bộ analytics/optimizer/personal-retention giờ đi qua lib/fsrs/ (scheduler
+// layer chuẩn hóa) — api/index.js KHÔNG còn gọi thẳng db.reviewFsrsCard nữa (Phần 4 của audit).
+const reviewService = require('../lib/fsrs/reviewService');
+const fsrsAnalytics = require('../lib/fsrs/analytics');
+const fsrsOptimizer = require('../lib/fsrs/optimizer');
 
 const app = express();
 
@@ -26,19 +31,17 @@ process.on('unhandledRejection', (err) => {
   console.error('⚠️  [unhandledRejection]:', err && err.message);
 });
 
+// V69 (Phần 2 audit — loại bỏ SRS cũ): "progress" KHÔNG còn field "srs" (ease-factor/step cũ) và
+// KHÔNG còn "streak"/"lastDate" do CLIENT tự gửi lên (trước đây tin tưởng mù quáng số client gửi —
+// user có thể tự POST streak bất kỳ). Nguồn sự thật duy nhất cho tiến độ học giờ là FSRS
+// (fsrs_cards/review_history) + study_sessions (server tự tính streak, xem lib/fsrs/analytics.js).
+// "progress" giờ chỉ còn giữ "ui" (cài đặt hiển thị/lựa chọn bài) — không liên quan lịch ôn tập.
 function emptyProgress() {
-  return { srs: {}, streak: 0, lastDate: null, ui: { lastTab: 'home', selectedBookIds: [1], selectedLessons: [], lessonsAllMode: true } };
+  return { ui: { lastTab: 'home', selectedBookIds: [1], selectedLessons: [], lessonsAllMode: true } };
 }
 
 function makeToken() {
   return crypto.randomBytes(24).toString('hex');
-}
-
-function countKnown(progress) {
-  const srs = (progress && progress.srs) || {};
-  let n = 0;
-  for (const hz in srs) { if (srs[hz] && srs[hz].step >= 3) n++; }
-  return n;
 }
 
 const RANKS = [
@@ -155,8 +158,8 @@ app.post('/api/register', async (req, res) => {
         createdAt: Date.now(),
       };
       db.tokens[token] = key;
-      const known = countKnown(db.users[key].progress);
-      return { ok: true, token, username, role: db.users[key].role, progress: db.users[key].progress, rank: getRank(known) };
+      // Tài khoản vừa tạo → chắc chắn chưa có fsrs_cards nào (known = 0), không cần query DB.
+      return { ok: true, token, username, role: db.users[key].role, progress: db.users[key].progress, rank: getRank(0) };
     });
     if (result.ok) logActivity(result.username, result.role, 'auth', 'Đăng ký tài khoản mới');
     res.json(result);
@@ -186,10 +189,14 @@ app.post('/api/login', async (req, res) => {
       if (!u.role) u.role = 'user';
       db2.tokens[token] = key;
       const progress = u.progress || emptyProgress();
-      const known = countKnown(progress);
-      return { ok: true, token, username: u.username, role: u.role, progress, rank: getRank(known) };
+      return { ok: true, token, username: u.username, role: u.role, progress };
     });
-    if (result.ok) logActivity(result.username, result.role, 'auth', 'Đăng nhập');
+    if (result.ok) {
+      // Tính known/rank NGOÀI transaction app_store (query fsrs_cards không cần giữ khoá FOR
+      // UPDATE của app_store lâu hơn cần thiết — Phần 13 hiệu năng).
+      result.rank = getRank(await countKnownFsrsWords(key));
+      logActivity(result.username, result.role, 'auth', 'Đăng nhập');
+    }
     res.json(result);
   } catch (e) { fail(res, e); }
 });
@@ -211,17 +218,28 @@ app.get('/api/progress', async (req, res) => {
   if (!authed) return;
   const user = authed.db.users[authed.username];
   const progress = user.progress || emptyProgress();
-  const known = countKnown(progress);
-  res.json({ ok: true, username: user.username, role: user.role || 'user', progress, rank: getRank(known) });
+  try {
+    // V69: known-word count + streak giờ tính từ FSRS/study_sessions (server là nguồn sự thật
+    // duy nhất), KHÔNG còn đọc từ progress.srs/progress.streak do client tự gửi.
+    const [known, streakInfo] = await Promise.all([
+      countKnownFsrsWords(authed.username),
+      fsrsAnalytics.getStreak(authed.username),
+    ]);
+    res.json({
+      ok: true, username: user.username, role: user.role || 'user', progress,
+      rank: getRank(known), known,
+      streak: streakInfo.currentStreak, longestStreak: streakInfo.longestStreak,
+    });
+  } catch (e) { fail(res, e); }
 });
 
-// ── Lưu tiến độ ──
+// ── Lưu tiến độ (V69: chỉ còn "ui" — cài đặt hiển thị/lựa chọn bài, KHÔNG còn srs/streak) ──
 app.post('/api/progress', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
-  const { srs, streak, lastDate, ui } = req.body || {};
+  const { ui } = req.body || {};
   try {
-    const rank = await updateDB((db) => {
+    await updateDB((db) => {
       const safeUi = (ui && typeof ui === 'object') ? {
         lastTab: typeof ui.lastTab === 'string' ? ui.lastTab : 'home',
         selectedBookIds: Array.isArray(ui.selectedBookIds)
@@ -239,37 +257,41 @@ app.post('/api/progress', async (req, res) => {
         qzType: ['漢→Việt', 'Việt→漢', 'Âm→漢'].includes(ui.qzType) ? ui.qzType : '漢→Việt',
         qzQuestionCount: Number.isFinite(ui.qzQuestionCount) ? ui.qzQuestionCount : 30,
         questionCount: Number.isFinite(ui.questionCount) ? ui.questionCount : 10,
-      } : { lastTab: 'home', selectedBookIds: [1], selectedLessons: [], lessonsAllMode: true,
-        showPinyin: true, showMeaning: true, showHanViet: true, theme: 'light', ttsRate: 0.65,
-        qzType: '漢→Việt', qzQuestionCount: 30, questionCount: 10 };
-      db.users[authed.username].progress = {
-        srs: (srs && typeof srs === 'object') ? srs : {},
-        streak: typeof streak === 'number' ? streak : 0,
-        lastDate: lastDate || null,
-        ui: safeUi,
-      };
-      return getRank(countKnown(db.users[authed.username].progress));
+        currentLesson: Number.isFinite(ui.currentLesson) ? ui.currentLesson : undefined,
+        dailyReviewLimit: Number.isFinite(ui.dailyReviewLimit) ? ui.dailyReviewLimit : undefined,
+        dailyNewLimit: Number.isFinite(ui.dailyNewLimit) ? ui.dailyNewLimit : undefined,
+        newOnlyAfterDue: typeof ui.newOnlyAfterDue === 'boolean' ? ui.newOnlyAfterDue : undefined,
+      } : emptyProgress().ui;
+      db.users[authed.username].progress = { ui: safeUi };
     });
-    res.json({ ok: true, rank });
+    res.json({ ok: true });
   } catch (e) { fail(res, e); }
 });
 
-// ── Bảng xếp hạng ──
+// ── Bảng xếp hạng ── (Phần 13: tránh N+1 — 1 query GROUP BY cho known count của TẤT CẢ user;
+//     streak chính xác (cần quét study_sessions) chỉ tính cho top 100 sau khi đã sort theo known,
+//     không lặp query cho toàn bộ user base khi hệ thống có hàng chục nghìn user — xem "Hiệu năng"
+//     trong báo cáo audit).
 app.get('/api/leaderboard', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
   const db = authed.db;
-  const list = Object.values(db.users).map(u => {
-    const known = countKnown(u.progress || emptyProgress());
-    return {
-      username: u.username,
-      known,
-      streak: (u.progress && u.progress.streak) || 0,
-      rank: getRank(known).name,
-      isMe: u.username.toLowerCase() === authed.username,
-    };
-  }).sort((a, b) => b.known - a.known || b.streak - a.streak);
-  res.json({ ok: true, leaderboard: list.slice(0, 100) });
+  try {
+    const usernames = Object.keys(db.users);
+    const knownMap = await getKnownCountsForUsers(usernames);
+    const ranked = usernames.map((username) => ({
+      username, known: knownMap[username] || 0,
+      isMe: username.toLowerCase() === authed.username,
+    })).sort((a, b) => b.known - a.known).slice(0, 100);
+    const streaks = await Promise.all(ranked.map((u) => fsrsAnalytics.getStreak(u.username)));
+    const list = ranked.map((u, i) => ({
+      username: u.username, known: u.known,
+      streak: streaks[i].currentStreak,
+      rank: getRank(u.known).name,
+      isMe: u.isMe,
+    })).sort((a, b) => b.known - a.known || b.streak - a.streak);
+    res.json({ ok: true, leaderboard: list });
+  } catch (e) { fail(res, e); }
 });
 
 // ── [ADMIN] Thống kê lượt truy cập ──
@@ -320,18 +342,21 @@ app.get('/api/admin/users', async (req, res) => {
   if (!authed) return;
   const db = authed.db;
   if (!requireAdmin(db.users[authed.username], res)) return;
-  const list = Object.entries(db.users).map(([key, u]) => {
-    const known = countKnown(u.progress || emptyProgress());
-    return {
-      key,
-      username: u.username,
-      role: u.role || 'user',
-      known,
-      streak: (u.progress && u.progress.streak) || 0,
-      createdAt: u.createdAt,
-    };
-  }).sort((a, b) => b.createdAt - a.createdAt);
-  res.json({ ok: true, users: list });
+  try {
+    const keys = Object.keys(db.users);
+    const knownMap = await getKnownCountsForUsers(keys); // 1 query GROUP BY, không N+1 (Phần 13).
+    const list = keys.map((key) => {
+      const u = db.users[key];
+      return {
+        key,
+        username: u.username,
+        role: u.role || 'user',
+        known: knownMap[key] || 0,
+        createdAt: u.createdAt,
+      };
+    }).sort((a, b) => b.createdAt - a.createdAt);
+    res.json({ ok: true, users: list });
+  } catch (e) { fail(res, e); }
 });
 
 // ── [ADMIN] Xoá tài khoản ──
@@ -351,7 +376,7 @@ app.post('/api/admin/users/:key/delete', async (req, res) => {
       delete db.users[targetKey];
       for (const t in db.tokens) { if (db.tokens[t] === targetKey) delete db.tokens[t]; }
       return { ok: true };
-    });
+    }, { alsoDeleteAnalytics: true });
     if (result.ok) {
       const actingUser = authed.db.users[authed.username];
       logActivity(authed.username, actingUser.role, 'admin',
@@ -650,7 +675,10 @@ app.post('/api/study/review', async (req, res) => {
     const correctAnswer = correctAnswerForQuizType(word, quizType);
     const answerCorrect = String(selectedAnswer).trim() === String(correctAnswer).trim();
 
-    const result = await reviewFsrsCard({
+    // V69 (Phần 4): đi qua reviewService (scheduler layer) thay vì gọi thẳng db.reviewFsrsCard —
+    // đây cũng là nơi desired_retention riêng của user (Phần 5) được áp dụng + study_sessions
+    // (Phần 9) được cập nhật.
+    const result = await reviewService.reviewCard({
       userId: authed.username, hz, l, answerCorrect, responseTimeMs: rt, answerChanges: changes,
     });
     // Cập nhật "current lesson" CHỈ khi đây là 1 NEW word vừa được học lần đầu — tự động lùi/tiến
@@ -735,6 +763,119 @@ app.get('/api/study/fsrs-verify', async (req, res) => {
       w: info.w,
       nodeVersion: process.version,
     });
+  } catch (e) { fail(res, e); }
+});
+
+// ════════════════════════════════════════════════════
+// V69 — Desired Retention theo user (Phần 5), FSRS Analytics (Phần 8), Study Session / Dashboard /
+// Streak / Heatmap (Phần 9-12). Toàn bộ nằm trong lib/fsrs/ (reviewService.js/analytics.js).
+// ════════════════════════════════════════════════════
+
+// ── Cài đặt desired retention (Phần 5) — GET để hiển thị lựa chọn hiện tại + POST để đổi ──
+app.get('/api/settings/retention', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const settings = await reviewService.getUserSettings(authed.username);
+    res.json({ ok: true, ...settings });
+  } catch (e) { fail(res, e); }
+});
+
+app.post('/api/settings/retention', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const { desiredRetention } = req.body || {};
+  try {
+    const result = await reviewService.setUserRetention(authed.username, desiredRetention);
+    logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'settings',
+      `Đổi desired retention → ${result.desiredRetention}`);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    // Sai giá trị retention là lỗi input của user, không phải lỗi server — trả 200/ok:false thay
+    // vì 500, đúng convention lỗi nghiệp vụ của các endpoint khác trong file này.
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// ── GET /api/fsrs/stats (Phần 8) ──
+app.get('/api/fsrs/stats', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const stats = await fsrsAnalytics.getFsrsStats(authed.username);
+    res.json({ ok: true, ...stats });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Dashboard thời gian học: Hôm nay / 7 ngày / Toàn bộ + streak (Phần 10-11) ──
+app.get('/api/study/dashboard', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const [summary, streak] = await Promise.all([
+      fsrsAnalytics.getDashboardSummary(authed.username),
+      fsrsAnalytics.getStreak(authed.username),
+    ]);
+    res.json({ ok: true, ...summary, streak: streak.currentStreak, longestStreak: streak.longestStreak });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Heatmap kiểu GitHub (Phần 12) — mặc định 365 ngày gần nhất, tối đa 366 ──
+app.get('/api/study/heatmap', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const days = Number.isFinite(Number(req.query.days)) ? Number(req.query.days) : 365;
+    const heatmap = await fsrsAnalytics.getHeatmap(authed.username, days);
+    res.json({ ok: true, heatmap });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Study session tracking chủ động (tùy chọn — xem ghi chú trong lib/fsrs/analytics.js) ──
+app.post('/api/study/session/start', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const sessionId = await fsrsAnalytics.startExplicitSession(authed.username, new Date());
+    res.json({ ok: true, sessionId });
+  } catch (e) { fail(res, e); }
+});
+
+app.post('/api/study/session/heartbeat', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const { sessionId } = req.body || {};
+  if (!Number.isFinite(Number(sessionId))) return res.json({ ok: false, error: 'Thiếu sessionId hợp lệ' });
+  try {
+    const session = await fsrsAnalytics.heartbeatExplicitSession(authed.username, Number(sessionId), new Date());
+    if (!session) return res.json({ ok: false, error: 'Không tìm thấy session' });
+    res.json({ ok: true, durationSeconds: session.duration_seconds });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] FSRS Optimizer — xuất review history + kiểm tra sẵn sàng train weights riêng (Phần 6/7) ──
+// CHƯA train tự động (đúng yêu cầu) — endpoint này chỉ XUẤT dữ liệu + cho biết đã đủ review chưa.
+app.get('/api/admin/fsrs-optimizer/export', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const targetUser = String(req.query.userId || authed.username).toLowerCase();
+  try {
+    const [rows, readiness] = await Promise.all([
+      fsrsOptimizer.exportReviewHistoryForOptimizer(targetUser, { limit: Number(req.query.limit) || 2000 }),
+      fsrsOptimizer.getOptimizerReadiness(targetUser),
+    ]);
+    res.json({ ok: true, readiness, rows });
+  } catch (e) { fail(res, e); }
+});
+
+app.get('/api/admin/fsrs-optimizer/weights/:userId', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const weights = await fsrsOptimizer.getUserWeights(req.params.userId.toLowerCase());
+    res.json({ ok: true, ...weights });
   } catch (e) { fail(res, e); }
 });
 
