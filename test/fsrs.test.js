@@ -195,7 +195,37 @@ test('personalBaselineMs(): tự sort theo reviewed_at, không phụ thuộc th�
     `(nếu ra 5499.5 nghĩa là hàm chưa tự sort mà đang tin thứ tự input)`);
 });
 
-// ── Concurrent review / reset / delete: xử lý ở tầng DB (SELECT ... FOR UPDATE, transaction
+// ── V69: Desired Retention theo user (Phần 5) — scheduler CACHE theo từng mức, KHÔNG tạo
+//     scheduler mới mỗi request, và giá trị không hợp lệ phải fallback về default (không throw). ──
+test('V69: reviewCard() nhận desiredRetention hợp lệ, ảnh hưởng lịch ôn (interval dài hơn khi retention thấp hơn)', () => {
+  const { newCard: cardHighRetention } = reviewCard(null, 'good', BASE, 0.95);
+  const { newCard: cardLowRetention } = reviewCard(null, 'good', BASE, 0.80);
+  assertValidCard(cardHighRetention);
+  assertValidCard(cardLowRetention);
+  // Retention mục tiêu THẤP hơn (0.80) → chấp nhận quên nhiều hơn → khoảng ôn tập (scheduled_days)
+  // phải DÀI hơn so với retention cao (0.95) — đúng bản chất toán học của FSRS, không phải giả định
+  // tùy tiện.
+  assert.ok(cardLowRetention.scheduled_days >= cardHighRetention.scheduled_days,
+    `scheduled_days ở retention=0.80 (${cardLowRetention.scheduled_days}) phải >= retention=0.95 (${cardHighRetention.scheduled_days})`);
+});
+
+test('V69: reviewCard() với desiredRetention KHÔNG hợp lệ → fallback DEFAULT_RETENTION, không throw', () => {
+  const { DEFAULT_RETENTION } = require('../lib/fsrs');
+  const { newCard: fallback } = reviewCard(null, 'good', BASE, 0.77); // 0.77 không nằm trong ALLOWED_RETENTIONS
+  const { newCard: expected } = reviewCard(null, 'good', BASE, DEFAULT_RETENTION);
+  assertValidCard(fallback);
+  assert.strictEqual(fallback.scheduled_days, expected.scheduled_days,
+    'retention không hợp lệ phải cho kết quả giống hệt DEFAULT_RETENTION (0.90), không phải throw hay dùng 0.77');
+});
+
+test('V69: ALLOWED_RETENTIONS đúng 4 mức yêu cầu [0.80, 0.85, 0.90, 0.95]', () => {
+  const { ALLOWED_RETENTIONS, isAllowedRetention } = require('../lib/fsrs');
+  assert.deepStrictEqual(ALLOWED_RETENTIONS, [0.80, 0.85, 0.90, 0.95]);
+  assert.strictEqual(isAllowedRetention(0.9), true);
+  assert.strictEqual(isAllowedRetention(0.91), false);
+});
+
+
 //     xoá fsrs_cards+review_history trong lib/db.js), KHÔNG thể unit-test thuần ở tầng scheduler
 //     vì không chạm DB thật. FIX (audit V68, Phần 22): "assert.ok(true)" là TEST GIẢ — không được
 //     coi là bằng chứng behavior. Test này KHÔNG chạy giả một kết quả PASS nữa; nó SKIP một cách
