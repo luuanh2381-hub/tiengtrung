@@ -939,6 +939,9 @@ async function authSubmit() {
     progressState = data.progress || defaultProgress();
     currentRole = data.role || 'user';
     currentRank = data.rank || null;
+    serverStreak = data.streak || 0;
+    serverLongestStreak = data.longestStreak || 0;
+    serverKnownCount = data.known || 0;
     applyUIState();
     cacheProgressLocally();
     closeAuthGate();
@@ -1010,6 +1013,7 @@ async function authLogout() {
   try { await fetch('/api/logout', { method: 'POST', headers: authHeaders() }); } catch {}
   authToken = null; authUsername = null; isGuest = false;
   currentRole = 'user'; currentRank = null;
+  serverStreak = 0; serverLongestStreak = 0; serverKnownCount = 0;
   localStorage.removeItem('authToken'); localStorage.removeItem('authUsername'); localStorage.removeItem('authGuest');
   progressState = defaultProgress();
   applyUIState();
@@ -1111,6 +1115,11 @@ async function bootAuth() {
         progressState = data.progress || defaultProgress();
         currentRole = data.role || 'user';
         currentRank = data.rank || null;
+        // V70 (Task 2 audit): streak/known THẬT từ server (study_sessions/fsrs_cards) — trước đây
+        // client bỏ qua 2 trường này và tự tính streak cục bộ bằng SRS cũ đã bị xoá.
+        serverStreak = data.streak || 0;
+        serverLongestStreak = data.longestStreak || 0;
+        serverKnownCount = data.known || 0;
         // Chỉ áp trạng thái tab/lựa chọn nếu đây là lần đầu vào (chưa có cache) — tránh việc
         // đang xem dở 1 tab rồi tự nhảy sang tab khác khi dữ liệu server về chậm hơn 1 chút.
         if (!enteredWithCache) applyUIState();
@@ -1134,71 +1143,113 @@ async function bootAuth() {
 }
 
 // ════════════════════════════════════════════════════
-// SRS (đọc/ghi qua progressState, tự đồng bộ server theo tài khoản)
+// V70 (Task 2 audit — hợp nhất FSRS): TOÀN BỘ hệ "SRS cục bộ" tự viết cũ (step cứng 10p/1h/1
+// ngày/3 ngày/7 ngày, lưu trong progressState.srs) đã bị XOÁ khỏi client cho user ĐÃ ĐĂNG NHẬP.
+// Lý do: nó là "review queue riêng" / "SRS cũ" chạy song song với FSRS-6 thật (Task 2 cấm), và
+// thực ra backend đã ngừng lưu progress.srs từ trước (xem api/index.js `/api/progress` POST —
+// "V69: chỉ còn ui, KHÔNG còn srs/streak") — client chỉ chưa được cập nhật theo kịp, khiến dữ
+// liệu cũ này chỉ tồn tại "ảo" trên 1 thiết bị, không đồng bộ, không phải nguồn sự thật thật sự.
+//
+// Từ giờ:
+//   - User ĐÃ ĐĂNG NHẬP: streak/known/độ ưu tiên từ đến hạn... đều lấy từ SERVER (FSRS-6 thật,
+//     reviewService + fsrs_cards + review_history + study_sessions) — xem serverStreak/
+//     serverKnownCount bên dưới + loadFsrsPracticePool()/submitFsrsReview() dùng ở các tab luyện tập.
+//   - KHÁCH (chưa đăng nhập): KHÔNG có tài khoản nên không thể có thẻ FSRS thật trên server. Giữ
+//     lại 1 cơ chế cực tối giản CHỈ để tính streak hiển thị cục bộ trên máy khách đó (không giả vờ
+//     đây là spaced-repetition thật) — xem guestMarkActivity() bên dưới.
 // ════════════════════════════════════════════════════
-function getSRS() { return progressState.srs || (progressState.srs = {}); }
-function saveSRS(d) { progressState.srs = d; cacheProgressLocally(); scheduleSync(); }
+let serverStreak = 0, serverLongestStreak = 0, serverKnownCount = 0;
 
-function getWordSRS(hz) {
-  const d = getSRS(); return d[hz] || {correct:0, total:0, step:0, nextReview:0};
-}
+// Streak hiển thị: user thật → số streak SERVER tính (từ study_sessions thật, Phần 11 Task 6);
+// khách → đếm cục bộ đơn giản, chỉ để có con số vui mắt, không phải dữ liệu học tập thật.
+function getStreak() { return isGuest ? (progressState.streak || 0) : serverStreak; }
 
-function recordAnswer(hz, isCorrect) {
-  const d = getSRS();
-  if (!d[hz]) d[hz] = {correct:0, total:0, step:0, nextReview:0};
-  const w = d[hz];
-  w.total++;
-  if (isCorrect) {
-    w.correct++;
-    const steps = [10*60,60*60,24*60*60,3*24*60*60,7*24*60*60];
-    w.step = Math.min(w.step + 1, steps.length);
-    w.nextReview = Date.now() + (steps[w.step - 1] || steps[steps.length-1]) * 1000;
-  } else {
-    w.step = 0;
-    w.nextReview = Date.now() + 60*1000;
-  }
-  d[hz] = w; saveSRS(d);
-  updateStreak();
-}
-
-function updateStreak() {
+// Chỉ dùng cho KHÁCH: đánh dấu "hôm nay có luyện tập" để tăng streak hiển thị cục bộ. Không tạo
+// thẻ SRS/step nào cả — khách luyện Flashcard/Trắc nghiệm/Gõ chữ/Nghe-chọn chỉ để thử, không có
+// lịch ôn tập thật (cần đăng nhập mới có FSRS thật, xem app.js `renderToday`).
+function guestMarkActivity() {
+  if (!isGuest) return;
   const today = new Date().toDateString();
-  const last = progressState.lastDate;
-  let streak = progressState.streak || 0;
-  if (last === today) return streak;
+  if (progressState.lastDate === today) return;
   const yesterday = new Date(Date.now() - 86400000).toDateString();
-  if (last === yesterday) { streak++; }
-  else { streak = 1; }
-  progressState.streak = streak;
+  progressState.streak = (progressState.lastDate === yesterday) ? (progressState.streak || 0) + 1 : 1;
   progressState.lastDate = today;
   cacheProgressLocally();
-  scheduleSync();
-  return streak;
 }
 
-function getStreak() { return progressState.streak || 0; }
-
-function sortByPriority(words) {
-  const now = Date.now();
-  const d = getSRS();
-  return [...words].sort((a, b) => {
-    const wa = d[a.hz] || {nextReview:0, correct:0, total:1};
-    const wb = d[b.hz] || {nextReview:0, correct:0, total:1};
-    const aDue = wa.nextReview <= now ? 1 : 0;
-    const bDue = wb.nextReview <= now ? 1 : 0;
-    if (aDue !== bDue) return bDue - aDue;
-    const ar = wa.total ? wa.correct/wa.total : 1;
-    const br = wb.total ? wb.correct/wb.total : 1;
-    return ar - br;
-  });
+// Gọi lại /api/progress để làm mới streak/known thật sau khi vừa hoàn thành 1 lượt/1 phiên luyện
+// tập ở BẤT KỲ tab nào (Task 2: mọi tab đều là "nguồn sự thật" như nhau) — không gọi sau MỖI câu
+// trả lời (tốn request), chỉ gọi khi kết thúc 1 phiên/1 thẻ để badge không bị cũ quá lâu.
+let _refreshMetaTimer = null;
+function refreshServerMeta() {
+  if (isGuest || !authToken) return;
+  clearTimeout(_refreshMetaTimer);
+  _refreshMetaTimer = setTimeout(async () => {
+    try {
+      const res = await fetch('/api/progress', { headers: authHeaders() });
+      const data = await res.json();
+      if (data.ok) {
+        serverStreak = data.streak || 0;
+        serverLongestStreak = data.longestStreak || 0;
+        serverKnownCount = data.known || 0;
+        currentRank = data.rank || currentRank;
+        const badge = document.getElementById('streak-badge');
+        if (badge) badge.textContent = '🔥 ' + getStreak() + ' ngày';
+        updateUserBadge();
+      }
+    } catch { /* im lặng — không chặn luồng học vì lỗi làm mới badge */ }
+  }, 900);
 }
 
-function getKnownCount(lesson) {
-  const d = getSRS();
-  const words = lesson === 0 ? WORDS : WORDS.filter(w => w.l === lesson);
-  return words.filter(w => {
-    const s = d[w.hz]; return s && s.step >= 3;
-  }).length;
+// ── Ánh xạ chế độ hỏi ở UI → quizType mà server hiểu (Task 2/3: server luôn tự xác định đúng/sai
+//     và tự suy FSRS rating — KHÔNG có quizType nào KHÔNG đi qua đây). 'listen' (Nghe-chọn) dùng
+//     lại đúng ngữ nghĩa 'vi2hz' (đáp án cần chọn là chữ Hán) vì server chỉ cần biết đáp án đúng
+//     là w.hz hay w.vi, không cần phân biệt "nghe" hay "đọc nghĩa" ở tầng so khớp đáp án. ──
+function fsrsQuizTypeFor(mode) {
+  if (mode === 'Việt→漢' || mode === 'type' || mode === 'listen') return 'vi2hz';
+  if (mode === 'Âm→漢') return 'py2hz';
+  return 'hz2vi'; // '漢→Việt' hoặc mặc định
+}
+
+// ── Lấy pool từ CHÍNH hàng đợi FSRS thật (reviewService + scheduler) của user đang đăng nhập —
+//     dùng CHUNG cho Flashcard/Trắc nghiệm/Gõ chữ/Nghe-chọn, giống hệt "Hôm nay học" (Task 2: cấm
+//     "review queue riêng"). Vì cùng gọi /api/study/session, 4 tab luyện tập này CHIA SẺ chung 1
+//     ngân sách due/new mỗi ngày với "Hôm nay học" — không phải 4 nguồn đếm riêng biệt nữa. ──
+async function loadFsrsPracticePool(limit) {
+  try {
+    const res = await fetch('/api/study/session', { headers: authHeaders() });
+    const data = await res.json();
+    if (!data.ok) return { words: [], error: data.error || 'Không tải được hàng đợi FSRS' };
+    const words = (data.session || []).map(it => it.word).slice(0, limit);
+    return { words, blockedByBacklog: !!data.blockedByBacklog, totalDue: data.totalDue || 0 };
+  } catch (e) {
+    return { words: [], error: e.message };
+  }
+}
+
+// ── Gửi 1 lượt trả lời lên reviewService (FSRS-6 thật) — dùng CHUNG cho MỌI tab luyện tập của
+//     user đã đăng nhập. Server luôn là nguồn sự thật cuối cùng cho answerCorrect + rating (Task
+//     3), tự ghi vào review_history + fsrs_cards + study_sessions (Task 4, đã có sẵn ở backend). ──
+async function submitFsrsReview({ word, quizType, selectedAnswer, responseTimeMs }) {
+  try {
+    const res = await fetch('/api/study/review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        wordId: { hz: word.hz, l: word.l },
+        quizType,
+        selectedAnswer,
+        responseTimeMs: Number.isFinite(responseTimeMs) ? Math.round(responseTimeMs) : null,
+        answerChanges: 0,
+      }),
+    });
+    const data = await res.json();
+    if (!data.ok) console.error('Không lưu được lượt review:', data.error);
+    return data;
+  } catch (e) {
+    console.error('Lỗi kết nối khi lưu review:', e);
+    return { ok: false, error: e.message };
+  }
 }
 
 // ════════════════════════════════════════════════════
@@ -1565,7 +1616,7 @@ function render() {
   else if (currentTab === 'quiz')  { el.innerHTML = renderQuiz(); bindQuiz(); }
   else if (currentTab === 'type')  { el.innerHTML = renderType(); bindType(); }
   else if (currentTab === 'listen'){ el.innerHTML = renderListen(); bindListen(); }
-  else if (currentTab === 'stats') { el.innerHTML = renderStats(); }
+  else if (currentTab === 'stats') { el.innerHTML = renderStats(); bindStats(); }
   else if (currentTab === 'compare'){ el.innerHTML = renderCompare(); bindCompare(); }
   else if (currentTab === 'hsk')   { el.innerHTML = renderHSK(); bindHSK(); }
   else if (currentTab === 'admin') { el.innerHTML = renderAdmin(); bindAdmin(); }
@@ -1874,7 +1925,6 @@ async function rvPick(btn, hz) {
   });
   if (isCorrectLocally) playDing(); else playBuzz();
   speak(w.hz);
-  recordAnswer(w.hz, isCorrectLocally);
 
   let result = { correct: isCorrectLocally, card: null, autoRating: null };
   try {
@@ -1914,6 +1964,7 @@ async function rvPick(btn, hz) {
 function rvAdvance() {
   if (currentTab !== 'review') return; // user đã rời màn hình, tránh render nhầm chỗ
   rvIdx++;
+  if (rvIdx >= rvSession.length) refreshServerMeta(); // hết phiên — làm mới streak/known thật
   rvPrepareCurrentCard();
   render();
 }
@@ -1921,11 +1972,9 @@ function rvAdvance() {
 // ════════════════════════════════════════════════════
 // FLASHCARD
 // ════════════════════════════════════════════════════
-let fcWords = [], fcIdx = 0, fcFlipped = false;
+let fcWords = [], fcIdx = 0, fcFlipped = false, fcStartedAt = 0, fcResponseTimeMs = null;
 
 function renderFlash() {
-  fcWords = sortByPriority(getFilteredWords());
-  if (fcIdx >= fcWords.length) fcIdx = 0;
   return `
   <div class="count-row">
     <label>Số thẻ:</label>
@@ -1946,13 +1995,32 @@ function renderFlash() {
 
 function fcChangeCount(v) {
   questionCount = v === 'Tất cả' ? 9999 : parseInt(v);
-  fcIdx = 0; render();
+  progressState.ui.questionCount = questionCount;
+  cacheProgressLocally(); scheduleSync();
+  bindFlash();
 }
 
-function bindFlash() {
-  fcFlipped = false;
-  const limit = questionCount === 9999 ? fcWords.length : Math.min(questionCount, fcWords.length);
-  fcWords = fcWords.slice(0, limit);
+// V70 (Task 2 audit — hợp nhất FSRS): user ĐÃ ĐĂNG NHẬP lấy thẻ từ ĐÚNG hàng đợi FSRS thật (due +
+// new hôm nay, cùng nguồn với "Hôm nay học"/Trắc nghiệm/Gõ chữ/Nghe-chọn) — không còn pool riêng
+// theo lesson-filter + "sortByPriority" tự chế như trước. KHÁCH (chưa có tài khoản, không thể có
+// thẻ FSRS thật) vẫn dùng pool theo bài đang chọn để thử app, KHÔNG lưu tiến độ gì cả.
+async function bindFlash() {
+  fcFlipped = false; fcIdx = 0;
+  const limit = questionCount === 9999 ? 9999 : questionCount;
+  if (isLoggedIn()) {
+    const front = document.getElementById('fc-front');
+    if (front) front.innerHTML = `<div class="fc-hint">⏳ Đang tải hàng đợi FSRS...</div>`;
+    const { words, error } = await loadFsrsPracticePool(limit);
+    if (currentTab !== 'flash') return; // user đã rời tab trong lúc chờ tải
+    if (error) {
+      const content = document.getElementById('content');
+      if (content) content.innerHTML = `<div class="panel center" style="padding:40px">⚠️ ${error}</div>`;
+      return;
+    }
+    fcWords = words;
+  } else {
+    fcWords = shuffle(getFilteredWords()).slice(0, limit === 9999 ? undefined : limit);
+  }
   fcUpdate();
 }
 
@@ -2003,12 +2071,19 @@ function renderHanziParts(hz, expanded) {
 }
 
 function fcUpdate() {
-  if (!fcWords.length) { document.getElementById('content').innerHTML = '<div class="panel center" style="padding:40px">Không có từ nào!</div>'; return; }
+  if (!fcWords.length) {
+    const msg = isLoggedIn()
+      ? '🎉 Không còn thẻ nào đến hạn hoặc từ mới trong ngân sách hôm nay!<br><span style="font-size:.85rem;color:var(--muted)">Vào "🎯 Hôm nay học" để xem/chỉnh giới hạn.</span>'
+      : 'Không có từ nào trong phạm vi bài đang chọn!';
+    document.getElementById('content').innerHTML = `<div class="panel center" style="padding:40px">${msg}</div>`;
+    return;
+  }
   const w = fcWords[fcIdx];
   const limit = fcWords.length;
   document.getElementById('fc-counter').textContent = `${fcIdx+1} / ${limit}`;
   const inner = document.getElementById('fc-inner');
   inner.classList.remove('flipped'); fcFlipped = false;
+  fcStartedAt = performance.now(); fcResponseTimeMs = null; // Phần 4: đo từ lúc thẻ MỚI hiện ra
 
   const tagStyle2 = lessonTagStyle(w.l);
   const lyHopBadge = w.tag === 'ly_hop' ? `<span class="fc-lesson-tag" style="background:#fff0e0;color:#b5651d;margin-left:6px;">🧩 Ly hợp</span>` : '';
@@ -2039,7 +2114,11 @@ function fcUpdate() {
 
 function fcFlip() {
   const inner = document.getElementById('fc-inner');
-  if (!fcFlipped) { inner.classList.add('flipped'); fcFlipped = true; speak(fcWords[fcIdx].hz); }
+  if (!fcFlipped) {
+    inner.classList.add('flipped'); fcFlipped = true;
+    fcResponseTimeMs = performance.now() - fcStartedAt; // thời gian "cố nhớ" trước khi lật thẻ
+    speak(fcWords[fcIdx].hz);
+  }
 }
 
 // ── Chấm điểm giọng đọc — dùng tính năng nhận diện giọng nói có sẵn của trình duyệt (Chrome/Edge),
@@ -2120,10 +2199,24 @@ async function pronounceTest() {
   }
 }
 
+// V70 (Task 2/3 audit): thay vì "recordAnswer" cục bộ, mỗi lượt tự chấm Đã nhớ/Chưa nhớ giờ đi
+// qua ĐÚNG reviewService.reviewCard() như mọi tab khác (user đã đăng nhập). "Đã nhớ" gửi đáp án
+// đúng, "Chưa nhớ" gửi 1 chuỗi chắc chắn sai — server tự xác định answerCorrect + suy FSRS rating
+// (Again nếu chưa nhớ; Good/Hard/Easy tuỳ baseline nếu đã nhớ, Phần 6/9/10 lib/fsrs-auto-rating.js).
 function fcAnswer(ok) {
-  recordAnswer(fcWords[fcIdx].hz, ok);
+  const w = fcWords[fcIdx];
+  if (!w) return;
+  if (isLoggedIn()) {
+    const selectedAnswer = ok ? w.vi : '⨯ (tự chấm: chưa nhớ) ⨯';
+    submitFsrsReview({ word: w, quizType: 'hz2vi', selectedAnswer, responseTimeMs: fcResponseTimeMs });
+  } else {
+    guestMarkActivity();
+  }
   fcIdx++;
-  if (fcIdx >= fcWords.length) { fcIdx = 0; }
+  if (fcIdx >= fcWords.length) {
+    if (isLoggedIn()) { refreshServerMeta(); bindFlash(); return; } // nạp lại hàng đợi FSRS mới nhất
+    fcIdx = 0;
+  }
   fcFlipped = false;
   fcUpdate();
 }
@@ -2131,7 +2224,7 @@ function fcAnswer(ok) {
 // ════════════════════════════════════════════════════
 // QUIZ
 // ════════════════════════════════════════════════════
-let qzWords=[], qzIdx=0, qzType='漢→Việt', qzDone=false, qzScore=0;
+let qzWords=[], qzIdx=0, qzType='漢→Việt', qzDone=false, qzScore=0, qzStartedAt=0;
 let qzQuestionCount = 30; // số câu riêng cho Trắc nghiệm, mặc định 30 (không dùng chung questionCount với các tab khác)
 let qzWordExamples = []; // ví dụ theo từng từ (kho đảm bảo mỗi từ có sẵn vài câu), dùng để minh hoạ từ đang hỏi
 
@@ -2179,10 +2272,23 @@ function qzFindExample(hz) {
   return matches[Math.floor(Math.random() * matches.length)];
 }
 
-function bindQuiz() {
-  const base = getFilteredWords();
-  qzWords = shuffle(sortByPriority(base)).slice(0, qzQuestionCount);
+function bindQuiz() { _bindQuizAsync(); }
+// V70 (Task 2 audit — hợp nhất FSRS): user ĐÃ ĐĂNG NHẬP lấy câu hỏi từ ĐÚNG hàng đợi FSRS thật
+// (due + new hôm nay) — dùng CHUNG ngân sách/nguồn với "Hôm nay học", không còn "review queue
+// riêng" theo lesson-filter + sortByPriority tự chế như trước. KHÁCH vẫn dùng pool theo bài đang
+// chọn để thử app, không lưu tiến độ.
+async function _bindQuizAsync() {
   qzIdx = 0; qzScore = 0;
+  const area = document.getElementById('qz-area');
+  if (isLoggedIn()) {
+    if (area) area.innerHTML = `<div class="panel center" style="padding:24px">⏳ Đang tải hàng đợi FSRS...</div>`;
+    const { words, error } = await loadFsrsPracticePool(qzQuestionCount);
+    if (currentTab !== 'quiz') return; // user đã rời tab trong lúc chờ tải
+    if (error) { if (area) area.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
+    qzWords = words;
+  } else {
+    qzWords = shuffle(getFilteredWords()).slice(0, qzQuestionCount);
+  }
   qzRenderQ();
   qzLoadSentencePool().then(() => qzRenderQ()); // nạp xong thì vẽ lại để hiện câu ví dụ nếu có
 }
@@ -2190,16 +2296,24 @@ function bindQuiz() {
 function qzRenderQ() {
   const area = document.getElementById('qz-area');
   if (!area) return;
+  if (!qzWords.length) {
+    const msg = isLoggedIn()
+      ? '🎉 Không còn thẻ nào đến hạn hoặc từ mới trong ngân sách hôm nay!<br><span style="font-size:.85rem;color:var(--muted)">Vào "🎯 Hôm nay học" để xem/chỉnh giới hạn.</span>'
+      : 'Không có từ nào trong phạm vi bài đang chọn!';
+    area.innerHTML = `<div class="panel center" style="padding:24px">${msg}</div>`;
+    return;
+  }
   if (qzIdx >= qzWords.length) {
     area.innerHTML = `<div class="panel exam-result">
       <div class="exam-score">${qzScore}/${qzWords.length}</div>
       <div class="exam-rank">${qzRank(qzScore/qzWords.length)}</div>
       <button class="btn btn-primary" onclick="bindQuiz()">Làm lại</button>
     </div>`;
+    if (isLoggedIn()) refreshServerMeta(); // hết phiên — làm mới streak/known thật
     return;
   }
   const w = qzWords[qzIdx];
-  const opts = qzMakeOpts(w);
+  const opts = rvMakeOpts(w); // V70: dùng chung bộ sinh nhiễu với "Hôm nay học" (pool = toàn bộ WORDS)
   let qHtml, optHtml;
   if (qzType === '漢→Việt') {
     qHtml = `<div class="fc-hz">${w.hz}</div>${showPinyin?`<div class="fc-py">${w.py}</div>`:''}${showHanViet && w.hanviet?`<div class="fc-hv">Hán Việt: ${w.hanviet}</div>`:''}`;
@@ -2229,19 +2343,27 @@ function qzRenderQ() {
   document.querySelectorAll('#qz-opts .quiz-opt').forEach(b=>{
     b._correct = (b.dataset.v === (qzType==='漢→Việt' ? w.vi : w.hz));
   });
+  qzStartedAt = performance.now(); // Phần 4: đo từ thời điểm câu hỏi THỰC SỰ hiển thị
 }
 
+// V70 (Task 2/3 audit): mỗi lượt trả lời giờ đi qua ĐÚNG reviewService.reviewCard() (user đã đăng
+// nhập) — không còn "recordAnswer" cục bộ song song. Server tự xác định đúng/sai + suy FSRS rating.
 function qzPick(btn, hz) {
   const w = qzWords[qzIdx];
-  const isCorrect = btn._correct;
+  const isCorrectLocally = btn._correct;
+  const responseTimeMs = performance.now() - qzStartedAt;
   document.querySelectorAll('#qz-opts .quiz-opt').forEach(b=>{
     if (b._correct) b.classList.add('correct');
-    else if (b === btn && !isCorrect) b.classList.add('wrong');
+    else if (b === btn && !isCorrectLocally) b.classList.add('wrong');
     b.disabled=true;
   });
-  if (isCorrect) { playDing(); qzScore++; } else playBuzz();
+  if (isCorrectLocally) { playDing(); qzScore++; } else playBuzz();
   speak(w.hz);
-  recordAnswer(w.hz, isCorrect);
+  if (isLoggedIn()) {
+    submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor(qzType), selectedAnswer: btn.dataset.v, responseTimeMs });
+  } else {
+    guestMarkActivity();
+  }
   setTimeout(()=>{ qzIdx++; qzRenderQ(); }, 1400);
 }
 
@@ -2330,7 +2452,6 @@ function makeQuizOpts(w, pool) {
   }
   return shuffle([w, ...distractors]);
 }
-function qzMakeOpts(w) { return makeQuizOpts(w, getFilteredWords()); }
 function rvMakeOpts(w) { return makeQuizOpts(w, WORDS.filter(x => isLoggedIn() || x.l <= GUEST_MAX_LESSON)); }
 
 function qzRank(r) {
@@ -2340,7 +2461,7 @@ function qzRank(r) {
 // ════════════════════════════════════════════════════
 // TYPE
 // ════════════════════════════════════════════════════
-let tyWords=[], tyIdx=0, tyScore=0;
+let tyWords=[], tyIdx=0, tyScore=0, tyStartedAt=0;
 
 function renderType() {
   return `
@@ -2356,14 +2477,36 @@ function tySetCount(v) {
   cacheProgressLocally(); scheduleSync();
   bindType();
 }
-function bindType() {
-  tyWords = shuffle(sortByPriority(getFilteredWords())).slice(0,questionCount);
-  tyIdx=0; tyScore=0; tyRenderQ();
+function bindType() { _bindTypeAsync(); }
+// V70 (Task 2 audit — hợp nhất FSRS): user ĐÃ ĐĂNG NHẬP gõ đúng hàng đợi FSRS thật (due + new
+// hôm nay), dùng CHUNG ngân sách/nguồn với "Hôm nay học"/Trắc nghiệm/Nghe-chọn — không còn pool
+// riêng theo lesson-filter + sortByPriority tự chế như trước.
+async function _bindTypeAsync() {
+  tyIdx = 0; tyScore = 0;
+  const area = document.getElementById('ty-area');
+  if (isLoggedIn()) {
+    if (area) area.innerHTML = `<div class="panel center" style="padding:24px">⏳ Đang tải hàng đợi FSRS...</div>`;
+    const { words, error } = await loadFsrsPracticePool(questionCount);
+    if (currentTab !== 'type') return; // user đã rời tab trong lúc chờ tải
+    if (error) { if (area) area.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
+    tyWords = words;
+  } else {
+    tyWords = shuffle(getFilteredWords()).slice(0, questionCount);
+  }
+  tyRenderQ();
 }
 function tyRenderQ() {
   const area = document.getElementById('ty-area'); if (!area) return;
+  if (!tyWords.length) {
+    const msg = isLoggedIn()
+      ? '🎉 Không còn thẻ nào đến hạn hoặc từ mới trong ngân sách hôm nay!<br><span style="font-size:.85rem;color:var(--muted)">Vào "🎯 Hôm nay học" để xem/chỉnh giới hạn.</span>'
+      : 'Không có từ nào trong phạm vi bài đang chọn!';
+    area.innerHTML = `<div class="panel center" style="padding:24px">${msg}</div>`; return;
+  }
   if (tyIdx >= tyWords.length) {
-    area.innerHTML=`<div class="panel exam-result"><div class="exam-score">${tyScore}/${tyWords.length}</div><div class="exam-rank">${qzRank(tyScore/tyWords.length)}</div><button class="btn btn-primary" onclick="bindType()">Làm lại</button></div>`; return;
+    area.innerHTML=`<div class="panel exam-result"><div class="exam-score">${tyScore}/${tyWords.length}</div><div class="exam-rank">${qzRank(tyScore/tyWords.length)}</div><button class="btn btn-primary" onclick="bindType()">Làm lại</button></div>`;
+    if (isLoggedIn()) refreshServerMeta(); // hết phiên — làm mới streak/known thật
+    return;
   }
   const w = tyWords[tyIdx];
   area.innerHTML=`<div class="panel">
@@ -2382,31 +2525,44 @@ function tyRenderQ() {
     </div>
   </div>`;
   setTimeout(()=>{ const i=document.getElementById('ty-input'); if(i)i.focus(); },100);
+  tyStartedAt = performance.now(); // Phần 4: đo từ thời điểm câu hỏi hiển thị
 }
+// V70 (Task 2/3 audit): trả lời/bỏ qua giờ đi qua ĐÚNG reviewService.reviewCard() (user đã đăng
+// nhập) — không còn "recordAnswer" cục bộ song song. Server tự so khớp val với w.hz.
 function tyCheck() {
   const inp = document.getElementById('ty-input'); if(!inp) return;
   const val = inp.value.trim();
   const w = tyWords[tyIdx];
   const ok = val === w.hz;
+  const responseTimeMs = performance.now() - tyStartedAt;
   const fb = document.getElementById('ty-fb');
   fb.className='type-feedback '+(ok?'ok':'bad');
   fb.textContent = ok ? `✅ Đúng! ${w.hz}` : `❌ Sai. Đáp án: ${w.hz} (${w.py})`;
   if (ok) { playDing(); tyScore++; } else playBuzz();
   speak(w.hz);
-  recordAnswer(w.hz, ok);
+  if (isLoggedIn()) {
+    submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('type'), selectedAnswer: val || '⨯ (bỏ trống) ⨯', responseTimeMs });
+  } else {
+    guestMarkActivity();
+  }
   inp.disabled=true;
   setTimeout(()=>{ tyIdx++; tyRenderQ(); }, 1600);
 }
 function tySkip() {
   const w = tyWords[tyIdx];
-  recordAnswer(w.hz, false);
+  const responseTimeMs = performance.now() - tyStartedAt;
+  if (isLoggedIn()) {
+    submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('type'), selectedAnswer: '⨯ (bỏ qua) ⨯', responseTimeMs });
+  } else {
+    guestMarkActivity();
+  }
   tyIdx++; tyRenderQ();
 }
 
 // ════════════════════════════════════════════════════
 // LISTEN (sentence-based)
 // ════════════════════════════════════════════════════
-let lsItems=[], lsIdx=0, lsScore=0;
+let lsItems=[], lsIdx=0, lsScore=0, lsStartedAt=0;
 
 function renderListen() {
   return `
@@ -2423,25 +2579,41 @@ function lsSetCount(v) {
   bindListen();
 }
 
-function bindListen() {
-  // Chỉ dùng TỪ VỰNG của (các) bài đang chọn — không trộn câu ví dụ nữa
-  const baseWords = getFilteredWords();
-  const items = baseWords.map(w => ({ type: 'word', data: w }));
-  lsItems = shuffle(items).slice(0, questionCount);
-  lsIdx=0; lsScore=0; lsRenderQ();
+function bindListen() { _bindListenAsync(); }
+// V70 (Task 2 audit — hợp nhất FSRS): user ĐÃ ĐĂNG NHẬP nghe-chọn TỪ ĐÚNG hàng đợi FSRS thật
+// (due + new hôm nay), dùng CHUNG ngân sách/nguồn với "Hôm nay học"/Trắc nghiệm/Gõ chữ — không
+// còn pool riêng theo lesson-filter như trước. KHÁCH vẫn dùng pool theo bài đang chọn để thử app.
+// (Chế độ "nghe câu ví dụ" cũ — lsRenderSent/lsPick — đã bị xoá vì là code chết: bindListen chỉ
+// từng tạo item type:'word', nhánh 'sent' không bao giờ được gọi tới — dọn theo Task 12.)
+async function _bindListenAsync() {
+  lsIdx = 0; lsScore = 0;
+  const area = document.getElementById('ls-area');
+  if (isLoggedIn()) {
+    if (area) area.innerHTML = `<div class="panel center" style="padding:24px">⏳ Đang tải hàng đợi FSRS...</div>`;
+    const { words, error } = await loadFsrsPracticePool(questionCount);
+    if (currentTab !== 'listen') return; // user đã rời tab trong lúc chờ tải
+    if (error) { if (area) area.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
+    lsItems = words.map(w => ({ type: 'word', data: w }));
+  } else {
+    lsItems = shuffle(getFilteredWords()).slice(0, questionCount).map(w => ({ type: 'word', data: w }));
+  }
+  lsRenderQ();
 }
 
 function lsRenderQ() {
   const area = document.getElementById('ls-area'); if(!area) return;
+  if (!lsItems.length) {
+    const msg = isLoggedIn()
+      ? '🎉 Không còn thẻ nào đến hạn hoặc từ mới trong ngân sách hôm nay!<br><span style="font-size:.85rem;color:var(--muted)">Vào "🎯 Hôm nay học" để xem/chỉnh giới hạn.</span>'
+      : 'Không có từ nào trong phạm vi bài đang chọn!';
+    area.innerHTML = `<div class="panel center" style="padding:24px">${msg}</div>`; return;
+  }
   if (lsIdx >= lsItems.length) {
-    area.innerHTML=`<div class="panel exam-result"><div class="exam-score">${lsScore}/${lsItems.length}</div><div class="exam-rank">${qzRank(lsScore/lsItems.length)}</div><button class="btn btn-primary" onclick="bindListen()">Làm lại</button></div>`; return;
+    area.innerHTML=`<div class="panel exam-result"><div class="exam-score">${lsScore}/${lsItems.length}</div><div class="exam-rank">${qzRank(lsScore/lsItems.length)}</div><button class="btn btn-primary" onclick="bindListen()">Làm lại</button></div>`;
+    if (isLoggedIn()) refreshServerMeta(); // hết phiên — làm mới streak/known thật
+    return;
   }
-  const item = lsItems[lsIdx];
-  if (item.type === 'sent') {
-    lsRenderSent(item.data);
-  } else {
-    lsRenderWord(item.data);
-  }
+  lsRenderWord(lsItems[lsIdx].data);
   // auto-play
   setTimeout(()=>{
     const btn = document.getElementById('ls-play');
@@ -2449,30 +2621,10 @@ function lsRenderQ() {
   }, 400);
 }
 
-function lsRenderSent(s) {
-  const area = document.getElementById('ls-area');
-  // Build 4 options: the correct sentence + 3 wrong sentences
-  const pool = SENTENCES.filter(x=>x.hz!==s.hz);
-  const opts = shuffle(pool).slice(0,3);
-  opts.push(s);
-  const shuffled = shuffle(opts);
-  const optHtml = shuffled.map(o=>`
-    <button class="listen-opt" onclick="lsPick(this,'${o.hz.replace(/'/g,"\\'")}','${s.hz.replace(/'/g,"\\'")}')">
-      ${o.hz}${showPinyin?`<div style="font-size:.7rem;color:var(--muted);margin-top:4px">${o.vi.slice(0,30)}...</div>`:''}
-    </button>`).join('');
-  area.innerHTML=`<div class="panel">
-    <div style="font-size:.75rem;color:var(--muted);margin-bottom:10px">${lsIdx+1}/${lsItems.length} · Nghe và chọn câu đúng</div>
-    <div class="listen-sentence">(Bài ${s.l})</div>
-    <button id="ls-play" class="listen-play" onclick="speak('${s.hz.replace(/'/g,"\\'")}')" title="Phát lại">🔊</button>
-    <div style="font-size:.85rem;color:var(--muted);text-align:center;margin-bottom:14px">Nhấn để phát, rồi chọn câu đúng:</div>
-    <div style="display:flex;flex-direction:column;gap:10px">${optHtml}</div>
-  </div>`;
-}
-
 function lsRenderWord(w) {
   const area = document.getElementById('ls-area');
-  const pool = getFilteredWords().filter(x=>x.hz!==w.hz);
-  const distractors = qzMakeOpts(w).filter(x=>x.hz!==w.hz).slice(0,3);
+  const pool = isLoggedIn() ? WORDS.filter(x=>x.hz!==w.hz) : getFilteredWords().filter(x=>x.hz!==w.hz);
+  const distractors = shuffle(pool).slice(0,3);
   const opts = shuffle([w,...distractors]);
   const optHtml = opts.map(o=>`
     <button class="listen-opt" onclick="lsPickWord(this,'${o.hz}','${w.hz}')">${o.hz}${showPinyin?`<div style="font-size:.7rem;color:var(--muted)">${o.py}</div>`:''}${showHanViet && o.hanviet?`<div style="font-size:.68rem;color:var(--active-dark);font-weight:600">${o.hanviet}</div>`:''}</button>`).join('');
@@ -2481,25 +2633,15 @@ function lsRenderWord(w) {
     <button id="ls-play" class="listen-play" onclick="speak('${w.hz}')" title="Phát lại">🔊</button>
     <div class="listen-opts">${optHtml}</div>
   </div>`;
+  lsStartedAt = performance.now(); // Phần 4: đo từ thời điểm câu hỏi hiển thị (trước cả auto-play)
 }
 
-function lsPick(btn, chosen, correct) {
-  const isCorrect = chosen === correct;
-  document.querySelectorAll('#ls-area .listen-opt').forEach(b=>{
-    const bv = b.getAttribute('onclick').match(/'([^']+)','[^']+'/)[1];
-    if(bv===correct) b.classList.add('correct');
-    else if(b===btn && !isCorrect) b.classList.add('wrong');
-    b.disabled=true;
-  });
-  if(isCorrect){playDing();lsScore++;}else playBuzz();
-  speak(correct);
-  // find the hz for recording
-  const sent = SENTENCES.find(s=>s.hz===correct);
-  setTimeout(()=>{ lsIdx++; lsRenderQ(); }, 1600);
-}
-
+// V70 (Task 2/3 audit): trả lời giờ đi qua ĐÚNG reviewService.reviewCard() (user đã đăng nhập) —
+// không còn "recordAnswer" cục bộ song song. quizType 'vi2hz': đáp án đúng cần chọn là w.hz.
 function lsPickWord(btn, chosen, correct) {
+  const w = lsItems[lsIdx].data;
   const isCorrect = chosen === correct;
+  const responseTimeMs = performance.now() - lsStartedAt;
   document.querySelectorAll('#ls-area .listen-opt').forEach(b=>{
     const bv = b.getAttribute('onclick').match(/'([^']+)','[^']+'/)[1];
     if(bv===correct) b.classList.add('correct');
@@ -2507,7 +2649,11 @@ function lsPickWord(btn, chosen, correct) {
     b.disabled=true;
   });
   if(isCorrect){playDing();lsScore++;}else playBuzz();
-  recordAnswer(correct, isCorrect);
+  if (isLoggedIn()) {
+    submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('listen'), selectedAnswer: chosen, responseTimeMs });
+  } else {
+    guestMarkActivity();
+  }
   setTimeout(()=>{ lsIdx++; lsRenderQ(); }, 1400);
 }
 
@@ -2572,62 +2718,92 @@ function trNext(ok) { trIdx++; trRenderQ(); }
 // ════════════════════════════════════════════════════
 // STATS
 // ════════════════════════════════════════════════════
+// V70 (Task 2 audit — hợp nhất FSRS): số liệu ở tab này giờ lấy THẬT từ server (fsrs_cards +
+// review_history của CHÍNH user, qua /api/study/known-by-lesson + /api/study/weak-words) — không
+// còn đọc "progress.srs" cục bộ đã bị xoá (dữ liệu đó chỉ tồn tại trên 1 thiết bị, không phải
+// nguồn sự thật). Ghi chú: đây là bản vá tối thiểu để tab không vỡ sau khi bỏ SRS cũ; một bản
+// Dashboard/Phân tích đầy đủ hơn (retention, mature/young, biểu đồ theo ngày) sẽ thay thế ở Pha C
+// (Task 6/7), tận dụng /api/fsrs/stats + /api/study/dashboard + /api/study/heatmap đã có sẵn ở
+// backend nhưng frontend chưa từng gọi tới.
 function renderStats() {
-  const d=getSRS();
-  const all = lessonsAllMode
-    ? WORDS.filter(w => selectedBookIds.has(bookOfLesson(w.l)))
-    : WORDS.filter(w => selectedLessons.has(w.l));
-  const total=all.reduce((s,w)=>s+(d[w.hz]?.total||0),0);
-  const correct=all.reduce((s,w)=>s+(d[w.hz]?.correct||0),0);
-  const known=all.filter(w=>d[w.hz]&&d[w.hz].step>=3).length;
-  const rate=total?Math.round(correct/total*100):0;
   const bookLabel = [...selectedBookIds].map(id=>BOOKS.find(b=>b.id===id).name).join(', ');
   const levelSelect = levelSelectHtml();
   const lessonSelect = lessonSelectHtml();
-
-  // lesson bars
-  let statLessons = lessonsAllMode ? lessonsOfSelection() : [...selectedLessons].sort((a,b)=>a-b);
-  if (!isLoggedIn()) statLessons = statLessons.filter(l => l <= GUEST_MAX_LESSON);
-  const barHtml=statLessons.map(l=>{
-    const lw=all.filter(w=>w.l===l);
-    const lt=lw.reduce((s,w)=>s+(d[w.hz]?.total||0),0);
-    const lc=lw.reduce((s,w)=>s+(d[w.hz]?.correct||0),0);
-    const r=lt?Math.round(lc/lt*100):0;
-    return `<div class="bar-col">
-      <div class="bar-pct" style="color:${lessonColor(l)}">${r}%</div>
-      <div class="bar-fill" style="height:${r*.6}px;background:${lessonColor(l)}"></div>
-      <div class="bar-lbl">B${l}</div>
+  if (!isLoggedIn()) {
+    return `<div class="panel">
+      <div id="book-filter" style="margin-bottom:8px;">${levelSelect}${lessonSelect}</div>
+      <div class="study-empty">🔒 Cần đăng nhập để xem thống kê thật (dữ liệu FSRS chỉ có khi có tài khoản).</div>
     </div>`;
-  }).join('');
-
-  // weak words
-  const weak=all.map(w=>({...w,r:d[w.hz]?.total?(d[w.hz].correct/d[w.hz].total):null}))
-    .filter(w=>w.r!==null).sort((a,b)=>a.r-b.r).slice(0,8);
-  const weakHtml=weak.map(w=>`<div class="weak-item">
-    <span class="weak-hz" style="color:${lessonColor(w.l)}">${w.hz}</span>
-    <span class="weak-info">${w.vi}${showPinyin?` · ${w.py}`:''}${showHanViet && w.hanviet?` · ${w.hanviet}`:''} · ${Math.round(w.r*100)}% đúng</span>
-    <button class="btn-sound-sm" onclick="speak('${w.hz}')">🔊</button>
-  </div>`).join('');
-
+  }
   return `<div class="panel">
     <div id="book-filter" style="margin-bottom:8px;">${levelSelect}${lessonSelect}</div>
     <div class="panel-title">Tổng quan · ${bookLabel}</div>
-    <div class="stat-grid">
-      <div class="stat-box"><div class="stat-num">🔥${getStreak()}</div><div class="stat-lbl">Ngày streak</div></div>
-      <div class="stat-box"><div class="stat-num" style="color:var(--l8a)">⭐${known}</div><div class="stat-lbl">Từ đã thuộc</div></div>
-      <div class="stat-box"><div class="stat-num">${rate}%</div><div class="stat-lbl">Tỉ lệ đúng</div></div>
-      <div class="stat-box"><div class="stat-num">${total}</div><div class="stat-lbl">Lần trả lời</div></div>
-      <div class="stat-box"><div class="stat-num">${correct}</div><div class="stat-lbl">Câu đúng</div></div>
-      <div class="stat-box"><div class="stat-num">${all.length}</div><div class="stat-lbl">Tổng từ (${bookLabel})</div></div>
-    </div>
+    <div id="stats-area" class="stat-grid"><div class="stat-box" style="grid-column:1/-1">⏳ Đang tải dữ liệu FSRS...</div></div>
     <div class="sep"></div>
-    <div class="panel-title">Tỉ lệ đúng theo bài</div>
-    <div class="bar-chart">${barHtml}</div>
+    <div class="panel-title">Từ đã thuộc theo bài</div>
+    <div class="bar-chart" id="stats-bars"></div>
   </div>
   <div class="panel">
-    <div class="panel-title">Top 8 từ yếu nhất · ${bookLabel}</div>
-    ${weakHtml||'<div style="color:var(--muted);font-size:.9rem">Chưa có dữ liệu. Hãy bắt đầu học!</div>'}
+    <div class="panel-title">Từ hay quên nhất · ${bookLabel}</div>
+    <div id="stats-weak">⏳ Đang tải...</div>
   </div>`;
+}
+
+async function bindStats() {
+  if (!isLoggedIn()) return; // đã hiện thông báo "cần đăng nhập" tĩnh ở renderStats()
+  let statLessons = lessonsAllMode ? lessonsOfSelection() : [...selectedLessons].sort((a,b)=>a-b);
+  const all = lessonsAllMode
+    ? WORDS.filter(w => selectedBookIds.has(bookOfLesson(w.l)))
+    : WORDS.filter(w => selectedLessons.has(w.l));
+
+  try {
+    const [knownRes, weakRes] = await Promise.all([
+      statLessons.length
+        ? fetch('/api/study/known-by-lesson?lessons=' + statLessons.join(','), { headers: authHeaders() }).then(r=>r.json())
+        : Promise.resolve({ ok:true, known:{} }),
+      fetch('/api/study/weak-words', { headers: authHeaders() }).then(r=>r.json()),
+    ]);
+    if (currentTab !== 'stats') return; // user đã rời tab trong lúc chờ tải
+
+    const knownByLesson = (knownRes.ok && knownRes.known) || {};
+    const totalKnown = Object.values(knownByLesson).reduce((s,n)=>s+n, 0);
+
+    const statsArea = document.getElementById('stats-area');
+    if (statsArea) statsArea.innerHTML = `
+      <div class="stat-box"><div class="stat-num">🔥${getStreak()}</div><div class="stat-lbl">Ngày streak</div></div>
+      <div class="stat-box"><div class="stat-num" style="color:var(--l8a)">⭐${totalKnown}</div><div class="stat-lbl">Từ đã thuộc</div></div>
+      <div class="stat-box"><div class="stat-num">${all.length}</div><div class="stat-lbl">Tổng từ trong phạm vi</div></div>
+    `;
+
+    const barsEl = document.getElementById('stats-bars');
+    if (barsEl) {
+      const lessonsForBars = isLoggedIn() ? statLessons : statLessons.filter(l => l <= GUEST_MAX_LESSON);
+      barsEl.innerHTML = lessonsForBars.map(l=>{
+        const total = WORDS.filter(w=>w.l===l).length || 1;
+        const known = knownByLesson[l] || 0;
+        const pct = Math.round(known/total*100);
+        return `<div class="bar-col">
+          <div class="bar-pct" style="color:${lessonColor(l)}">${known}/${total}</div>
+          <div class="bar-fill" style="height:${pct*.6}px;background:${lessonColor(l)}"></div>
+          <div class="bar-lbl">B${l}</div>
+        </div>`;
+      }).join('');
+    }
+
+    const weakEl = document.getElementById('stats-weak');
+    if (weakEl) {
+      const scopeHz = new Set(all.map(w=>w.hz));
+      const weak = ((weakRes.ok && weakRes.words) || []).filter(w => scopeHz.has(w.hz)).slice(0, 8);
+      weakEl.innerHTML = weak.length ? weak.map(w=>`<div class="weak-item">
+        <span class="weak-hz" style="color:${lessonColor(w.l)}">${w.hz}</span>
+        <span class="weak-info">${w.vi}${showPinyin?` · ${w.py}`:''}${showHanViet && w.hanviet?` · ${w.hanviet}`:''} · ${w.lapses||0} lần quên</span>
+        <button class="btn-sound-sm" onclick="speak('${w.hz}')">🔊</button>
+      </div>`).join('') : '<div style="color:var(--muted);font-size:.9rem">Chưa có dữ liệu. Hãy bắt đầu học ở "🎯 Hôm nay học"!</div>';
+    }
+  } catch (e) {
+    const statsArea = document.getElementById('stats-area');
+    if (statsArea) statsArea.innerHTML = `<div class="stat-box" style="grid-column:1/-1">⚠️ Không tải được dữ liệu: ${e.message}</div>`;
+  }
 }
 
 // ════════════════════════════════════════════════════
@@ -2747,13 +2923,20 @@ async function bindHSK() {
       if (lvl) byLevel[lvl].push(w);
     }
 
-    const srs = getSRS();
+    // V70 (Task 2 audit — hợp nhất FSRS): "đã thuộc" giờ lấy THẬT từ fsrs_cards (state=Review) qua
+    // /api/study/known-by-lesson — thay cho "progress.srs[hz].step>=3" cục bộ đã bị xoá. Khách
+    // (chưa đăng nhập) không có tài khoản FSRS nên luôn hiện 0/tổng — đúng thực tế, không giả vờ.
+    const knownByLesson = isLoggedIn()
+      ? await fetch('/api/study/known-by-lesson?lessons=' + Object.values(HSK_LEVEL_LESSON).join(','), { headers: authHeaders() })
+          .then(r => r.json()).then(d => (d.ok && d.known) || {}).catch(() => ({}))
+      : {};
+    if (currentTab !== 'hsk') return; // user đã rời tab trong lúc chờ tải
     const cov = {};
     let totalWords = 0, totalKnown = 0;
     [1, 2, 3, 4].forEach(lvl => {
       const list = byLevel[lvl];
-      let known = 0;
-      list.forEach(w => { const s = srs[w.hz]; if (s && s.step >= 3) known++; });
+      const lessonNum = HSK_LEVEL_LESSON[lvl];
+      const known = Math.min(knownByLesson[lessonNum] || 0, list.length);
       cov[lvl] = { total: list.length, known };
       totalWords += list.length; totalKnown += known;
     });
