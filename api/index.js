@@ -643,8 +643,18 @@ app.get('/api/study/session', async (req, res) => {
       ...dueCards.map(c => ({ type: 'review', word: formatFsrsCard(c) })),
       ...newCards.map(w => ({ type: 'new', word: formatVocabWord(w) })),
     ];
+    // V71 (audit lặp từ): khử trùng lặp theo hz — phòng trường hợp CÙNG 1 chữ Hán được coi là 2
+    // "thẻ" khác nhau ở 2 bài (l) khác nhau (giáo trình HSK có thể dạy lại cùng 1 chữ ở bài sau).
+    // Với người học, thấy đúng 1 chữ Hán 2 lần trong 1 phiên VẪN LÀ lặp, bất kể l có khác nhau hay
+    // không — nên gộp về chỉ 1 thẻ/hz, ưu tiên giữ thẻ due (review) trước thẻ new nếu trùng.
+    const seenHz = new Set();
+    const dedupedSession = session.filter(it => {
+      if (seenHz.has(it.word.hz)) return false;
+      seenHz.add(it.word.hz);
+      return true;
+    });
     res.json({
-      ok: true, session,
+      ok: true, session: dedupedSession,
       reviewCount: dueCards.length, newCount: newCards.length,
       currentLesson, totalDue,
       blockedByBacklog,
@@ -726,7 +736,14 @@ app.get('/api/study/weak-words', async (req, res) => {
   if (!authed) return;
   try {
     const cards = await getWeakFsrsCards(authed.username, 200);
-    res.json({ ok: true, words: cards.map(formatFsrsCard) });
+    // V71 (audit lặp từ): khử trùng theo hz, cùng lý do với /api/study/session ở trên.
+    const seenHz = new Set();
+    const words = cards.map(formatFsrsCard).filter(w => {
+      if (seenHz.has(w.hz)) return false;
+      seenHz.add(w.hz);
+      return true;
+    });
+    res.json({ ok: true, words });
   } catch (e) { fail(res, e); }
 });
 
