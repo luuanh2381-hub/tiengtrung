@@ -1258,7 +1258,53 @@ async function submitFsrsReview({ word, quizType, selectedAnswer, responseTimeMs
 }
 
 // ════════════════════════════════════════════════════
-// TASK 4/5 (V70 Pha B) — REAL STUDY SESSION + LIVE TIMER
+// V71 (Audit lặp từ) — HÀNG ĐỢI CHỐNG LẶP dùng CHUNG cho MỌI tab học (Hôm nay học/Flashcard/Trắc
+// nghiệm/Gõ chữ/Nghe-chọn). Xem báo cáo audit đính kèm để biết nguyên nhân gốc; đây là cơ chế sửa.
+// Quy tắc: (1) thẻ vừa trả lời ĐÚNG bị loại khỏi phiên NGAY LẬP TỨC, không nạp lại trong phiên
+// này; (2) thẻ bị SAI (Again) được chèn lại nhưng cách tối thiểu REPEAT_GAP thẻ khác; (3) hàng đợi
+// nạp 1 LẦN từ đúng /api/study/session (FSRS thật), không random toàn bộ database, không tự ý gọi
+// lại server giữa chừng 1 phiên trừ khi hàng đợi đã cạn hẳn.
+// ════════════════════════════════════════════════════
+const REPEAT_GAP = 10; // N: số thẻ tối thiểu trước khi 1 thẻ bị Again được lặp lại
+
+// Khử trùng lặp theo hz — phòng trường hợp cùng 1 chữ Hán xuất hiện ở nhiều bài (l khác nhau)
+// khiến dueCards/newCards phía server chứa 2 "thẻ" khác nhau nhưng CÙNG mặt chữ với người học.
+function sqDedupeByHz(words) {
+  const seen = new Set();
+  return words.filter(w => { if (seen.has(w.hz)) return false; seen.add(w.hz); return true; });
+}
+
+function sqCreate() { return { items: [], doneHz: new Set(), totalPlanned: 0, answeredCount: 0 }; }
+
+// Nạp hàng đợi 1 LẦN cho 1 lượt "vào tab" — dùng chung bởi mọi tab luyện tập (đăng nhập: FSRS
+// thật qua loadFsrsPracticePool; khách: pool cục bộ theo bài đang chọn).
+async function sqLoad(sq, limit) {
+  sq.doneHz = new Set(); sq.answeredCount = 0;
+  if (isLoggedIn()) {
+    const { words, error } = await loadFsrsPracticePool(limit);
+    if (error) return { error };
+    sq.items = sqDedupeByHz(words);
+  } else {
+    sq.items = sqDedupeByHz(shuffle(getFilteredWords())).slice(0, limit);
+  }
+  sq.totalPlanned = sq.items.length;
+  return { ok: true };
+}
+
+// Gọi SAU KHI có kết quả (server hoặc tự chấm ở khách) cho thẻ đang ở ĐẦU hàng đợi.
+function sqAdvance(sq, isCorrect) {
+  const w = sq.items.shift();
+  if (!w) return;
+  sq.answeredCount++;
+  if (isCorrect) {
+    sq.doneHz.add(w.hz); // loại vĩnh viễn khỏi phiên này — không bao giờ lặp lại nữa
+  } else {
+    const pos = Math.min(REPEAT_GAP, sq.items.length); // chèn lại cách tối thiểu N thẻ khác
+    sq.items.splice(pos, 0, w);
+  }
+}
+
+
 // Bấm vào bất kỳ tab học nào (Hôm nay học/Flashcard/Trắc nghiệm/Gõ chữ/Nghe-chọn) → mở (hoặc nối
 // lại) 1 dòng study_sessions THẬT trên server (POST /api/study/session/start), giữ sống bằng
 // heartbeat định kỳ, và tự tăng cards_reviewed/correct/wrong sau MỖI lượt reviewCard() thật —
@@ -1879,7 +1925,6 @@ function updateStudySetting(key, value) {
 // Người dùng KHÔNG bao giờ thấy rating Again/Hard/Good/Easy trong chế độ mặc định (Phần 2/18).
 // ════════════════════════════════════════════════════
 let rvSession = [];
-let rvIdx = 0;
 let rvPhase = 'question'; // 'question' (đang chờ chọn đáp án) | 'answered' (đã có kết quả)
 let rvWeakMode = false;
 let rvSummary = { reviewCount: 0, newCount: 0 };
@@ -1889,11 +1934,22 @@ let rvOptions = [];      // 4 lựa chọn trắc nghiệm của câu hiện t�
 let rvStartedAt = 0;     // performance.now() tại thời điểm câu hỏi THỰC SỰ hiển thị cho user (Phần 4)
 let rvAnswerChanges = 0; // UI hiện tại chọn là chốt ngay (không cho đổi trước khi submit) nên luôn 0 (Phần 16/17)
 let rvLastAnswer = null; // { correct, card, autoRating } — kết quả lượt vừa submit, để hiện feedback (Phần 18)
+let rvDoneHz = new Set(); // V71: hz đã trả lời ĐÚNG trong phiên này — không bao giờ nạp/hiện lại
+let rvTotalPlanned = 0;   // V71: cỡ hàng đợi lúc nạp (để tính % tiến độ; rvSession có thể tạm dài hơn do Again được chèn lại)
+let rvAnsweredCount = 0;  // V71: số câu đã trả lời (kể cả Again) trong phiên này
 const RV_QUIZ_TYPE = 'hz2vi'; // Phần 1: mặc định hỏi "chữ Hán → nghĩa", khớp đúng ví dụ trong yêu cầu V67
+
+// V71: khử trùng lặp {type,word} theo word.hz — cùng lý do với sqDedupeByHz (1 chữ Hán có thể gắn
+// với 2 "thẻ" khác nhau ở 2 bài khác nhau phía server).
+function rvDedupeSession(list) {
+  const seen = new Set();
+  return list.filter(it => { if (seen.has(it.word.hz)) return false; seen.add(it.word.hz); return true; });
+}
 
 async function startStudySession(weakMode) {
   rvWeakMode = !!weakMode;
-  rvIdx = 0; rvExamplePool = []; rvLastAnswer = null;
+  rvExamplePool = []; rvLastAnswer = null;
+  rvDoneHz = new Set(); rvAnsweredCount = 0;
   goTab('review');
   const el = document.getElementById('content');
   if (el) el.innerHTML = `<div class="study-empty">Đang tải phiên học...</div>`;
@@ -1902,13 +1958,13 @@ async function startStudySession(weakMode) {
       const res = await fetch('/api/study/weak-words', { headers: authHeaders() });
       const data = await res.json();
       if (!data.ok) { alert(data.error || 'Không tải được từ hay quên'); goTab('today'); return; }
-      rvSession = data.words.map(w => ({ type: 'review', word: w }));
+      rvSession = rvDedupeSession(data.words.map(w => ({ type: 'review', word: w })));
       rvSummary = { reviewCount: rvSession.length, newCount: 0 };
     } else {
       const res = await fetch('/api/study/session', { headers: authHeaders() });
       const data = await res.json();
       if (!data.ok) { alert(data.error || 'Không tải được phiên học'); goTab('today'); return; }
-      rvSession = data.session || [];
+      rvSession = rvDedupeSession(data.session || []);
       rvSummary = { reviewCount: data.reviewCount || 0, newCount: data.newCount || 0 };
     }
   } catch (e) {
@@ -1916,6 +1972,7 @@ async function startStudySession(weakMode) {
     goTab('today');
     return;
   }
+  rvTotalPlanned = rvSession.length;
   // Nạp trước kho ví dụ cho các bài xuất hiện trong session (Phần 24) — không chặn hiển thị.
   const lessonsInSession = [...new Set(rvSession.map(it => it.word.l))];
   if (lessonsInSession.length && !isGuest && authToken) {
@@ -1933,11 +1990,11 @@ function rvFindExample(hz) {
   return matches[Math.floor(Math.random() * matches.length)];
 }
 
-// Sinh 4 lựa chọn trắc nghiệm cho từ đang đứng ở rvIdx, và bắt đầu đo responseTime NGAY tại đây
+// Sinh 4 lựa chọn trắc nghiệm cho thẻ Ở ĐẦU hàng đợi, và bắt đầu đo responseTime NGAY tại đây
 // (thời điểm câu hỏi thực sự sẵn sàng cho user — Phần 4, không tính thời gian từ lúc mở session).
 function rvPrepareCurrentCard() {
-  if (rvIdx >= rvSession.length) return;
-  const w = rvSession[rvIdx].word;
+  if (!rvSession.length) return;
+  const w = rvSession[0].word;
   rvOptions = rvMakeOpts(w);
   rvAnswerChanges = 0;
   rvPhase = 'question';
@@ -1958,7 +2015,7 @@ function rvSavedLine(r) {
 }
 
 function renderReview() {
-  if (!rvSession.length || rvIdx >= rvSession.length) {
+  if (!rvSession.length) {
     return `<div class="rv-done">
       <div class="rv-done-num">🎉</div>
       <div style="font-size:1.3rem;font-weight:800;margin:10px 0;">Xong phiên học!</div>
@@ -1966,9 +2023,9 @@ function renderReview() {
       <button class="btn btn-primary" onclick="goTab('today')">Về Hôm nay học</button>
     </div>`;
   }
-  const item = rvSession[rvIdx];
+  const item = rvSession[0];
   const w = item.word;
-  const pct = Math.round((rvIdx / rvSession.length) * 100);
+  const pct = Math.min(100, Math.round((rvAnsweredCount / (rvTotalPlanned||1)) * 100));
   const tagLabel = item.type === 'new' ? '🆕 Từ mới' : '🔁 Ôn tập';
   let body;
   if (rvPhase === 'question') {
@@ -2004,7 +2061,7 @@ function renderReview() {
   }
   return `
     <div class="rv-progress-wrap"><div class="rv-progress-fill" style="width:${pct}%;"></div></div>
-    <div class="rv-counter">${rvIdx + 1} / ${rvSession.length}</div>
+    <div class="rv-counter">Câu ${rvAnsweredCount + 1} · còn ${rvSession.length} trong hàng đợi</div>
     <div class="rv-card">${body}</div>
   `;
 }
@@ -2013,8 +2070,8 @@ function renderReview() {
 // làm cho tab Trắc nghiệm — để rvPick() biết ngay đáp án vừa chọn đúng hay sai mà không cần chờ
 // server trả lời (server vẫn là nguồn sự thật cuối cùng, việc này chỉ để phản hồi UI tức thời).
 function bindReview() {
-  if (rvPhase !== 'question' || rvIdx >= rvSession.length) return;
-  const w = rvSession[rvIdx].word;
+  if (rvPhase !== 'question' || !rvSession.length) return;
+  const w = rvSession[0].word;
   document.querySelectorAll('#rv-opts .quiz-opt').forEach(b => {
     b._correct = (b.dataset.v === w.vi);
   });
@@ -2027,7 +2084,7 @@ async function rvPick(btn, hz) {
   if (rvSubmitting || rvPhase !== 'question') return;
   rvSubmitting = true;
   const responseTimeMs = Math.round(performance.now() - rvStartedAt); // Phần 4
-  const item = rvSession[rvIdx];
+  const item = rvSession[0];
   const w = item.word;
   const isCorrectLocally = !!btn._correct;
   const selectedAnswer = btn.dataset.v;
@@ -2076,10 +2133,19 @@ async function rvPick(btn, hz) {
   setTimeout(rvAdvance, 1600);
 }
 
+// V71: thẻ Ở ĐẦU hàng đợi bị loại NGAY LẬP TỨC sau khi có kết quả server. Đúng → loại vĩnh viễn
+// khỏi phiên (rvDoneHz). Sai (Again) → chèn lại cách tối thiểu REPEAT_GAP thẻ khác, KHÔNG gọi lại
+// server giữa phiên — hàng đợi cạn thật (kể cả các thẻ Again đã được xử lý xong) mới coi là hết.
 function rvAdvance() {
   if (currentTab !== 'review') return; // user đã rời màn hình, tránh render nhầm chỗ
-  rvIdx++;
-  if (rvIdx >= rvSession.length) refreshServerMeta(); // hết phiên — làm mới streak/known thật
+  const it = rvSession.shift();
+  if (it) {
+    rvAnsweredCount++;
+    const isCorrect = !!(rvLastAnswer && rvLastAnswer.correct);
+    if (isCorrect) rvDoneHz.add(it.word.hz);
+    else rvSession.splice(Math.min(REPEAT_GAP, rvSession.length), 0, it);
+  }
+  if (!rvSession.length) refreshServerMeta(); // hết phiên — làm mới streak/known thật
   rvPrepareCurrentCard();
   render();
 }
@@ -2087,7 +2153,7 @@ function rvAdvance() {
 // ════════════════════════════════════════════════════
 // FLASHCARD
 // ════════════════════════════════════════════════════
-let fcWords = [], fcIdx = 0, fcFlipped = false, fcStartedAt = 0, fcResponseTimeMs = null;
+let fcQueue = sqCreate(), fcFlipped = false, fcStartedAt = 0, fcResponseTimeMs = null;
 
 function renderFlash() {
   return `
@@ -2115,26 +2181,20 @@ function fcChangeCount(v) {
   bindFlash();
 }
 
-// V70 (Task 2 audit — hợp nhất FSRS): user ĐÃ ĐĂNG NHẬP lấy thẻ từ ĐÚNG hàng đợi FSRS thật (due +
-// new hôm nay, cùng nguồn với "Hôm nay học"/Trắc nghiệm/Gõ chữ/Nghe-chọn) — không còn pool riêng
-// theo lesson-filter + "sortByPriority" tự chế như trước. KHÁCH (chưa có tài khoản, không thể có
-// thẻ FSRS thật) vẫn dùng pool theo bài đang chọn để thử app, KHÔNG lưu tiến độ gì cả.
+// V70/V71: user ĐÃ ĐĂNG NHẬP lấy thẻ từ ĐÚNG hàng đợi FSRS thật (due + new hôm nay, cùng nguồn với
+// "Hôm nay học"/Trắc nghiệm/Gõ chữ/Nghe-chọn), nạp 1 LẦN vào fcQueue rồi chống lặp hoàn toàn ở
+// client (xem sqAdvance). KHÁCH (không thể có thẻ FSRS thật) vẫn dùng pool theo bài đang chọn.
 async function bindFlash() {
-  fcFlipped = false; fcIdx = 0;
+  fcFlipped = false;
   const limit = questionCount === 9999 ? 9999 : questionCount;
-  if (isLoggedIn()) {
-    const front = document.getElementById('fc-front');
-    if (front) front.innerHTML = `<div class="fc-hint">⏳ Đang tải hàng đợi FSRS...</div>`;
-    const { words, error } = await loadFsrsPracticePool(limit);
-    if (currentTab !== 'flash') return; // user đã rời tab trong lúc chờ tải
-    if (error) {
-      const content = document.getElementById('content');
-      if (content) content.innerHTML = `<div class="panel center" style="padding:40px">⚠️ ${error}</div>`;
-      return;
-    }
-    fcWords = words;
-  } else {
-    fcWords = shuffle(getFilteredWords()).slice(0, limit === 9999 ? undefined : limit);
+  const front = document.getElementById('fc-front');
+  if (isLoggedIn() && front) front.innerHTML = `<div class="fc-hint">⏳ Đang tải hàng đợi FSRS...</div>`;
+  const { error } = await sqLoad(fcQueue, limit === 9999 ? 9999 : limit);
+  if (currentTab !== 'flash') return; // user đã rời tab trong lúc chờ tải
+  if (error) {
+    const content = document.getElementById('content');
+    if (content) content.innerHTML = `<div class="panel center" style="padding:40px">⚠️ ${error}</div>`;
+    return;
   }
   fcUpdate();
 }
@@ -2186,16 +2246,21 @@ function renderHanziParts(hz, expanded) {
 }
 
 function fcUpdate() {
-  if (!fcWords.length) {
+  if (fcQueue.totalPlanned === 0) {
     const msg = isLoggedIn()
       ? '🎉 Không còn thẻ nào đến hạn hoặc từ mới trong ngân sách hôm nay!<br><span style="font-size:.85rem;color:var(--muted)">Vào "🎯 Hôm nay học" để xem/chỉnh giới hạn.</span>'
       : 'Không có từ nào trong phạm vi bài đang chọn!';
     document.getElementById('content').innerHTML = `<div class="panel center" style="padding:40px">${msg}</div>`;
     return;
   }
-  const w = fcWords[fcIdx];
-  const limit = fcWords.length;
-  document.getElementById('fc-counter').textContent = `${fcIdx+1} / ${limit}`;
+  if (fcQueue.items.length === 0) {
+    const msg = `🎉 Xong! Đã học ${fcQueue.doneHz.size} thẻ trong phiên này.`;
+    document.getElementById('content').innerHTML = `<div class="panel center" style="padding:40px">${msg}<br><button class="btn btn-primary" style="margin-top:14px" onclick="bindFlash()">Học tiếp</button></div>`;
+    if (isLoggedIn()) refreshServerMeta();
+    return;
+  }
+  const w = fcQueue.items[0];
+  document.getElementById('fc-counter').textContent = `Thẻ ${fcQueue.answeredCount+1} · còn ${fcQueue.items.length} trong hàng đợi`;
   const inner = document.getElementById('fc-inner');
   inner.classList.remove('flipped'); fcFlipped = false;
   fcStartedAt = performance.now(); fcResponseTimeMs = null; // Phần 4: đo từ lúc thẻ MỚI hiện ra
@@ -2232,7 +2297,7 @@ function fcFlip() {
   if (!fcFlipped) {
     inner.classList.add('flipped'); fcFlipped = true;
     fcResponseTimeMs = performance.now() - fcStartedAt; // thời gian "cố nhớ" trước khi lật thẻ
-    speak(fcWords[fcIdx].hz);
+    speak(fcQueue.items[0].hz);
   }
 }
 
@@ -2250,7 +2315,7 @@ function blobToBase64(blob) {
   });
 }
 async function pronounceTest() {
-  const w = fcWords[fcIdx];
+  const w = fcQueue.items[0];
   const area = document.getElementById('fc-pron-result');
   if (!w || !area) return;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
@@ -2318,8 +2383,10 @@ async function pronounceTest() {
 // qua ĐÚNG reviewService.reviewCard() như mọi tab khác (user đã đăng nhập). "Đã nhớ" gửi đáp án
 // đúng, "Chưa nhớ" gửi 1 chuỗi chắc chắn sai — server tự xác định answerCorrect + suy FSRS rating
 // (Again nếu chưa nhớ; Good/Hard/Easy tuỳ baseline nếu đã nhớ, Phần 6/9/10 lib/fsrs-auto-rating.js).
+// V70/V71: ok=true/false đã đủ xác định answerCorrect ở server (selectedAnswer=w.vi khi true,
+// sentinel chắc chắn sai khi false) nên biết ngay kết quả, không cần chờ round-trip mới sqAdvance.
 function fcAnswer(ok) {
-  const w = fcWords[fcIdx];
+  const w = fcQueue.items[0];
   if (!w) return;
   if (isLoggedIn()) {
     const selectedAnswer = ok ? w.vi : '⨯ (tự chấm: chưa nhớ) ⨯';
@@ -2327,11 +2394,7 @@ function fcAnswer(ok) {
   } else {
     guestMarkActivity();
   }
-  fcIdx++;
-  if (fcIdx >= fcWords.length) {
-    if (isLoggedIn()) { refreshServerMeta(); bindFlash(); return; } // nạp lại hàng đợi FSRS mới nhất
-    fcIdx = 0;
-  }
+  sqAdvance(fcQueue, ok);
   fcFlipped = false;
   fcUpdate();
 }
@@ -2339,7 +2402,7 @@ function fcAnswer(ok) {
 // ════════════════════════════════════════════════════
 // QUIZ
 // ════════════════════════════════════════════════════
-let qzWords=[], qzIdx=0, qzType='漢→Việt', qzDone=false, qzScore=0, qzStartedAt=0;
+let qzQueue = sqCreate(), qzType='漢→Việt', qzScore=0, qzStartedAt=0;
 let qzQuestionCount = 30; // số câu riêng cho Trắc nghiệm, mặc định 30 (không dùng chung questionCount với các tab khác)
 let qzWordExamples = []; // ví dụ theo từng từ (kho đảm bảo mỗi từ có sẵn vài câu), dùng để minh hoạ từ đang hỏi
 
@@ -2355,13 +2418,13 @@ function renderQuiz() {
 }
 
 function qzSetCount(v) {
-  qzQuestionCount=parseInt(v); qzIdx=0; qzScore=0;
+  qzQuestionCount=parseInt(v);
   progressState.ui.qzQuestionCount = qzQuestionCount;
   cacheProgressLocally(); scheduleSync();
   bindQuiz();
 }
 function qzSetType(t) {
-  qzType=t; qzIdx=0; qzScore=0;
+  qzType=t;
   progressState.ui.qzType = qzType;
   cacheProgressLocally(); scheduleSync();
   bindQuiz();
@@ -2388,22 +2451,16 @@ function qzFindExample(hz) {
 }
 
 function bindQuiz() { _bindQuizAsync(); }
-// V70 (Task 2 audit — hợp nhất FSRS): user ĐÃ ĐĂNG NHẬP lấy câu hỏi từ ĐÚNG hàng đợi FSRS thật
-// (due + new hôm nay) — dùng CHUNG ngân sách/nguồn với "Hôm nay học", không còn "review queue
-// riêng" theo lesson-filter + sortByPriority tự chế như trước. KHÁCH vẫn dùng pool theo bài đang
-// chọn để thử app, không lưu tiến độ.
+// V70/V71: user ĐÃ ĐĂNG NHẬP lấy câu hỏi từ ĐÚNG hàng đợi FSRS thật (due + new hôm nay), nạp 1 LẦN
+// vào qzQueue rồi đi CHỐNG LẶP hoàn toàn ở client (xem sqAdvance) — không tự ý gọi lại server giữa
+// phiên. KHÁCH vẫn dùng pool theo bài đang chọn để thử app, không lưu tiến độ.
 async function _bindQuizAsync() {
-  qzIdx = 0; qzScore = 0;
+  qzScore = 0;
   const area = document.getElementById('qz-area');
-  if (isLoggedIn()) {
-    if (area) area.innerHTML = `<div class="panel center" style="padding:24px">⏳ Đang tải hàng đợi FSRS...</div>`;
-    const { words, error } = await loadFsrsPracticePool(qzQuestionCount);
-    if (currentTab !== 'quiz') return; // user đã rời tab trong lúc chờ tải
-    if (error) { if (area) area.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
-    qzWords = words;
-  } else {
-    qzWords = shuffle(getFilteredWords()).slice(0, qzQuestionCount);
-  }
+  if (isLoggedIn() && area) area.innerHTML = `<div class="panel center" style="padding:24px">⏳ Đang tải hàng đợi FSRS...</div>`;
+  const { error } = await sqLoad(qzQueue, qzQuestionCount);
+  if (currentTab !== 'quiz') return; // user đã rời tab trong lúc chờ tải
+  if (error) { if (area) area.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
   qzRenderQ();
   qzLoadSentencePool().then(() => qzRenderQ()); // nạp xong thì vẽ lại để hiện câu ví dụ nếu có
 }
@@ -2411,23 +2468,23 @@ async function _bindQuizAsync() {
 function qzRenderQ() {
   const area = document.getElementById('qz-area');
   if (!area) return;
-  if (!qzWords.length) {
+  if (qzQueue.totalPlanned === 0) {
     const msg = isLoggedIn()
       ? '🎉 Không còn thẻ nào đến hạn hoặc từ mới trong ngân sách hôm nay!<br><span style="font-size:.85rem;color:var(--muted)">Vào "🎯 Hôm nay học" để xem/chỉnh giới hạn.</span>'
       : 'Không có từ nào trong phạm vi bài đang chọn!';
     area.innerHTML = `<div class="panel center" style="padding:24px">${msg}</div>`;
     return;
   }
-  if (qzIdx >= qzWords.length) {
+  if (qzQueue.items.length === 0) {
     area.innerHTML = `<div class="panel exam-result">
-      <div class="exam-score">${qzScore}/${qzWords.length}</div>
-      <div class="exam-rank">${qzRank(qzScore/qzWords.length)}</div>
+      <div class="exam-score">${qzScore}/${qzQueue.answeredCount}</div>
+      <div class="exam-rank">${qzRank(qzScore/qzQueue.answeredCount)}</div>
       <button class="btn btn-primary" onclick="bindQuiz()">Làm lại</button>
     </div>`;
     if (isLoggedIn()) refreshServerMeta(); // hết phiên — làm mới streak/known thật
     return;
   }
-  const w = qzWords[qzIdx];
+  const w = qzQueue.items[0];
   const opts = rvMakeOpts(w); // V70: dùng chung bộ sinh nhiễu với "Hôm nay học" (pool = toàn bộ WORDS)
   let qHtml, optHtml;
   if (qzType === '漢→Việt') {
@@ -2449,7 +2506,7 @@ function qzRenderQ() {
   const partsHtml = qzType === '漢→Việt' ? renderHanziParts(w.hz, true) : '';
   area.innerHTML = `
     <div class="panel">
-      <div style="font-size:.75rem;color:var(--muted);font-weight:700;margin-bottom:6px">${qzIdx+1}/${qzWords.length} · ${Math.round(qzScore/(qzIdx||1)*100)}% đúng</div>
+      <div style="font-size:.75rem;color:var(--muted);font-weight:700;margin-bottom:6px">Câu ${qzQueue.answeredCount+1} · còn ${qzQueue.items.length} trong hàng đợi · ${Math.round(qzScore/(qzQueue.answeredCount||1)*100)}% đúng</div>
       <div class="quiz-q">${qHtml}</div>
       ${exampleHtml}
       ${partsHtml}
@@ -2461,10 +2518,12 @@ function qzRenderQ() {
   qzStartedAt = performance.now(); // Phần 4: đo từ thời điểm câu hỏi THỰC SỰ hiển thị
 }
 
-// V70 (Task 2/3 audit): mỗi lượt trả lời giờ đi qua ĐÚNG reviewService.reviewCard() (user đã đăng
-// nhập) — không còn "recordAnswer" cục bộ song song. Server tự xác định đúng/sai + suy FSRS rating.
+// V70/V71: mỗi lượt trả lời đi qua ĐÚNG reviewService.reviewCard() (user đã đăng nhập). Server tự
+// xác định đúng/sai + suy FSRS rating. sqAdvance() đảm bảo thẻ vừa đúng bị loại khỏi phiên ngay,
+// thẻ sai chỉ lặp lại sau tối thiểu REPEAT_GAP thẻ khác — KHÔNG bao giờ tự gọi lại server giữa
+// chừng phiên (hàng đợi cạn thật mới coi là hết phiên, xem qzRenderQ).
 function qzPick(btn, hz) {
-  const w = qzWords[qzIdx];
+  const w = qzQueue.items[0];
   const isCorrectLocally = btn._correct;
   const responseTimeMs = performance.now() - qzStartedAt;
   document.querySelectorAll('#qz-opts .quiz-opt').forEach(b=>{
@@ -2472,14 +2531,19 @@ function qzPick(btn, hz) {
     else if (b === btn && !isCorrectLocally) b.classList.add('wrong');
     b.disabled=true;
   });
-  if (isCorrectLocally) { playDing(); qzScore++; } else playBuzz();
+  if (isCorrectLocally) playDing(); else playBuzz();
   speak(w.hz);
-  if (isLoggedIn()) {
-    submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor(qzType), selectedAnswer: btn.dataset.v, responseTimeMs });
-  } else {
-    guestMarkActivity();
-  }
-  setTimeout(()=>{ qzIdx++; qzRenderQ(); }, 1400);
+  (async () => {
+    let isCorrect = isCorrectLocally;
+    if (isLoggedIn()) {
+      const data = await submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor(qzType), selectedAnswer: btn.dataset.v, responseTimeMs });
+      if (data && data.ok) isCorrect = !!data.answerCorrect; // server là nguồn sự thật cuối cùng
+    } else {
+      guestMarkActivity();
+    }
+    if (isCorrect) qzScore++;
+    setTimeout(()=>{ sqAdvance(qzQueue, isCorrect); qzRenderQ(); }, 1400);
+  })();
 }
 
 // Nhóm từ theo chủ đề ngữ nghĩa (cùng phạm trù dễ gây nhầm lẫn khi học, dù chữ Hán không liên quan)
@@ -2576,7 +2640,7 @@ function qzRank(r) {
 // ════════════════════════════════════════════════════
 // TYPE
 // ════════════════════════════════════════════════════
-let tyWords=[], tyIdx=0, tyScore=0, tyStartedAt=0;
+let tyQueue = sqCreate(), tyScore=0, tyStartedAt=0;
 
 function renderType() {
   return `
@@ -2593,39 +2657,33 @@ function tySetCount(v) {
   bindType();
 }
 function bindType() { _bindTypeAsync(); }
-// V70 (Task 2 audit — hợp nhất FSRS): user ĐÃ ĐĂNG NHẬP gõ đúng hàng đợi FSRS thật (due + new
-// hôm nay), dùng CHUNG ngân sách/nguồn với "Hôm nay học"/Trắc nghiệm/Nghe-chọn — không còn pool
-// riêng theo lesson-filter + sortByPriority tự chế như trước.
+// V70/V71: user ĐÃ ĐĂNG NHẬP gõ đúng hàng đợi FSRS thật (due + new hôm nay), nạp 1 LẦN vào
+// tyQueue rồi chống lặp hoàn toàn ở client (xem sqAdvance).
 async function _bindTypeAsync() {
-  tyIdx = 0; tyScore = 0;
+  tyScore = 0;
   const area = document.getElementById('ty-area');
-  if (isLoggedIn()) {
-    if (area) area.innerHTML = `<div class="panel center" style="padding:24px">⏳ Đang tải hàng đợi FSRS...</div>`;
-    const { words, error } = await loadFsrsPracticePool(questionCount);
-    if (currentTab !== 'type') return; // user đã rời tab trong lúc chờ tải
-    if (error) { if (area) area.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
-    tyWords = words;
-  } else {
-    tyWords = shuffle(getFilteredWords()).slice(0, questionCount);
-  }
+  if (isLoggedIn() && area) area.innerHTML = `<div class="panel center" style="padding:24px">⏳ Đang tải hàng đợi FSRS...</div>`;
+  const { error } = await sqLoad(tyQueue, questionCount);
+  if (currentTab !== 'type') return; // user đã rời tab trong lúc chờ tải
+  if (error) { if (area) area.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
   tyRenderQ();
 }
 function tyRenderQ() {
   const area = document.getElementById('ty-area'); if (!area) return;
-  if (!tyWords.length) {
+  if (tyQueue.totalPlanned === 0) {
     const msg = isLoggedIn()
       ? '🎉 Không còn thẻ nào đến hạn hoặc từ mới trong ngân sách hôm nay!<br><span style="font-size:.85rem;color:var(--muted)">Vào "🎯 Hôm nay học" để xem/chỉnh giới hạn.</span>'
       : 'Không có từ nào trong phạm vi bài đang chọn!';
     area.innerHTML = `<div class="panel center" style="padding:24px">${msg}</div>`; return;
   }
-  if (tyIdx >= tyWords.length) {
-    area.innerHTML=`<div class="panel exam-result"><div class="exam-score">${tyScore}/${tyWords.length}</div><div class="exam-rank">${qzRank(tyScore/tyWords.length)}</div><button class="btn btn-primary" onclick="bindType()">Làm lại</button></div>`;
+  if (tyQueue.items.length === 0) {
+    area.innerHTML=`<div class="panel exam-result"><div class="exam-score">${tyScore}/${tyQueue.answeredCount}</div><div class="exam-rank">${qzRank(tyScore/tyQueue.answeredCount)}</div><button class="btn btn-primary" onclick="bindType()">Làm lại</button></div>`;
     if (isLoggedIn()) refreshServerMeta(); // hết phiên — làm mới streak/known thật
     return;
   }
-  const w = tyWords[tyIdx];
+  const w = tyQueue.items[0];
   area.innerHTML=`<div class="panel">
-    <div style="font-size:.75rem;color:var(--muted);margin-bottom:8px">${tyIdx+1}/${tyWords.length}</div>
+    <div style="font-size:.75rem;color:var(--muted);margin-bottom:8px">Câu ${tyQueue.answeredCount+1} · còn ${tyQueue.items.length} trong hàng đợi</div>
     <div class="type-q">
       <div style="font-size:.9rem;color:var(--muted);margin-bottom:4px">Gõ chữ Hán nghĩa là:</div>
       <div style="font-size:1.4rem;font-weight:700;margin-bottom:6px">${w.vi}</div>
@@ -2642,42 +2700,51 @@ function tyRenderQ() {
   setTimeout(()=>{ const i=document.getElementById('ty-input'); if(i)i.focus(); },100);
   tyStartedAt = performance.now(); // Phần 4: đo từ thời điểm câu hỏi hiển thị
 }
-// V70 (Task 2/3 audit): trả lời/bỏ qua giờ đi qua ĐÚNG reviewService.reviewCard() (user đã đăng
-// nhập) — không còn "recordAnswer" cục bộ song song. Server tự so khớp val với w.hz.
+// V70/V71: trả lời/bỏ qua đi qua ĐÚNG reviewService.reviewCard() (user đã đăng nhập). sqAdvance()
+// đảm bảo thẻ vừa đúng bị loại khỏi phiên ngay, thẻ sai/bỏ qua chỉ lặp lại sau tối thiểu
+// REPEAT_GAP thẻ khác — không tự ý gọi lại server giữa chừng phiên.
 function tyCheck() {
   const inp = document.getElementById('ty-input'); if(!inp) return;
   const val = inp.value.trim();
-  const w = tyWords[tyIdx];
-  const ok = val === w.hz;
+  const w = tyQueue.items[0];
+  const okLocally = val === w.hz;
   const responseTimeMs = performance.now() - tyStartedAt;
   const fb = document.getElementById('ty-fb');
-  fb.className='type-feedback '+(ok?'ok':'bad');
-  fb.textContent = ok ? `✅ Đúng! ${w.hz}` : `❌ Sai. Đáp án: ${w.hz} (${w.py})`;
-  if (ok) { playDing(); tyScore++; } else playBuzz();
+  fb.className='type-feedback '+(okLocally?'ok':'bad');
+  fb.textContent = okLocally ? `✅ Đúng! ${w.hz}` : `❌ Sai. Đáp án: ${w.hz} (${w.py})`;
+  if (okLocally) playDing(); else playBuzz();
   speak(w.hz);
-  if (isLoggedIn()) {
-    submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('type'), selectedAnswer: val || '⨯ (bỏ trống) ⨯', responseTimeMs });
-  } else {
-    guestMarkActivity();
-  }
   inp.disabled=true;
-  setTimeout(()=>{ tyIdx++; tyRenderQ(); }, 1600);
+  (async () => {
+    let ok = okLocally;
+    if (isLoggedIn()) {
+      const data = await submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('type'), selectedAnswer: val || '⨯ (bỏ trống) ⨯', responseTimeMs });
+      if (data && data.ok) ok = !!data.answerCorrect;
+    } else {
+      guestMarkActivity();
+    }
+    if (ok) tyScore++;
+    setTimeout(()=>{ sqAdvance(tyQueue, ok); tyRenderQ(); }, 1600);
+  })();
 }
 function tySkip() {
-  const w = tyWords[tyIdx];
+  const w = tyQueue.items[0];
   const responseTimeMs = performance.now() - tyStartedAt;
-  if (isLoggedIn()) {
-    submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('type'), selectedAnswer: '⨯ (bỏ qua) ⨯', responseTimeMs });
-  } else {
-    guestMarkActivity();
-  }
-  tyIdx++; tyRenderQ();
+  (async () => {
+    if (isLoggedIn()) {
+      await submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('type'), selectedAnswer: '⨯ (bỏ qua) ⨯', responseTimeMs });
+    } else {
+      guestMarkActivity();
+    }
+    sqAdvance(tyQueue, false); // bỏ qua luôn tính là chưa nhớ (Again)
+    tyRenderQ();
+  })();
 }
 
 // ════════════════════════════════════════════════════
 // LISTEN (sentence-based)
 // ════════════════════════════════════════════════════
-let lsItems=[], lsIdx=0, lsScore=0, lsStartedAt=0;
+let lsQueue = sqCreate(), lsScore=0, lsStartedAt=0;
 
 function renderListen() {
   return `
@@ -2695,40 +2762,33 @@ function lsSetCount(v) {
 }
 
 function bindListen() { _bindListenAsync(); }
-// V70 (Task 2 audit — hợp nhất FSRS): user ĐÃ ĐĂNG NHẬP nghe-chọn TỪ ĐÚNG hàng đợi FSRS thật
-// (due + new hôm nay), dùng CHUNG ngân sách/nguồn với "Hôm nay học"/Trắc nghiệm/Gõ chữ — không
-// còn pool riêng theo lesson-filter như trước. KHÁCH vẫn dùng pool theo bài đang chọn để thử app.
-// (Chế độ "nghe câu ví dụ" cũ — lsRenderSent/lsPick — đã bị xoá vì là code chết: bindListen chỉ
-// từng tạo item type:'word', nhánh 'sent' không bao giờ được gọi tới — dọn theo Task 12.)
+// V70/V71: user ĐÃ ĐĂNG NHẬP nghe-chọn TỪ ĐÚNG hàng đợi FSRS thật (due + new hôm nay), nạp 1 LẦN
+// vào lsQueue rồi chống lặp hoàn toàn ở client (xem sqAdvance). KHÁCH vẫn dùng pool theo bài đang
+// chọn để thử app.
 async function _bindListenAsync() {
-  lsIdx = 0; lsScore = 0;
+  lsScore = 0;
   const area = document.getElementById('ls-area');
-  if (isLoggedIn()) {
-    if (area) area.innerHTML = `<div class="panel center" style="padding:24px">⏳ Đang tải hàng đợi FSRS...</div>`;
-    const { words, error } = await loadFsrsPracticePool(questionCount);
-    if (currentTab !== 'listen') return; // user đã rời tab trong lúc chờ tải
-    if (error) { if (area) area.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
-    lsItems = words.map(w => ({ type: 'word', data: w }));
-  } else {
-    lsItems = shuffle(getFilteredWords()).slice(0, questionCount).map(w => ({ type: 'word', data: w }));
-  }
+  if (isLoggedIn() && area) area.innerHTML = `<div class="panel center" style="padding:24px">⏳ Đang tải hàng đợi FSRS...</div>`;
+  const { error } = await sqLoad(lsQueue, questionCount);
+  if (currentTab !== 'listen') return; // user đã rời tab trong lúc chờ tải
+  if (error) { if (area) area.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
   lsRenderQ();
 }
 
 function lsRenderQ() {
   const area = document.getElementById('ls-area'); if(!area) return;
-  if (!lsItems.length) {
+  if (lsQueue.totalPlanned === 0) {
     const msg = isLoggedIn()
       ? '🎉 Không còn thẻ nào đến hạn hoặc từ mới trong ngân sách hôm nay!<br><span style="font-size:.85rem;color:var(--muted)">Vào "🎯 Hôm nay học" để xem/chỉnh giới hạn.</span>'
       : 'Không có từ nào trong phạm vi bài đang chọn!';
     area.innerHTML = `<div class="panel center" style="padding:24px">${msg}</div>`; return;
   }
-  if (lsIdx >= lsItems.length) {
-    area.innerHTML=`<div class="panel exam-result"><div class="exam-score">${lsScore}/${lsItems.length}</div><div class="exam-rank">${qzRank(lsScore/lsItems.length)}</div><button class="btn btn-primary" onclick="bindListen()">Làm lại</button></div>`;
+  if (lsQueue.items.length === 0) {
+    area.innerHTML=`<div class="panel exam-result"><div class="exam-score">${lsScore}/${lsQueue.answeredCount}</div><div class="exam-rank">${qzRank(lsScore/lsQueue.answeredCount)}</div><button class="btn btn-primary" onclick="bindListen()">Làm lại</button></div>`;
     if (isLoggedIn()) refreshServerMeta(); // hết phiên — làm mới streak/known thật
     return;
   }
-  lsRenderWord(lsItems[lsIdx].data);
+  lsRenderWord(lsQueue.items[0]);
   // auto-play
   setTimeout(()=>{
     const btn = document.getElementById('ls-play');
@@ -2744,32 +2804,37 @@ function lsRenderWord(w) {
   const optHtml = opts.map(o=>`
     <button class="listen-opt" onclick="lsPickWord(this,'${o.hz}','${w.hz}')">${o.hz}${showPinyin?`<div style="font-size:.7rem;color:var(--muted)">${o.py}</div>`:''}${showHanViet && o.hanviet?`<div style="font-size:.68rem;color:var(--active-dark);font-weight:600">${o.hanviet}</div>`:''}</button>`).join('');
   area.innerHTML=`<div class="panel">
-    <div style="font-size:.75rem;color:var(--muted);margin-bottom:10px">${lsIdx+1}/${lsItems.length} · Nghe và chọn chữ Hán đúng</div>
+    <div style="font-size:.75rem;color:var(--muted);margin-bottom:10px">Câu ${lsQueue.answeredCount+1} · còn ${lsQueue.items.length} trong hàng đợi · Nghe và chọn chữ Hán đúng</div>
     <button id="ls-play" class="listen-play" onclick="speak('${w.hz}')" title="Phát lại">🔊</button>
     <div class="listen-opts">${optHtml}</div>
   </div>`;
   lsStartedAt = performance.now(); // Phần 4: đo từ thời điểm câu hỏi hiển thị (trước cả auto-play)
 }
 
-// V70 (Task 2/3 audit): trả lời giờ đi qua ĐÚNG reviewService.reviewCard() (user đã đăng nhập) —
-// không còn "recordAnswer" cục bộ song song. quizType 'vi2hz': đáp án đúng cần chọn là w.hz.
+// V70/V71: trả lời đi qua ĐÚNG reviewService.reviewCard() (user đã đăng nhập). sqAdvance() đảm
+// bảo thẻ vừa đúng bị loại khỏi phiên ngay, thẻ sai chỉ lặp lại sau tối thiểu REPEAT_GAP thẻ khác.
 function lsPickWord(btn, chosen, correct) {
-  const w = lsItems[lsIdx].data;
-  const isCorrect = chosen === correct;
+  const w = lsQueue.items[0];
+  const isCorrectLocally = chosen === correct;
   const responseTimeMs = performance.now() - lsStartedAt;
   document.querySelectorAll('#ls-area .listen-opt').forEach(b=>{
     const bv = b.getAttribute('onclick').match(/'([^']+)','[^']+'/)[1];
     if(bv===correct) b.classList.add('correct');
-    else if(b===btn && !isCorrect) b.classList.add('wrong');
+    else if(b===btn && !isCorrectLocally) b.classList.add('wrong');
     b.disabled=true;
   });
-  if(isCorrect){playDing();lsScore++;}else playBuzz();
-  if (isLoggedIn()) {
-    submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('listen'), selectedAnswer: chosen, responseTimeMs });
-  } else {
-    guestMarkActivity();
-  }
-  setTimeout(()=>{ lsIdx++; lsRenderQ(); }, 1400);
+  if(isCorrectLocally) playDing(); else playBuzz();
+  (async () => {
+    let isCorrect = isCorrectLocally;
+    if (isLoggedIn()) {
+      const data = await submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('listen'), selectedAnswer: chosen, responseTimeMs });
+      if (data && data.ok) isCorrect = !!data.answerCorrect;
+    } else {
+      guestMarkActivity();
+    }
+    if (isCorrect) lsScore++;
+    setTimeout(()=>{ sqAdvance(lsQueue, isCorrect); lsRenderQ(); }, 1400);
+  })();
 }
 
 // ════════════════════════════════════════════════════
