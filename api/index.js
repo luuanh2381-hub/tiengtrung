@@ -14,7 +14,7 @@ const { readDB, updateDB, updateDBWithFsrsCleanup, getVocabByLessons, getVocabCo
   insertActivityLog, getActivityLogs, reserveGeminiSlot, bumpGeminiRateLimit,
   countDueFsrsCards, getDueFsrsCards, getNewWordsByLessonOrder, countNewWordsInLessons,
   getTodayStudyCounts, getWeakFsrsCards, getFsrsCardsDebug,
-  getWordForAnswerCheck, countKnownFsrsWords, getKnownCountsForUsers } = require('../lib/db');
+  getWordForAnswerCheck, countKnownFsrsWords, getKnownCountsForUsers, getKnownCountsByLesson } = require('../lib/db');
 const { getFsrsVerificationInfo } = require('../lib/fsrs');
 // V69: mọi review + toàn bộ analytics/optimizer/personal-retention giờ đi qua lib/fsrs/ (scheduler
 // layer chuẩn hóa) — api/index.js KHÔNG còn gọi thẳng db.reviewFsrsCard nữa (Phần 4 của audit).
@@ -158,8 +158,13 @@ app.post('/api/register', async (req, res) => {
         createdAt: Date.now(),
       };
       db.tokens[token] = key;
-      // Tài khoản vừa tạo → chắc chắn chưa có fsrs_cards nào (known = 0), không cần query DB.
-      return { ok: true, token, username, role: db.users[key].role, progress: db.users[key].progress, rank: getRank(0) };
+      // Tài khoản vừa tạo → chắc chắn chưa có fsrs_cards/review nào (known=0, streak=0), không
+      // cần query DB (V70: trả sẵn streak/known ngay lúc đăng ký, để badge không hiện sai 0 tạm
+      // thời rồi mới đúng sau — xem ghi chú tương tự ở /api/login).
+      return {
+        ok: true, token, username, role: db.users[key].role, progress: db.users[key].progress,
+        rank: getRank(0), known: 0, streak: 0, longestStreak: 0,
+      };
     });
     if (result.ok) logActivity(result.username, result.role, 'auth', 'Đăng ký tài khoản mới');
     res.json(result);
@@ -192,9 +197,18 @@ app.post('/api/login', async (req, res) => {
       return { ok: true, token, username: u.username, role: u.role, progress };
     });
     if (result.ok) {
-      // Tính known/rank NGOÀI transaction app_store (query fsrs_cards không cần giữ khoá FOR
-      // UPDATE của app_store lâu hơn cần thiết — Phần 13 hiệu năng).
-      result.rank = getRank(await countKnownFsrsWords(key));
+      // Tính known/rank/streak NGOÀI transaction app_store (query fsrs_cards/study_sessions không
+      // cần giữ khoá FOR UPDATE của app_store lâu hơn cần thiết — Phần 13 hiệu năng).
+      // V70 (Task 2 audit): trả sẵn known + streak thật ngay lúc đăng nhập, để client không còn
+      // phải tự tính streak cục bộ bằng SRS cũ (đã bị xoá) — badge hiện đúng ngay từ đầu.
+      const [known, streakInfo] = await Promise.all([
+        countKnownFsrsWords(key),
+        fsrsAnalytics.getStreak(key),
+      ]);
+      result.rank = getRank(known);
+      result.known = known;
+      result.streak = streakInfo.currentStreak;
+      result.longestStreak = streakInfo.longestStreak;
       logActivity(result.username, result.role, 'auth', 'Đăng nhập');
     }
     res.json(result);
@@ -713,6 +727,21 @@ app.get('/api/study/weak-words', async (req, res) => {
   try {
     const cards = await getWeakFsrsCards(authed.username, 200);
     res.json({ ok: true, words: cards.map(formatFsrsCard) });
+  } catch (e) { fail(res, e); }
+});
+
+// ── V70 (Task 2 audit — hợp nhất FSRS): số từ "đã thuộc" GOM THEO BÀI, thay cho SRS cũ đã bị xoá
+//     khỏi client. Dùng cho tab HSK4 + tab Thống kê. Chỉ đọc dữ liệu FSRS thật của CHÍNH user đang
+//     đăng nhập (không cần quyền admin, không lộ dữ liệu user khác). ──
+app.get('/api/study/known-by-lesson', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const raw = String(req.query.lessons || '').trim();
+    const lessons = raw ? raw.split(',').map(s => parseInt(s, 10)).filter(Number.isFinite) : [];
+    if (!lessons.length) return res.json({ ok: true, known: {} });
+    const known = await getKnownCountsByLesson(authed.username, lessons);
+    res.json({ ok: true, known });
   } catch (e) { fail(res, e); }
 });
 
