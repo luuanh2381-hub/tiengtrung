@@ -21,6 +21,7 @@ const { getFsrsVerificationInfo } = require('../lib/fsrs');
 const reviewService = require('../lib/fsrs/reviewService');
 const fsrsAnalytics = require('../lib/fsrs/analytics');
 const fsrsOptimizer = require('../lib/fsrs/optimizer');
+const { runInBackground } = require('../lib/runInBackground');
 
 const app = express();
 
@@ -615,32 +616,40 @@ app.get('/api/study/session', async (req, res) => {
     const ui = (user.progress && user.progress.ui) || {};
     const { dailyReviewLimit, dailyNewLimit, newOnlyAfterDue } = studySettings(ui);
     const todayKey2 = todayKey();
-    const [{ scopeLessons, allLessonsWithVocab }, { newToday, reviewToday }] = await Promise.all([
+    // V72 (audit hiệu năng): totalDue (countDueFsrsCards) TRƯỚC ĐÂY nằm ở round riêng SAU Promise.all
+    // đầu, dù nó không cần dữ liệu gì từ scope/todayCounts cả — gộp cả 3 vào cùng 1 Promise.all.
+    const [{ scopeLessons, allLessonsWithVocab }, { newToday, reviewToday }, totalDue] = await Promise.all([
       resolveStudyScope(ui),
       getTodayStudyCounts(authed.username, todayKey2),
+      countDueFsrsCards(authed.username),
     ]);
     const currentLesson = resolveCurrentLesson(ui, scopeLessons);
 
     const remainingReviewSlots = Math.max(0, dailyReviewLimit - reviewToday);
     const remainingNewSlots = Math.max(0, dailyNewLimit - newToday);
 
-    // 1) FSRS review/due trước — luôn ưu tiên cao nhất (Phần 5).
-    const totalDue = await countDueFsrsCards(authed.username);
-    const dueCards = remainingReviewSlots > 0 ? await getDueFsrsCards(authed.username, remainingReviewSlots) : [];
-
-    // 2) NEW word chỉ được lấy nếu còn chỗ — và nếu "newOnlyAfterDue" đang bật thì còn phải chờ
-    //    backlog due được xử lý hết trong ngân sách hôm nay (Phần 9), tránh NEW đè lên review.
-    let newCards = [];
+    // V72: dueCards (review) và lượt lấy NEW word ĐẦU TIÊN (trong phạm vi đang chọn) không phụ
+    // thuộc lẫn nhau — trước đây chạy tuần tự (dueCards xong mới tính new), giờ chạy song song.
+    // "newOnlyAfterDue" (Phần 9) vẫn giữ nguyên đúng logic: chặn new nếu còn backlog due vượt
+    // ngân sách hôm nay — điều kiện này chỉ cần totalDue/remainingReviewSlots (đã có ở trên), không
+    // cần đợi dueCards THỰC SỰ lấy về mới biết có nên chặn hay không.
     const blockedByBacklog = newOnlyAfterDue && totalDue > remainingReviewSlots;
-    if (remainingNewSlots > 0 && !blockedByBacklog) {
-      const { inScopeOrder, outside } = buildLessonPriorityOrder(currentLesson, scopeLessons, allLessonsWithVocab);
-      newCards = await getNewWordsByLessonOrder(authed.username, inScopeOrder, remainingNewSlots);
-      if (newCards.length < remainingNewSlots && outside.length) {
-        const more = await getNewWordsByLessonOrder(
-          authed.username, outside, remainingNewSlots - newCards.length
-        );
-        newCards = newCards.concat(more);
-      }
+    const { inScopeOrder, outside } = buildLessonPriorityOrder(currentLesson, scopeLessons, allLessonsWithVocab);
+    const [dueCards, firstPassNewCards] = await Promise.all([
+      remainingReviewSlots > 0 ? getDueFsrsCards(authed.username, remainingReviewSlots) : Promise.resolve([]),
+      (remainingNewSlots > 0 && !blockedByBacklog)
+        ? getNewWordsByLessonOrder(authed.username, inScopeOrder, remainingNewSlots)
+        : Promise.resolve([]),
+    ]);
+
+    // 2) Nếu trong phạm vi đang chọn không đủ NEW word, mới mở rộng ra ngoài (Phần 10 bước 5) —
+    //    bước này BẮT BUỘC tuần tự vì cần biết đã lấy được bao nhiêu ở bước trên rồi mới xin thêm.
+    let newCards = firstPassNewCards;
+    if (remainingNewSlots > 0 && !blockedByBacklog && newCards.length < remainingNewSlots && outside.length) {
+      const more = await getNewWordsByLessonOrder(
+        authed.username, outside, remainingNewSlots - newCards.length
+      );
+      newCards = newCards.concat(more);
     }
 
     const session = [
@@ -712,14 +721,23 @@ app.post('/api/study/review', async (req, res) => {
     // Cập nhật "current lesson" CHỈ khi đây là 1 NEW word vừa được học lần đầu — tự động lùi/tiến
     // theo đúng bài user vừa thực sự học, không cần thao tác thủ công (Phần 6). Review của các từ
     // cũ không được phép đổi current lesson.
+    // V72 (audit hiệu năng — nguyên nhân lớn nhất khiến "học chậm"): đây TRƯỚC ĐÂY là 1 `await
+    // updateDB(...)` — tức MỌI LẦN học 1 từ MỚI (rất thường xuyên) phải xếp hàng chờ khoá
+    // `SELECT ... FOR UPDATE` trên ĐÚNG 1 dòng app_store DUY NHẤT cho TOÀN BỘ hệ thống (mọi user,
+    // mọi request ghi khác đều dùng chung dòng này) trước khi user thấy đúng/sai của câu vừa trả
+    // lời — nếu đúng lúc đó có request ghi khác (user khác đăng ký/đổi progress/…) đang giữ khoá,
+    // cả 2 phải NỐI HÀNG. response trả về (answerCorrect/correctAnswer/card) không phụ thuộc field
+    // nào ở đây, nên đẩy ra chạy nền an toàn — user thấy kết quả ngay, currentLesson vẫn được ghi
+    // đúng, chỉ trễ hơn vài trăm ms (không quan sát được vì FE không đọc lại currentLesson ngay
+    // sau MỖI câu, chỉ đọc lại /api/progress sau khi xong cả phiên — xem index.html).
     if (result.wasNew) {
-      await updateDB((db) => {
+      runInBackground(() => updateDB((db) => {
         const u = db.users[authed.username];
         if (!u) return;
         if (!u.progress) u.progress = emptyProgress();
         if (!u.progress.ui) u.progress.ui = emptyProgress().ui;
         u.progress.ui.currentLesson = l;
-      });
+      }), (e) => console.error('⚠️  [currentLesson] Không cập nhật được:', e && e.message));
     }
     const userRole = authed.db.users[authed.username] && authed.db.users[authed.username].role;
     const isAdmin = userRole === 'admin' || userRole === 'superadmin';
