@@ -579,9 +579,10 @@ function resolveCurrentLesson(ui, scopeLessons) {
 // Chỉ khi phạm vi này không đủ mới lùi ra ngoài (mở rộng), ưu tiên bài GẦN current lesson nhất.
 function buildLessonPriorityOrder(currentLesson, scopeLessons, allLessonsWithVocab) {
   const scopeSet = new Set(scopeLessons);
-  const inScopeDesc = [...scopeSet].filter(l => l <= currentLesson).sort((a, b) => b - a);
-  const inScopeAsc = [...scopeSet].filter(l => l > currentLesson).sort((a, b) => a - b);
-  const inScopeOrder = [...inScopeDesc, ...inScopeAsc];
+  const inScopeBefore = [...scopeSet].filter(l => l < currentLesson).sort((a, b) => a - b);
+  const inScopeCurrent = [...scopeSet].filter(l => l === currentLesson);
+  const inScopeAfter = [...scopeSet].filter(l => l > currentLesson).sort((a, b) => a - b);
+  const inScopeOrder = [...inScopeBefore, ...inScopeCurrent, ...inScopeAfter];
   // Phần mở rộng (chỉ dùng nếu trong scope không đủ NEW word): mọi bài NGOÀI scope, sắp theo
   // khoảng cách gần current lesson nhất trước (Phần 10 bước 5, Phần 23 "chỉ mở rộng nếu cần").
   const outside = allLessonsWithVocab
