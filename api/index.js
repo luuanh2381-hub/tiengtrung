@@ -562,10 +562,16 @@ async function resolveStudyScope(ui) {
 }
 
 // "Current lesson" (Phần 6): ưu tiên giá trị đã lưu (ui.currentLesson, được cập nhật mỗi khi user
-// học NEW word ở bài nào), nếu không có/không còn hợp lệ thì lấy bài lớn nhất trong phạm vi đang chọn.
+// học NEW word ở bài nào), nếu không có/không còn hợp lệ thì lấy bài NHỎ NHẤT (đầu tiên) trong
+// phạm vi đang chọn — để user học TỪ ĐẦU chương trình, không nhảy thẳng vào bài cuối.
+// FIX (câu hỏi/từ mới chỉ tập trung ở "bài mới nhất"): trước đây dùng Math.max — user MỚI (chưa
+// từng có ui.currentLesson, VD vừa đăng ký) hoặc vừa đổi phạm vi chọn khiến currentLesson cũ rơi ra
+// ngoài phạm vi mới, đều bị fallback thẳng vào bài SỐ LỚN NHẤT (bài cuối) trong phạm vi đang chọn —
+// rồi bị "kẹt" ở đó (currentLesson tự khoá vào bài vừa học) cho tới khi học hết sạch bài đó, nên từ
+// mới chỉ tập trung ở đúng 1 bài (bài lớn nhất/mới nhất) thay vì trải đều từ bài đầu.
 function resolveCurrentLesson(ui, scopeLessons) {
   if (Number.isFinite(ui.currentLesson) && scopeLessons.includes(ui.currentLesson)) return ui.currentLesson;
-  if (scopeLessons.length) return Math.max(...scopeLessons);
+  if (scopeLessons.length) return Math.min(...scopeLessons);
   return 1;
 }
 
