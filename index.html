@@ -527,6 +527,7 @@
   <button onclick="goTab('type')" id="tab-type">⌨️ Gõ chữ</button>
   <button onclick="goTab('listen')" id="tab-listen">🎧 Nghe – Chọn</button>
   <button onclick="goTab('stats')" id="tab-stats">📊 Thống kê</button>
+  <button onclick="goTab('difficult')" id="tab-difficult">😓 Từ khó</button>
   <button onclick="goTab('compare')" id="tab-compare">🆚 So sánh</button>
   <button onclick="goTab('hsk')" id="tab-hsk">🎯 HSK4</button>
   <button onclick="goTab('admin')" id="tab-admin" style="display:none;">🛠️ Quản trị</button>
@@ -864,7 +865,7 @@ let progressState = defaultProgress();
 function applyUIState() {
   normalizeProgress(progressState);
   const ui = progressState.ui;
-  const validTabs = ['home','today','flash','quiz','type','listen','stats','compare','hsk','admin','vocab','logs'];
+  const validTabs = ['home','today','flash','quiz','type','listen','stats','difficult','compare','hsk','admin','vocab','logs'];
   currentTab = validTabs.includes(ui.lastTab) ? ui.lastTab : 'home';
   selectedBookIds = new Set(ui.selectedBookIds);
   selectedLessons = new Set(ui.selectedLessons);
@@ -1242,6 +1243,21 @@ function loadReviewOutbox() {
 function saveReviewOutbox(list) {
   try { localStorage.setItem(reviewOutboxKey(), JSON.stringify(list)); } catch {}
 }
+function queueReviewOutbox(payload) {
+  const list = loadReviewOutbox();
+  list.push({ payload, queuedAt: Date.now() });
+  saveReviewOutbox(list);
+}
+// V74: phan biet loi TAM THOI (mat mang, hoac server 5xx vi DB/lock tam thoi truc trac) - nen giu
+// trong outbox de thu lai - voi loi VINH VIEN (HTTP 200 nhung ok:false vi payload thieu/sai du lieu) -
+// khong nen lap lai vo han. Truoc day ca submitFsrsReview lan flushReviewOutbox deu chi xet fetch() co
+// throw hay khong, nen 1 loi 500 tam thoi (khong throw, van co JSON hop le) bi coi la "da xong" va mat
+// vinh vien: review thanh cong tren UI nhung KHONG duoc luu vao database.
+function isRetryableReviewFailure(res, data) {
+  if (!res) return true; // fetch throw hang: mat mang/CORS -> luon thu lai
+  if (res.status >= 500) return true; // loi server tam thoi -> thu lai
+  return !data; // JSON khong doc duoc (vd server crash giua chung) -> coi la tam thoi, thu lai
+}
 let _flushingOutbox = false;
 async function flushReviewOutbox() {
   if (_flushingOutbox || !isLoggedIn()) return;
@@ -1249,22 +1265,50 @@ async function flushReviewOutbox() {
   try {
     let list = loadReviewOutbox();
     while (list.length) {
-      let res;
+      let res, data;
       try {
         res = await fetch('/api/study/review', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify(list[0].payload),
         });
+        data = await res.json().catch(() => null);
       } catch (e) { break; } // van mat mang - dung, thu lai o lan trigger ke tiep (con nguyen trong outbox)
-      try { await res.json(); } catch {}
+      if (!data || !data.ok) {
+        if (isRetryableReviewFailure(res, data)) break; // loi tam thoi - GIU nguyen trong outbox, thu lai sau
+        // loi vinh vien (payload sai) - bo qua muc nay de khong ket outbox mai mai
+      }
       list.shift();
       saveReviewOutbox(list);
     }
   } finally { _flushingOutbox = false; }
 }
 window.addEventListener('online', flushReviewOutbox);
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') flushReviewOutbox(); });
+// V74: rời khỏi trang (đổi tab trình duyệt, khoá màn hình, chuyển app khác) phải DỪNG đếm giờ học
+// ngay lập tức, không chỉ dừng khi chuyển tab TRONG app (render() đã xử lý việc đó). Quay lại thì
+// ensureStudySession() tự nối tiếp đúng phiên cũ nếu còn trong 15 phút (không mất, không đếm bù thời
+// gian đã rời đi) — tái dùng đúng 2 hàm đã có, không tạo thêm cơ chế mới.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    flushReviewOutbox();
+    if (STUDY_TABS.has(currentTab)) ensureStudySession();
+  } else if (STUDY_TABS.has(currentTab)) {
+    pauseStudyTimer();
+  }
+});
+// Đóng tab/đóng app/điều hướng đi nơi khác: gửi 1 heartbeat cuối cùng (keepalive để sống sót qua lúc
+// trang đang bị huỷ) để không mất vài giây/phút học cuối cùng trước khi heartbeat 20s kế tiếp kịp chạy.
+window.addEventListener('pagehide', () => {
+  if (!studySession.id) return;
+  try {
+    fetch('/api/study/session/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ sessionId: studySession.id }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch {}
+});
 
 // -- Gui 1 luot tra loi len reviewService (FSRS-6 that) - dung CHUNG cho MOI tab luyen tap
 // (Review/Flashcard/Trac nghiem/Go chu/Nghe-chon) cua user da dang nhap. Server luon la nguon su
@@ -1278,23 +1322,31 @@ async function submitFsrsReview({ word, quizType, selectedAnswer, responseTimeMs
     responseTimeMs: Number.isFinite(responseTimeMs) ? Math.round(responseTimeMs) : null,
     answerChanges: Number.isFinite(answerChanges) ? answerChanges : 0,
   };
+  let res, data;
   try {
-    const res = await fetch('/api/study/review', {
+    res = await fetch('/api/study/review', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(payload),
     });
-    const data = await res.json();
-    if (!data.ok) console.error('Khong luu duoc luot review:', data.error);
-    else bumpStudySessionCounters(!!data.answerCorrect); // Task 4: cards_reviewed/dung/sai tang dan theo THOI GIAN THUC
-    return data;
+    data = await res.json().catch(() => null);
   } catch (e) {
     console.error('Loi ket noi khi luu review - da xep vao outbox de gui lai:', e);
-    const list = loadReviewOutbox();
-    list.push({ payload, queuedAt: Date.now() });
-    saveReviewOutbox(list);
+    queueReviewOutbox(payload);
     return { ok: false, error: e.message, queued: true };
   }
+  if (!data || !data.ok) {
+    console.error('Khong luu duoc luot review:', data && data.error);
+    if (isRetryableReviewFailure(res, data)) {
+      // V74: loi server tam thoi (vd 500 do DB/lock) khong duoc coi la "xong" - phai xep vao outbox,
+      // neu khong review nay se mat vinh vien du UI da bao "da luu".
+      queueReviewOutbox(payload);
+      return { ok: false, error: data && data.error, queued: true };
+    }
+    return data || { ok: false, error: 'Phan hoi khong hop le tu server' };
+  }
+  bumpStudySessionCounters(!!data.answerCorrect); // Task 4: cards_reviewed/dung/sai tang dan theo THOI GIAN THUC
+  return data;
 }
 
 // ════════════════════════════════════════════════════
@@ -1837,6 +1889,7 @@ function render() {
   else if (currentTab === 'type')  { el.innerHTML = renderType(); bindType(); }
   else if (currentTab === 'listen'){ el.innerHTML = renderListen(); bindListen(); }
   else if (currentTab === 'stats') { el.innerHTML = renderStats(); bindStats(); }
+  else if (currentTab === 'difficult'){ el.innerHTML = renderDifficult(); bindDifficult(); }
   else if (currentTab === 'compare'){ el.innerHTML = renderCompare(); bindCompare(); }
   else if (currentTab === 'hsk')   { el.innerHTML = renderHSK(); bindHSK(); }
   else if (currentTab === 'admin') { el.innerHTML = renderAdmin(); bindAdmin(); }
@@ -2982,22 +3035,31 @@ async function bindStats() {
     : WORDS.filter(w => selectedLessons.has(w.l));
 
   try {
-    const [knownRes, weakRes] = await Promise.all([
+    const [knownRes, weakRes, fsrsStatsRes] = await Promise.all([
       statLessons.length
         ? fetch('/api/study/known-by-lesson?lessons=' + statLessons.join(','), { headers: authHeaders() }).then(r=>r.json())
         : Promise.resolve({ ok:true, known:{} }),
       fetch('/api/study/weak-words', { headers: authHeaders() }).then(r=>r.json()),
+      fetch('/api/fsrs/stats', { headers: authHeaders() }).then(r=>r.json()),
     ]);
     if (currentTab !== 'stats') return; // user đã rời tab trong lúc chờ tải
 
     const knownByLesson = (knownRes.ok && knownRes.known) || {};
     const totalKnown = Object.values(knownByLesson).reduce((s,n)=>s+n, 0);
+    const fs = fsrsStatsRes.ok ? fsrsStatsRes : {};
+    const pct = v => (v === null || v === undefined) ? '—' : `${v}%`;
 
     const statsArea = document.getElementById('stats-area');
     if (statsArea) statsArea.innerHTML = `
       <div class="stat-box"><div class="stat-num">🔥${getStreak()}</div><div class="stat-lbl">Ngày streak</div></div>
       <div class="stat-box"><div class="stat-num" style="color:var(--l8a)">⭐${totalKnown}</div><div class="stat-lbl">Từ đã thuộc</div></div>
       <div class="stat-box"><div class="stat-num">${all.length}</div><div class="stat-lbl">Tổng từ trong phạm vi</div></div>
+      <div class="stat-box"><div class="stat-num">${fs.totalCardsStudied ?? '—'}</div><div class="stat-lbl">Tổng từ đã học</div></div>
+      <div class="stat-box"><div class="stat-num">${(fs.matureCards ?? 0) + (fs.youngCards ?? 0)}</div><div class="stat-lbl">Đang review</div></div>
+      <div class="stat-box"><div class="stat-num" style="color:var(--l8a)">${fs.newToday ?? 0}</div><div class="stat-lbl">Từ mới hôm nay</div></div>
+      <div class="stat-box"><div class="stat-num">${fs.reviewToday ?? 0}</div><div class="stat-lbl">Review hôm nay</div></div>
+      <div class="stat-box"><div class="stat-num">${pct(fs.reviewAccuracy)}</div><div class="stat-lbl">Accuracy</div></div>
+      <div class="stat-box"><div class="stat-num">${pct(fs.retention)}</div><div class="stat-lbl">Retention</div></div>
     `;
 
     const barsEl = document.getElementById('stats-bars');
@@ -3019,15 +3081,87 @@ async function bindStats() {
     if (weakEl) {
       const scopeHz = new Set(all.map(w=>w.hz));
       const weak = ((weakRes.ok && weakRes.words) || []).filter(w => scopeHz.has(w.hz)).slice(0, 8);
-      weakEl.innerHTML = weak.length ? weak.map(w=>`<div class="weak-item">
+      weakEl.innerHTML = (weak.length ? weak.map(w=>`<div class="weak-item">
         <span class="weak-hz" style="color:${lessonColor(w.l)}">${w.hz}</span>
         <span class="weak-info">${w.vi}${showPinyin?` · ${w.py}`:''}${showHanViet && w.hanviet?` · ${w.hanviet}`:''} · ${w.lapses||0} lần quên</span>
         <button class="btn-sound-sm" onclick="speak('${w.hz}')">🔊</button>
-      </div>`).join('') : '<div style="color:var(--muted);font-size:.9rem">Chưa có dữ liệu. Hãy bắt đầu học ở "🎯 Hôm nay học"!</div>';
+      </div>`).join('') : '<div style="color:var(--muted);font-size:.9rem">Chưa có dữ liệu. Hãy bắt đầu học ở "🎯 Hôm nay học"!</div>')
+        + `<button class="btn" style="width:100%;margin-top:10px" onclick="goTab('difficult')">😓 Xem tất cả từ khó & ôn riêng →</button>`;
     }
   } catch (e) {
     const statsArea = document.getElementById('stats-area');
     if (statsArea) statsArea.innerHTML = `<div class="stat-box" style="grid-column:1/-1">⚠️ Không tải được dữ liệu: ${e.message}</div>`;
+  }
+}
+
+// ════════════════════════════════════════════════════
+// MY DIFFICULT WORDS (Từ khó của tôi) — Ưu tiên 3
+// Dữ liệu 100% lấy từ /api/study/weak-words (lịch sử học thật: fsrs_cards + review_history), không
+// tự bịa/ước lượng gì thêm ở client. "Ôn riêng" tái dùng ĐÚNG startStudySession(true) đã có sẵn —
+// đi qua cùng 1 hàng đợi FSRS thật như mọi tab khác, không tạo luồng chấm điểm riêng.
+// ════════════════════════════════════════════════════
+let difficultSortBy = 'wrong'; // 'wrong' | 'difficulty' | 'recent' | 'stale'
+
+function formatRelativeTime(iso) {
+  if (!iso) return 'chưa học lần nào';
+  const d = new Date(iso);
+  if (isNaN(d)) return 'chưa học lần nào';
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  if (days <= 0) return 'hôm nay';
+  if (days === 1) return 'hôm qua';
+  if (days < 30) return `${days} ngày trước`;
+  return d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+function renderDifficult() {
+  if (!isLoggedIn()) {
+    return `<div class="panel">
+      <div class="study-empty">🔒 Cần đăng nhập để xem từ khó thật (dữ liệu lấy từ lịch sử học của tài khoản, không có ở chế độ khách).</div>
+    </div>`;
+  }
+  return `<div class="panel">
+    <div class="panel-title">😓 Từ khó của tôi</div>
+    <div style="font-size:.85rem;color:var(--muted);margin-bottom:10px">Những từ bạn hay trả lời sai hoặc FSRS đánh giá là khó nhớ, tính từ lịch sử học thật trên tài khoản.</div>
+    <button class="btn btn-primary" style="width:100%;margin-bottom:12px" onclick="startStudySession(true)">🎯 Ôn riêng các từ khó ngay</button>
+    <div class="count-row">
+      <span style="font-size:.82rem;color:var(--muted)">Sắp xếp theo:</span>
+      <select id="difficult-sort" onchange="difficultSortBy=this.value; bindDifficult()">
+        <option value="wrong">Số lần sai (nhiều nhất)</option>
+        <option value="difficulty">Độ khó FSRS (cao nhất)</option>
+        <option value="recent">Học gần đây nhất</option>
+        <option value="stale">Lâu chưa học nhất</option>
+      </select>
+    </div>
+    <div id="difficult-list">⏳ Đang tải...</div>
+  </div>`;
+}
+
+async function bindDifficult() {
+  if (!isLoggedIn()) return;
+  const sel = document.getElementById('difficult-sort');
+  if (sel) sel.value = difficultSortBy;
+  const listEl = document.getElementById('difficult-list');
+  try {
+    const res = await fetch('/api/study/weak-words', { headers: authHeaders() });
+    const data = await res.json();
+    if (currentTab !== 'difficult') return; // user đã rời tab trong lúc chờ tải
+    if (!data.ok) { if (listEl) listEl.innerHTML = `⚠️ ${data.error || 'Lỗi tải dữ liệu'}`; return; }
+    const words = (data.words || []).slice().sort((a, b) => {
+      if (difficultSortBy === 'difficulty') return (b.difficulty || 0) - (a.difficulty || 0);
+      if (difficultSortBy === 'recent') return new Date(b.last_review || 0) - new Date(a.last_review || 0);
+      if (difficultSortBy === 'stale') return new Date(a.last_review || 0) - new Date(b.last_review || 0);
+      return (b.wrongCount || 0) - (a.wrongCount || 0); // mặc định: số lần sai
+    });
+    if (!listEl) return;
+    listEl.innerHTML = words.length ? words.map(w => `<div class="weak-item">
+        <span class="weak-hz" style="color:${lessonColor(w.l)}">${w.hz}</span>
+        <span class="weak-info">${w.vi}${showPinyin ? ` · ${w.py}` : ''}${showHanViet && w.hanviet ? ` · ${w.hanviet}` : ''}<br>
+          ❌ ${w.wrongCount || 0} lần sai · 🕐 học gần nhất: ${formatRelativeTime(w.last_review)}</span>
+        <button class="btn-sound-sm" onclick="speak('${w.hz}')">🔊</button>
+      </div>`).join('')
+      : '<div class="study-empty">🎉 Chưa có từ khó nào — bạn đang học rất tốt! Hãy tiếp tục ở "🎯 Hôm nay học".</div>';
+  } catch (e) {
+    if (listEl) listEl.innerHTML = `⚠️ Không tải được: ${e.message}`;
   }
 }
 
@@ -3136,9 +3270,21 @@ async function bindHSK() {
   if (!area) return;
   try {
     const lessons = Object.values(HSK_LEVEL_LESSON).join(',');
-    const res = await fetch('/api/vocab?lessons=' + lessons, { headers: authHeaders() });
-    const data = await res.json();
+    // V74 (Ưu tiên 5 - hiệu năng): 2 fetch dưới đây độc lập nhau (không fetch nào cần kết quả của
+    // fetch kia) nhưng trước đây await nối tiếp — gộp Promise.all để chạy song song, bớt 1 round-trip
+    // chờ mạng. Không đổi dữ liệu/giao diện hiển thị.
+    // V70 (Task 2 audit — hợp nhất FSRS): "đã thuộc" giờ lấy THẬT từ fsrs_cards (state=Review) qua
+    // /api/study/known-by-lesson — thay cho "progress.srs[hz].step>=3" cục bộ đã bị xoá. Khách
+    // (chưa đăng nhập) không có tài khoản FSRS nên luôn hiện 0/tổng — đúng thực tế, không giả vờ.
+    const [data, knownByLesson] = await Promise.all([
+      fetch('/api/vocab?lessons=' + lessons, { headers: authHeaders() }).then(r => r.json()),
+      isLoggedIn()
+        ? fetch('/api/study/known-by-lesson?lessons=' + lessons, { headers: authHeaders() })
+            .then(r => r.json()).then(d => (d.ok && d.known) || {}).catch(() => ({}))
+        : Promise.resolve({}),
+    ]);
     if (!data.ok) { area.textContent = data.error || 'Không tải được dữ liệu HSK.'; return; }
+    if (currentTab !== 'hsk') return; // user đã rời tab trong lúc chờ tải
 
     const lessonToLevel = {};
     Object.entries(HSK_LEVEL_LESSON).forEach(([lvl, l]) => { lessonToLevel[l] = Number(lvl); });
@@ -3148,14 +3294,6 @@ async function bindHSK() {
       if (lvl) byLevel[lvl].push(w);
     }
 
-    // V70 (Task 2 audit — hợp nhất FSRS): "đã thuộc" giờ lấy THẬT từ fsrs_cards (state=Review) qua
-    // /api/study/known-by-lesson — thay cho "progress.srs[hz].step>=3" cục bộ đã bị xoá. Khách
-    // (chưa đăng nhập) không có tài khoản FSRS nên luôn hiện 0/tổng — đúng thực tế, không giả vờ.
-    const knownByLesson = isLoggedIn()
-      ? await fetch('/api/study/known-by-lesson?lessons=' + Object.values(HSK_LEVEL_LESSON).join(','), { headers: authHeaders() })
-          .then(r => r.json()).then(d => (d.ok && d.known) || {}).catch(() => ({}))
-      : {};
-    if (currentTab !== 'hsk') return; // user đã rời tab trong lúc chờ tải
     const cov = {};
     let totalWords = 0, totalKnown = 0;
     [1, 2, 3, 4].forEach(lvl => {
@@ -3851,8 +3989,9 @@ const vocabLoadPromise = hasCachedProgress
 bootPromise.then(async () => {
   await vocabLoadPromise;
   mergeDiscoveredLessonsIntoBooks(); // tự nhận diện các bài mới chưa có trong danh mục, thêm vào mục chọn
-  updateStreak();
-  render();
+  render(); // V74: xoá lời gọi updateStreak() mồ côi (hàm không tồn tại) từng làm crash callback này,
+            // khiến render()/loadHanziParts() bên dưới không bao giờ chạy sau khi tải xong vocab.
+
   loadHanziParts().then(() => render()); // tải chiết tự bộ thủ ngầm phía sau, không chặn hiển thị ban đầu
 });
 

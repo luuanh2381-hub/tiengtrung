@@ -12,7 +12,8 @@
     "test": "node test/fsrs.test.js",
     "test:integration": "node test/fsrs.concurrency.integration.js",
     "verify:fsrs6": "node scripts/verify-fsrs6.js",
-    "migrate:fsrs": "node scripts/migrate-to-pure-fsrs.js"
+    "migrate:fsrs": "node scripts/migrate-to-pure-fsrs.js",
+    "fix:current-lesson": "node scripts/fix-current-lesson-start.js"
   },
   "dependencies": {
     "express": "^4.19.2",
