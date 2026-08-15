@@ -248,36 +248,62 @@ app.get('/api/progress', async (req, res) => {
   } catch (e) { fail(res, e); }
 });
 
-// ── Lưu tiến độ (V69: chỉ còn "ui" — cài đặt hiển thị/lựa chọn bài, KHÔNG còn srs/streak) ──
+// -- Luu tien do (V69: chi con "ui" - cai dat hien thi/lua chon bai, KHONG con srs/streak) --
+// FIX (Audit Neon - ghi de/race nhieu tab, Task 5): truoc day moi field khong hop le tu client se
+// roi ve `undefined` -> JSON.stringify XOA HAN field do khoi ban ghi (mat cai dat da luu truoc do).
+// Va currentLesson (field CHI server duoc phep doi, xem /api/study/review) van bi nhan tu client ->
+// 1 tab mo lau, chi doi 1 setting khong lien quan (vd theme) cung gui kem currentLesson CU, ghi de
+// mat gia tri vua duoc 1 tab/request khac cap nhat nen. Sua: doc "ui" dang luu THAT trong CHINH
+// transaction nay lam nen cho moi fallback (khong con `undefined`), va currentLesson luon lay tu
+// gia tri dang luu, khong bao gio nhan tu client o endpoint nay.
 app.post('/api/progress', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
   const { ui } = req.body || {};
+  const src = (ui && typeof ui === 'object') ? ui : {};
   try {
     await updateDB((db) => {
-      const safeUi = (ui && typeof ui === 'object') ? {
-        lastTab: typeof ui.lastTab === 'string' ? ui.lastTab : 'home',
-        selectedBookIds: Array.isArray(ui.selectedBookIds)
-          ? ui.selectedBookIds.filter(n => Number.isFinite(n)) : [1],
-        selectedLessons: Array.isArray(ui.selectedLessons)
-          ? ui.selectedLessons.filter(n => Number.isFinite(n)) : [],
-        lessonsAllMode: typeof ui.lessonsAllMode === 'boolean' ? ui.lessonsAllMode : true,
-        // Các cài đặt hiển thị (Ẩn/Hiện Pinyin, nghĩa, Hán Việt, giao diện tối/sáng, tốc độ đọc,
-        // chế độ + số câu Trắc nghiệm mặc định) — lưu để mở lại app khỏi phải chọn lại từ đầu.
-        showPinyin: typeof ui.showPinyin === 'boolean' ? ui.showPinyin : true,
-        showMeaning: typeof ui.showMeaning === 'boolean' ? ui.showMeaning : true,
-        showHanViet: typeof ui.showHanViet === 'boolean' ? ui.showHanViet : true,
-        theme: (ui.theme === 'dark' || ui.theme === 'light') ? ui.theme : 'light',
-        ttsRate: (typeof ui.ttsRate === 'number' && ui.ttsRate >= 0.3 && ui.ttsRate <= 1.0) ? ui.ttsRate : 0.65,
-        qzType: ['漢→Việt', 'Việt→漢', 'Âm→漢'].includes(ui.qzType) ? ui.qzType : '漢→Việt',
-        qzQuestionCount: Number.isFinite(ui.qzQuestionCount) ? ui.qzQuestionCount : 30,
-        questionCount: Number.isFinite(ui.questionCount) ? ui.questionCount : 10,
-        currentLesson: Number.isFinite(ui.currentLesson) ? ui.currentLesson : undefined,
-        dailyReviewLimit: Number.isFinite(ui.dailyReviewLimit) ? ui.dailyReviewLimit : undefined,
-        dailyNewLimit: Number.isFinite(ui.dailyNewLimit) ? ui.dailyNewLimit : undefined,
-        newOnlyAfterDue: typeof ui.newOnlyAfterDue === 'boolean' ? ui.newOnlyAfterDue : undefined,
-      } : emptyProgress().ui;
-      db.users[authed.username].progress = { ui: safeUi };
+      const u = db.users[authed.username];
+      if (!u.progress) u.progress = emptyProgress();
+      const existingUi = u.progress.ui || {};
+      const safeUi = {
+        lastTab: typeof src.lastTab === 'string' ? src.lastTab : (existingUi.lastTab || 'home'),
+        selectedBookIds: Array.isArray(src.selectedBookIds)
+          ? src.selectedBookIds.filter(n => Number.isFinite(n))
+          : (Array.isArray(existingUi.selectedBookIds) ? existingUi.selectedBookIds : [1]),
+        selectedLessons: Array.isArray(src.selectedLessons)
+          ? src.selectedLessons.filter(n => Number.isFinite(n))
+          : (Array.isArray(existingUi.selectedLessons) ? existingUi.selectedLessons : []),
+        lessonsAllMode: typeof src.lessonsAllMode === 'boolean' ? src.lessonsAllMode
+          : (typeof existingUi.lessonsAllMode === 'boolean' ? existingUi.lessonsAllMode : true),
+        // Cac cai dat hien thi (An/Hien Pinyin, nghia, Han Viet, giao dien toi/sang, toc do doc,
+        // che do + so cau Trac nghiem mac dinh) - luu de mo lai app khoi phai chon lai tu dau.
+        showPinyin: typeof src.showPinyin === 'boolean' ? src.showPinyin
+          : (typeof existingUi.showPinyin === 'boolean' ? existingUi.showPinyin : true),
+        showMeaning: typeof src.showMeaning === 'boolean' ? src.showMeaning
+          : (typeof existingUi.showMeaning === 'boolean' ? existingUi.showMeaning : true),
+        showHanViet: typeof src.showHanViet === 'boolean' ? src.showHanViet
+          : (typeof existingUi.showHanViet === 'boolean' ? existingUi.showHanViet : true),
+        theme: (src.theme === 'dark' || src.theme === 'light') ? src.theme : (existingUi.theme || 'light'),
+        ttsRate: (typeof src.ttsRate === 'number' && src.ttsRate >= 0.3 && src.ttsRate <= 1.0) ? src.ttsRate
+          : (Number.isFinite(existingUi.ttsRate) ? existingUi.ttsRate : 0.65),
+        qzType: ['漢→Việt', 'Việt→漢', 'Âm→漢'].includes(src.qzType) ? src.qzType : (existingUi.qzType || '漢→Việt'),
+        qzQuestionCount: Number.isFinite(src.qzQuestionCount) ? src.qzQuestionCount
+          : (Number.isFinite(existingUi.qzQuestionCount) ? existingUi.qzQuestionCount : 30),
+        questionCount: Number.isFinite(src.questionCount) ? src.questionCount
+          : (Number.isFinite(existingUi.questionCount) ? existingUi.questionCount : 10),
+        // currentLesson: SERVER SO HUU field nay (chi tu doi khi user hoc 1 tu MOI - xem
+        // /api/study/review). Khong bao gio nhan tu client o day, tranh mat tien do "bai hien tai"
+        // khi 1 tab gui len ban cu hon lan cap nhat nen gan nhat.
+        currentLesson: Number.isFinite(existingUi.currentLesson) ? existingUi.currentLesson : null,
+        dailyReviewLimit: Number.isFinite(src.dailyReviewLimit) ? src.dailyReviewLimit
+          : (Number.isFinite(existingUi.dailyReviewLimit) ? existingUi.dailyReviewLimit : 50),
+        dailyNewLimit: Number.isFinite(src.dailyNewLimit) ? src.dailyNewLimit
+          : (Number.isFinite(existingUi.dailyNewLimit) ? existingUi.dailyNewLimit : 10),
+        newOnlyAfterDue: typeof src.newOnlyAfterDue === 'boolean' ? src.newOnlyAfterDue
+          : (typeof existingUi.newOnlyAfterDue === 'boolean' ? existingUi.newOnlyAfterDue : true),
+      };
+      u.progress.ui = safeUi;
     });
     res.json({ ok: true });
   } catch (e) { fail(res, e); }
