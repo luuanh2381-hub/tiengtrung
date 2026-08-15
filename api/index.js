@@ -608,6 +608,7 @@ function formatFsrsCard(row) {
     state: row.state, due: row.due, stability: row.stability, difficulty: row.difficulty,
     elapsed_days: row.elapsed_days, scheduled_days: row.scheduled_days,
     reps: row.reps, lapses: row.lapses, last_review: row.last_review,
+    wrongCount: row.wrong_count != null ? row.wrong_count : row.lapses,
   };
 }
 
