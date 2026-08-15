@@ -1100,6 +1100,7 @@ async function bootAuth() {
     return;
   }
   if (authToken && authUsername) {
+    flushReviewOutbox(); // FIX (Task 3): tự gửi lại review còn kẹt trong outbox từ phiên trước (F5/mất mạng/đóng tab)
     const cachedRaw = localStorage.getItem('progressCache_' + authUsername);
     let enteredWithCache = false;
     if (cachedRaw) {
@@ -1231,29 +1232,68 @@ async function loadFsrsPracticePool(limit) {
   }
 }
 
-// ── Gửi 1 lượt trả lời lên reviewService (FSRS-6 thật) — dùng CHUNG cho MỌI tab luyện tập của
-//     user đã đăng nhập. Server luôn là nguồn sự thật cuối cùng cho answerCorrect + rating (Task
-//     3), tự ghi vào review_history + fsrs_cards + study_sessions (Task 4, đã có sẵn ở backend). ──
-async function submitFsrsReview({ word, quizType, selectedAnswer, responseTimeMs }) {
+// FIX (Task 3 - mat du lieu khi mat mang/dong tab/F5): outbox localStorage cho review gui KHONG
+// THANH CONG. Ghi payload vao outbox khi fetch loi; tu gui lai khi co mang / quay lai tab / mo app
+// lan sau - review khong con bi mat cam lang nua.
+function reviewOutboxKey() { return 'reviewOutbox_' + (authUsername || ''); }
+function loadReviewOutbox() {
+  try { return JSON.parse(localStorage.getItem(reviewOutboxKey()) || '[]'); } catch { return []; }
+}
+function saveReviewOutbox(list) {
+  try { localStorage.setItem(reviewOutboxKey(), JSON.stringify(list)); } catch {}
+}
+let _flushingOutbox = false;
+async function flushReviewOutbox() {
+  if (_flushingOutbox || !isLoggedIn()) return;
+  _flushingOutbox = true;
+  try {
+    let list = loadReviewOutbox();
+    while (list.length) {
+      let res;
+      try {
+        res = await fetch('/api/study/review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify(list[0].payload),
+        });
+      } catch (e) { break; } // van mat mang - dung, thu lai o lan trigger ke tiep (con nguyen trong outbox)
+      try { await res.json(); } catch {}
+      list.shift();
+      saveReviewOutbox(list);
+    }
+  } finally { _flushingOutbox = false; }
+}
+window.addEventListener('online', flushReviewOutbox);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') flushReviewOutbox(); });
+
+// -- Gui 1 luot tra loi len reviewService (FSRS-6 that) - dung CHUNG cho MOI tab luyen tap
+// (Review/Flashcard/Trac nghiem/Go chu/Nghe-chon) cua user da dang nhap. Server luon la nguon su
+// that cuoi cung cho answerCorrect + rating. Noi GOI ham nay KHONG duoc await truoc khi chuyen
+// cau (Task 2 - khong cho Neon); neu mat mang, payload vao outbox de tu gui lai (Task 3). --
+async function submitFsrsReview({ word, quizType, selectedAnswer, responseTimeMs, answerChanges }) {
+  const payload = {
+    wordId: { hz: word.hz, l: word.l },
+    quizType,
+    selectedAnswer,
+    responseTimeMs: Number.isFinite(responseTimeMs) ? Math.round(responseTimeMs) : null,
+    answerChanges: Number.isFinite(answerChanges) ? answerChanges : 0,
+  };
   try {
     const res = await fetch('/api/study/review', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({
-        wordId: { hz: word.hz, l: word.l },
-        quizType,
-        selectedAnswer,
-        responseTimeMs: Number.isFinite(responseTimeMs) ? Math.round(responseTimeMs) : null,
-        answerChanges: 0,
-      }),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
-    if (!data.ok) console.error('Không lưu được lượt review:', data.error);
-    else bumpStudySessionCounters(!!data.answerCorrect); // Task 4: cards_reviewed/đúng/sai tăng dần theo THỜI GIAN THỰC
+    if (!data.ok) console.error('Khong luu duoc luot review:', data.error);
+    else bumpStudySessionCounters(!!data.answerCorrect); // Task 4: cards_reviewed/dung/sai tang dan theo THOI GIAN THUC
     return data;
   } catch (e) {
-    console.error('Lỗi kết nối khi lưu review:', e);
-    return { ok: false, error: e.message };
+    console.error('Loi ket noi khi luu review - da xep vao outbox de gui lai:', e);
+    const list = loadReviewOutbox();
+    list.push({ payload, queuedAt: Date.now() });
+    saveReviewOutbox(list);
+    return { ok: false, error: e.message, queued: true };
   }
 }
 
@@ -1531,13 +1571,33 @@ let showMeaning = true;
 let showHanViet = true;
 let questionCount = 10;
 
+// FIX (audit lặp từ/mất tiến độ): vẽ lại đúng THẺ ĐANG XEM của tab luyện tập hiện tại, KHÔNG gọi
+// API, KHÔNG nạp lại hàng đợi — khác với render() (dùng khi CHUYỂN TAB, hợp lý phải nạp lại).
+// Trước đây togglePinyin/toggleMeaning/toggleHanViet gọi thẳng render(), mà render() cho 4 tab
+// flash/quiz/type/listen lại dispatch sang bindFlash/bindQuiz/bindType/bindListen — các hàm này
+// LUÔN sqLoad() nạp lại hàng đợi mới từ /api/study/session mỗi lần gọi. Hệ quả: user đang học dở
+// (đã trả lời vài câu, có thẻ Again đã bị chèn lùi lại theo REPEAT_GAP), chỉ cần bấm "Ẩn Pinyin"
+// là toàn bộ hàng đợi bị THAY MỚI — mất tiến độ phiên, thẻ vừa trả lời đúng có thể xuất hiện lại
+// (đây nhiều khả năng là nguyên nhân chính gây cảm giác "lặp từ" khi đang học).
+function refreshCurrentCardDisplay() {
+  if (currentTab === 'flash' && fcQueue.totalPlanned > 0) { fcUpdate(); return; }
+  if (currentTab === 'quiz' && qzQueue.totalPlanned > 0) { qzRenderQ(); return; }
+  if (currentTab === 'type' && tyQueue.totalPlanned > 0) { tyRenderQ(); return; }
+  if (currentTab === 'listen' && lsQueue.totalPlanned > 0) { lsRenderQ(); return; }
+  if (currentTab === 'review' && rvSession.length >= 0 && rvTotalPlanned > 0) {
+    const el = document.getElementById('content');
+    if (el) { el.innerHTML = renderReview(); bindReview(); }
+    return;
+  }
+  render(); // các tab khác (home/today/stats/...) không giữ "hàng đợi" đang học dở, render() bình thường an toàn
+}
 function togglePinyin() {
   showPinyin = !showPinyin;
   document.getElementById('py-toggle-btn').textContent = showPinyin ? 'Ẩn Pinyin' : 'Hiện Pinyin';
   progressState.ui.showPinyin = showPinyin;
   cacheProgressLocally();
   scheduleSync();
-  render();
+  refreshCurrentCardDisplay();
 }
 function toggleMeaning() {
   showMeaning = !showMeaning;
@@ -1545,7 +1605,7 @@ function toggleMeaning() {
   progressState.ui.showMeaning = showMeaning;
   cacheProgressLocally();
   scheduleSync();
-  render();
+  refreshCurrentCardDisplay();
 }
 function toggleHanViet() {
   showHanViet = !showHanViet;
@@ -1553,7 +1613,7 @@ function toggleHanViet() {
   progressState.ui.showHanViet = showHanViet;
   cacheProgressLocally();
   scheduleSync();
-  render();
+  refreshCurrentCardDisplay();
 }
 
 function goTab(tab) {
@@ -2079,7 +2139,9 @@ function bindReview() {
 
 // ── Phần 1/3/4/17/20: user chọn 1 đáp án → khoá UI, hiện đúng/sai tức thời → gửi
 //     selectedAnswer + responseTimeMs lên server (server tự xác định lại đúng/sai + tự suy ra
-//     FSRS rating + gọi ts-fsrs + lưu — KHÔNG có bước nào cần user bấm thêm). ──
+//     FSRS rating + gọi ts-fsrs + lưu). ──
+let rvAttemptId = 0; // FIX: đánh dấu lượt trả lời hiện tại — phản hồi server đến TRỄ (sau khi user
+                      // đã sang câu khác) sẽ tự bị bỏ qua thay vì ghi đè nhầm màn hình câu sau.
 async function rvPick(btn, hz) {
   if (rvSubmitting || rvPhase !== 'question') return;
   rvSubmitting = true;
@@ -2088,6 +2150,7 @@ async function rvPick(btn, hz) {
   const w = item.word;
   const isCorrectLocally = !!btn._correct;
   const selectedAnswer = btn.dataset.v;
+  const attemptId = ++rvAttemptId;
 
   document.querySelectorAll('#rv-opts .quiz-opt').forEach(b => {
     if (b._correct) b.classList.add('correct');
@@ -2097,40 +2160,26 @@ async function rvPick(btn, hz) {
   if (isCorrectLocally) playDing(); else playBuzz();
   speak(w.hz);
 
-  let result = { correct: isCorrectLocally, card: null, autoRating: null };
-  try {
-    const res = await fetch('/api/study/review', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({
-        wordId: { hz: w.hz, l: w.l },
-        quizType: RV_QUIZ_TYPE,
-        selectedAnswer,
-        responseTimeMs,
-        answerChanges: rvAnswerChanges,
-      }),
-    });
-    const data = await res.json();
-    if (data.ok) {
-      result = {
-        correct: data.answerCorrect, // server là nguồn sự thật cuối cùng (Phần 3/20)
-        card: data.card,
-        autoRating: data.debug ? data.debug.autoRating : null,
-      };
-      bumpStudySessionCounters(!!data.answerCorrect); // Task 4: cards_reviewed/đúng/sai tăng dần theo thời gian thực
-    } else {
-      console.error('Không lưu được kết quả review:', data.error);
-    }
-  } catch (e) {
-    console.error('Lỗi kết nối — kết quả review này có thể chưa được lưu:', e);
-  }
-
-  rvLastAnswer = result;
+  // FIX (Task 2 — Optimistic UI, lỗi nghiêm trọng nhất tìm thấy): TRƯỚC ĐÂY await trọn round-trip
+  // Neon rồi MỚI hiện đáp án + MỚI hẹn giờ chuyển câu — nghĩa là cả màn hình "đáp án" lẫn tốc độ
+  // chuyển câu của TAB HỌC CHÍNH (Học mới + Ôn tập) phụ thuộc thẳng vào độ trễ mạng. Giờ hiện đáp
+  // án + hẹn giờ chuyển câu NGAY bằng kết quả đã biết ở client; ghi FSRS thật chạy NỀN qua
+  // submitFsrsReview() dùng chung (đã có outbox chống mất dữ liệu — Task 3, Task 4 gộp logic).
+  rvLastAnswer = { correct: isCorrectLocally, card: null, autoRating: null };
   rvPhase = 'answered';
   rvSubmitting = false;
   render();
-  // Chuyển câu tiếp theo tự động sau 1 khoảng ngắn — không cần user bấm gì thêm (Phần 17).
-  setTimeout(rvAdvance, 1600);
+  setTimeout(rvAdvance, 1600); // Chuyển câu tiếp theo tự động — không cần user bấm gì thêm (Phần 17).
+
+  submitFsrsReview({ word: w, quizType: RV_QUIZ_TYPE, selectedAnswer, responseTimeMs, answerChanges: rvAnswerChanges })
+    .then(data => {
+      // Chỉ cập nhật lại màn hình nếu user VẪN đang xem đúng câu này (chưa bị rvAdvance chuyển đi).
+      if (attemptId !== rvAttemptId || rvPhase !== 'answered' || currentTab !== 'review') return;
+      if (data && data.ok) {
+        rvLastAnswer = { correct: data.answerCorrect, card: data.card, autoRating: data.debug ? data.debug.autoRating : null };
+        render(); // cập nhật dòng "đã lưu lịch ôn sau N ngày" cho chính xác (nếu kịp trước khi advance)
+      }
+    });
 }
 
 // V71: thẻ Ở ĐẦU hàng đợi bị loại NGAY LẬP TỨC sau khi có kết quả server. Đúng → loại vĩnh viễn
@@ -2533,17 +2582,17 @@ function qzPick(btn, hz) {
   });
   if (isCorrectLocally) playDing(); else playBuzz();
   speak(w.hz);
-  (async () => {
-    let isCorrect = isCorrectLocally;
-    if (isLoggedIn()) {
-      const data = await submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor(qzType), selectedAnswer: btn.dataset.v, responseTimeMs });
-      if (data && data.ok) isCorrect = !!data.answerCorrect; // server là nguồn sự thật cuối cùng
-    } else {
-      guestMarkActivity();
-    }
-    if (isCorrect) qzScore++;
-    setTimeout(()=>{ sqAdvance(qzQueue, isCorrect); qzRenderQ(); }, 1400);
-  })();
+  // FIX (Task 2 — Optimistic UI): trước đây await submitFsrsReview() XONG mới setTimeout chuyển
+  // câu — nghĩa là UI phải chờ trọn round-trip Neon rồi mới bắt đầu đếm 1400ms. Giờ dùng NGAY kết
+  // quả đã biết ở client (đáp án đúng đã nhúng sẵn trong DOM) để tính điểm + hẹn giờ chuyển câu,
+  // gọi submitFsrsReview() chạy NỀN song song — không chặn đường chuyển câu của user.
+  if (isCorrectLocally) qzScore++;
+  if (isLoggedIn()) {
+    submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor(qzType), selectedAnswer: btn.dataset.v, responseTimeMs });
+  } else {
+    guestMarkActivity();
+  }
+  setTimeout(()=>{ sqAdvance(qzQueue, isCorrectLocally); qzRenderQ(); }, 1400);
 }
 
 // Nhóm từ theo chủ đề ngữ nghĩa (cùng phạm trù dễ gây nhầm lẫn khi học, dù chữ Hán không liên quan)
@@ -2715,30 +2764,28 @@ function tyCheck() {
   if (okLocally) playDing(); else playBuzz();
   speak(w.hz);
   inp.disabled=true;
-  (async () => {
-    let ok = okLocally;
-    if (isLoggedIn()) {
-      const data = await submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('type'), selectedAnswer: val || '⨯ (bỏ trống) ⨯', responseTimeMs });
-      if (data && data.ok) ok = !!data.answerCorrect;
-    } else {
-      guestMarkActivity();
-    }
-    if (ok) tyScore++;
-    setTimeout(()=>{ sqAdvance(tyQueue, ok); tyRenderQ(); }, 1600);
-  })();
+  // FIX (Task 2 — Optimistic UI): advance ngay bằng kết quả local, KHÔNG await Neon trước khi hẹn
+  // giờ chuyển câu. submitFsrsReview() chạy nền song song với timeout hiển thị feedback.
+  if (okLocally) tyScore++;
+  if (isLoggedIn()) {
+    submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('type'), selectedAnswer: val || '⨯ (bỏ trống) ⨯', responseTimeMs });
+  } else {
+    guestMarkActivity();
+  }
+  setTimeout(()=>{ sqAdvance(tyQueue, okLocally); tyRenderQ(); }, 1600);
 }
 function tySkip() {
   const w = tyQueue.items[0];
   const responseTimeMs = performance.now() - tyStartedAt;
-  (async () => {
-    if (isLoggedIn()) {
-      await submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('type'), selectedAnswer: '⨯ (bỏ qua) ⨯', responseTimeMs });
-    } else {
-      guestMarkActivity();
-    }
-    sqAdvance(tyQueue, false); // bỏ qua luôn tính là chưa nhớ (Again)
-    tyRenderQ();
-  })();
+  // FIX (Task 2 — Optimistic UI): trước đây await xong mới advance → "Bỏ qua" bị treo chờ Neon.
+  // Advance ngay lập tức, gửi review chạy nền.
+  if (isLoggedIn()) {
+    submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('type'), selectedAnswer: '⨯ (bỏ qua) ⨯', responseTimeMs });
+  } else {
+    guestMarkActivity();
+  }
+  sqAdvance(tyQueue, false); // bỏ qua luôn tính là chưa nhớ (Again)
+  tyRenderQ();
 }
 
 // ════════════════════════════════════════════════════
@@ -2824,17 +2871,15 @@ function lsPickWord(btn, chosen, correct) {
     b.disabled=true;
   });
   if(isCorrectLocally) playDing(); else playBuzz();
-  (async () => {
-    let isCorrect = isCorrectLocally;
-    if (isLoggedIn()) {
-      const data = await submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('listen'), selectedAnswer: chosen, responseTimeMs });
-      if (data && data.ok) isCorrect = !!data.answerCorrect;
-    } else {
-      guestMarkActivity();
-    }
-    if (isCorrect) lsScore++;
-    setTimeout(()=>{ sqAdvance(lsQueue, isCorrect); lsRenderQ(); }, 1400);
-  })();
+  // FIX (Task 2 — Optimistic UI): advance ngay bằng kết quả local, submitFsrsReview() chạy nền —
+  // không còn chờ round-trip Neon mới bắt đầu đếm giờ chuyển câu.
+  if (isCorrectLocally) lsScore++;
+  if (isLoggedIn()) {
+    submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('listen'), selectedAnswer: chosen, responseTimeMs });
+  } else {
+    guestMarkActivity();
+  }
+  setTimeout(()=>{ sqAdvance(lsQueue, isCorrectLocally); lsRenderQ(); }, 1400);
 }
 
 // ════════════════════════════════════════════════════
