@@ -1,20 +1,23 @@
 // ════════════════════════════════════════════════════
-// INTEGRATION TEST THẬT (audit V68, Phần 6/22) — chạy trên Postgres THẬT, không mock.
+// INTEGRATION TEST THẬT (audit V68, Phần 6/22; mở rộng V76) — chạy trên Postgres THẬT, không mock.
 // Chứng minh (không phải giả định):
 //   1) 2 review request GẦN NHƯ ĐỒNG THỜI trên CÙNG 1 thẻ không tạo duplicate card, không mất
 //      update, review_history ghi đủ 2 dòng, card cuối cùng ở trạng thái hợp lệ (SELECT ... FOR
 //      UPDATE trong reviewFsrsCard() phải serialize đúng 2 request).
-//   2) Reset tài khoản (updateDBWithFsrsCleanup) xoá sạch fsrs_cards + review_history của đúng
+//   2) V76 (Yêu cầu 3): cột version tăng đúng 1 mỗi lượt review, khớp với reps.
+//   3) V76 (Yêu cầu 6/7): Reset FSRS (alsoDeleteAnalytics=false) giữ nguyên study_sessions/
+//      user_settings; Xoá toàn bộ dữ liệu học tập (alsoDeleteAnalytics=true) xoá sạch cả 2.
+//   4) Reset tài khoản (updateDBWithFsrsCleanup) xoá sạch fsrs_cards + review_history của đúng
 //      user đó, KHÔNG đụng user khác.
-//   3) Xoá tài khoản xoá sạch fsrs_cards + review_history, không để lại orphan.
+//   5) Xoá tài khoản xoá sạch fsrs_cards + review_history, không để lại orphan.
 //
 // CHỈ chạy khi có DATABASE_URL trỏ tới Postgres thật. Không có DATABASE_URL -> thoát với thông
 // báo rõ ràng "SKIPPED", KHÔNG bao giờ tự báo PASS giả (Phần 22).
 //
 // Chạy: DATABASE_URL="postgres://..." node test/fsrs.concurrency.integration.js
-// LƯU Ý: script này tạo dữ liệu test dưới user_id đặc biệt "__integration_test_user__" và
-// "__integration_test_user_2__", rồi TỰ DỌN DẸP (xoá) chính user đó ở cuối, kể cả khi fail.
-// Không đụng tới dữ liệu của user thật nào khác.
+// LƯU Ý: script này tạo dữ liệu test dưới user_id đặc biệt "__integration_test_user__",
+// "__integration_test_user_2__" và "__integration_test_user_3__", rồi TỰ DỌN DẸP (xoá) chính user
+// đó ở cuối, kể cả khi fail. Không đụng tới dữ liệu của user thật nào khác.
 // ════════════════════════════════════════════════════
 const assert = require('assert');
 
@@ -30,14 +33,16 @@ const { reviewFsrsCard, updateDBWithFsrsCleanup } = require('../lib/db');
 
 const TEST_USER = '__integration_test_user__';
 const TEST_USER_2 = '__integration_test_user_2__';
+const TEST_USER_3 = '__integration_test_user_3__'; // V76: dành riêng cho test optimistic locking + phân biệt phạm vi Reset FSRS / Xoá toàn bộ dữ liệu
 const TEST_HZ = '测试';
+const TEST_HZ_2 = '版本'; // V76: hz riêng cho test version, tránh đụng số liệu reps/history của test concurrency ở trên
 const TEST_L = 999999;
 
 async function cleanupTestUsers() {
   // Dọn trực tiếp bằng updateDBWithFsrsCleanup với mutateFn no-op ok:true, vì mục đích ở đây CHỈ
   // là xoá fsrs_cards/review_history rác của user test — không cần đụng app_store thật.
-  for (const u of [TEST_USER, TEST_USER_2]) {
-    await updateDBWithFsrsCleanup(u, () => ({ ok: true })).catch(() => {});
+  for (const u of [TEST_USER, TEST_USER_2, TEST_USER_3]) {
+    await updateDBWithFsrsCleanup(u, () => ({ ok: true }), { alsoDeleteAnalytics: true }).catch(() => {});
   }
 }
 
@@ -92,6 +97,58 @@ async function main() {
         Number(histRes.rows[0].new_stability),
         'lượt review thứ 2 phải đọc đúng state SAU lượt thứ 1 (không mất update do race condition)'
       );
+    } finally {
+      await pool.end();
+    }
+  });
+
+  // V76 Yêu cầu 3 — optimistic locking: mỗi lượt review phải tăng đúng version, và version phải
+  // luôn nhất quán với reps (cả 2 cùng tăng 1 mỗi lượt review, cùng bắt đầu từ 0) — chứng minh cột
+  // version (ALTER TABLE ... ADD COLUMN IF NOT EXISTS) hoạt động đúng qua UPDATE ... WHERE
+  // version = $cũ thay vì bị bỏ qua/không tăng.
+  await test('Optimistic locking: version tăng đúng 1 mỗi lượt review, khớp với reps', async () => {
+    const r1 = await reviewFsrsCard({ userId: TEST_USER_3, hz: TEST_HZ_2, l: TEST_L, answerCorrect: true, responseTimeMs: 1000, answerChanges: 0 });
+    assert.strictEqual(r1.card.version, 1, 'lượt review đầu tiên (từ card trống, version=0) phải ra version=1');
+    const r2 = await reviewFsrsCard({ userId: TEST_USER_3, hz: TEST_HZ_2, l: TEST_L, answerCorrect: true, responseTimeMs: 1000, answerChanges: 0 });
+    assert.strictEqual(r2.card.version, 2, 'lượt thứ 2 phải ra version=2 (tăng đúng 1 lần, không bị bỏ qua)');
+
+    const { Pool } = require('pg');
+    const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+    try {
+      const cardRes = await pool.query('SELECT version, reps FROM fsrs_cards WHERE user_id=$1 AND hz=$2 AND l=$3', [TEST_USER_3, TEST_HZ_2, TEST_L]);
+      assert.strictEqual(cardRes.rows[0].version, cardRes.rows[0].reps,
+        'version lưu trong DB phải khớp reps — cả 2 cùng tăng 1/lượt review, không lệch nhau');
+    } finally {
+      await pool.end();
+    }
+  });
+
+  // V76 Yêu cầu 6 vs 7 — 2 endpoint tự phục vụ dùng CHUNG updateDBWithFsrsCleanup nhưng khác
+  // alsoDeleteAnalytics: Reset FSRS (false, mặc định) CHỈ xoá fsrs_cards/review_history — PHẢI giữ
+  // nguyên study_sessions/user_settings; Xoá toàn bộ dữ liệu học tập (true) xoá luôn cả 3 bảng đó.
+  await test('Reset FSRS (alsoDeleteAnalytics=false) giữ nguyên study_sessions/user_settings; Xoá toàn bộ dữ liệu học tập (true) xoá sạch cả 2', async () => {
+    const { Pool } = require('pg');
+    const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+    try {
+      await reviewFsrsCard({ userId: TEST_USER_3, hz: TEST_HZ, l: TEST_L, answerCorrect: true, responseTimeMs: 1000, answerChanges: 0 });
+      await pool.query(`INSERT INTO study_sessions (user_id, start_time, end_time) VALUES ($1, now(), now()) ON CONFLICT DO NOTHING`, [TEST_USER_3]);
+      await pool.query(`INSERT INTO user_settings (user_id, desired_retention) VALUES ($1, 0.85) ON CONFLICT (user_id) DO UPDATE SET desired_retention = 0.85`, [TEST_USER_3]);
+
+      // Bước 1: Reset FSRS (endpoint /api/fsrs/reset thật) — mutateFn no-op, alsoDeleteAnalytics mặc định false.
+      const r1 = await updateDBWithFsrsCleanup(TEST_USER_3, () => ({ ok: true }));
+      assert.ok(r1.ok);
+      const sessRes1 = await pool.query('SELECT COUNT(*)::int AS c FROM study_sessions WHERE user_id=$1', [TEST_USER_3]);
+      const settRes1 = await pool.query('SELECT COUNT(*)::int AS c FROM user_settings WHERE user_id=$1', [TEST_USER_3]);
+      assert.strictEqual(sessRes1.rows[0].c, 1, 'Reset FSRS KHÔNG được đụng study_sessions (Yêu cầu 6: chỉ xoá lịch ôn tập + dữ liệu ghi nhớ FSRS)');
+      assert.strictEqual(settRes1.rows[0].c, 1, 'Reset FSRS KHÔNG được đụng user_settings (desired_retention)');
+
+      // Bước 2: Xoá toàn bộ dữ liệu học tập (endpoint /api/user/reset-learning-data thật) — alsoDeleteAnalytics=true.
+      const r2 = await updateDBWithFsrsCleanup(TEST_USER_3, () => ({ ok: true }), { alsoDeleteAnalytics: true });
+      assert.ok(r2.ok);
+      const sessRes2 = await pool.query('SELECT COUNT(*)::int AS c FROM study_sessions WHERE user_id=$1', [TEST_USER_3]);
+      const settRes2 = await pool.query('SELECT COUNT(*)::int AS c FROM user_settings WHERE user_id=$1', [TEST_USER_3]);
+      assert.strictEqual(sessRes2.rows[0].c, 0, 'Xoá toàn bộ dữ liệu học tập PHẢI xoá sạch study_sessions (Yêu cầu 7)');
+      assert.strictEqual(settRes2.rows[0].c, 0, 'Xoá toàn bộ dữ liệu học tập PHẢI xoá sạch user_settings (Yêu cầu 7)');
     } finally {
       await pool.end();
     }

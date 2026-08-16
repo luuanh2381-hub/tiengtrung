@@ -225,6 +225,32 @@ test('V69: ALLOWED_RETENTIONS đúng 4 mức yêu cầu [0.80, 0.85, 0.90, 0.95]
   assert.strictEqual(isAllowedRetention(0.91), false);
 });
 
+// ── V76 Yêu cầu 1: resolveCurrentLesson/buildLessonPriorityOrder CHUYỂN từ api/index.js sang
+//     lib/fsrs/studyScope.js (giờ reviewService.getStudySession() gọi tới) — test lại đúng behavior
+//     cũ để đảm bảo khúc chuyển chỗ này không âm thầm đổi hành vi "từ mới nào được ưu tiên". ──────
+const { resolveCurrentLesson, buildLessonPriorityOrder } = require('../lib/fsrs/studyScope');
+
+test('V76: resolveCurrentLesson() ưu tiên ui.currentLesson đã lưu nếu còn hợp lệ trong scope', () => {
+  assert.strictEqual(resolveCurrentLesson({ currentLesson: 5 }, [1, 2, 5, 8]), 5);
+});
+test('V76: resolveCurrentLesson() fallback về bài NHỎ NHẤT trong scope nếu currentLesson không hợp lệ/rơi ngoài scope', () => {
+  assert.strictEqual(resolveCurrentLesson({ currentLesson: 99 }, [3, 1, 2]), 1, 'currentLesson=99 không nằm trong scope -> lấy Math.min, không phải Math.max');
+  assert.strictEqual(resolveCurrentLesson({}, [4, 2, 7]), 2, 'user mới (chưa có currentLesson) cũng lấy bài nhỏ nhất, không nhảy vào bài cuối');
+});
+test('V76: resolveCurrentLesson() scope rỗng -> fallback bài 1, không throw', () => {
+  assert.strictEqual(resolveCurrentLesson({}, []), 1);
+});
+
+test('V76: buildLessonPriorityOrder() ưu tiên current lesson trước, rồi các bài TRƯỚC nó, rồi các bài SAU nó trong scope', () => {
+  const { inScopeOrder } = buildLessonPriorityOrder(5, [1, 3, 5, 7, 9], [1, 3, 5, 7, 9]);
+  assert.deepStrictEqual(inScopeOrder, [1, 3, 5, 7, 9], 'bài 5 (current) đứng thứ 3, trước là [1,3] tăng dần, sau là [7,9] tăng dần');
+});
+test('V76: buildLessonPriorityOrder() phần "outside" (ngoài scope) sắp theo khoảng cách GẦN current lesson nhất trước', () => {
+  const { outside } = buildLessonPriorityOrder(10, [10], [1, 5, 10, 12, 20]);
+  // Ngoài scope {10}: còn 1,5,12,20 — khoảng cách tới 10 lần lượt là 9,5,2,10 -> gần nhất trước: 12,5,1,20
+  assert.deepStrictEqual(outside, [12, 5, 1, 20]);
+});
+
 
 //     xoá fsrs_cards+review_history trong lib/db.js), KHÔNG thể unit-test thuần ở tầng scheduler
 //     vì không chạm DB thật. FIX (audit V68, Phần 22): "assert.ok(true)" là TEST GIẢ — không được
