@@ -12,8 +12,7 @@ const { readDB, updateDB, updateDBWithFsrsCleanup, getVocabByLessons, getVocabCo
   getAllVocabWords, updateVocabHanviet, getWordExampleCounts, insertWordExamples, getWordExamplesForLessons,
   getAllHanziParts, getHanziPartsKeys, insertHanziParts,
   insertActivityLog, getActivityLogs, reserveGeminiSlot, bumpGeminiRateLimit,
-  countDueFsrsCards, getDueFsrsCards, getNewWordsByLessonOrder, countNewWordsInLessons,
-  getTodayStudyCounts, getWeakFsrsCards, getFsrsCardsDebug,
+  getWeakFsrsCards, getFsrsCardsDebug,
   getWordForAnswerCheck, countKnownFsrsWords, getKnownCountsForUsers, getKnownCountsByLesson } = require('../lib/db');
 const { getFsrsVerificationInfo } = require('../lib/fsrs');
 // V69: mọi review + toàn bộ analytics/optimizer/personal-retention giờ đi qua lib/fsrs/ (scheduler
@@ -22,6 +21,11 @@ const reviewService = require('../lib/fsrs/reviewService');
 const fsrsAnalytics = require('../lib/fsrs/analytics');
 const fsrsOptimizer = require('../lib/fsrs/optimizer');
 const { runInBackground } = require('../lib/runInBackground');
+// V76 (Yêu cầu 1): resolveStudyScope/resolveCurrentLesson/buildLessonPriorityOrder/formatFsrsCard
+// đã CHUYỂN vào lib/fsrs/studyScope.js (dùng bởi reviewService.getTodayOverview/getStudySession).
+// api/index.js chỉ còn cần formatFsrsCard cho /api/study/weak-words (route KHÔNG chuyển, vì đây chỉ
+// là 1 view lọc theo lapses/difficulty, không phải quyết định "từ tiếp theo").
+const { formatFsrsCard } = require('../lib/fsrs/studyScope');
 
 const app = express();
 
@@ -524,189 +528,34 @@ app.get('/api/vocab/counts', async (req, res) => {
 // ════════════════════════════════════════════════════
 // FSRS STUDY — hệ thống ôn tập cá nhân hoá: FSRS quyết định khi nào ôn, lesson-priority chỉ
 // quyết định NEW word nào được học trước. Xem docs/fsrs.md để biết chi tiết kiến trúc.
+//
+// V76 (Yêu cầu 1 — reviewService là nguồn sự thật duy nhất): toàn bộ logic "còn bao nhiêu thẻ đến
+// hạn, từ mới nào, ưu tiên bài nào" ĐÃ CHUYỂN sang lib/fsrs/reviewService.js (+ lib/fsrs/
+// studyScope.js) — 2 route dưới đây giờ chỉ còn: xác thực, đọc "ui" của user, gọi reviewService,
+// trả JSON. KHÔNG còn tự query DB / tự quyết định thứ tự ở lớp API nữa.
 // ════════════════════════════════════════════════════
 
-// Giữ ĐỒNG BỘ THỦ CÔNG với mảng BOOKS trong js/ui.js (V74: tách ra từ index.html khi refactor
-// thành module — chỉ cần from/to để biết ranh giới Quyển/HSK — server cần thông tin này để
-// lesson-priority không "tràn" sang Quyển khác khi user đang lessonsAllMode). Nếu sửa BOOKS
-// trong js/ui.js (thêm Quyển mới), nhớ sửa cả ở đây.
-const BOOKS_RANGES = [
-  { id: 1, from: 1, to: 15 }, { id: 2, from: 16, to: 30 },
-  { id: 12, from: 100, to: 109 }, { id: 13, from: 110, to: 119 },
-  { id: 3, from: 31, to: 31 }, { id: 14, from: 90, to: 90 },
-  { id: 15, from: 91, to: 91 }, { id: 16, from: 120, to: 120 },
-  { id: 4, from: 32, to: 32 }, { id: 5, from: 33, to: 33 },
-  { id: 6, from: 34, to: 34 }, { id: 7, from: 35, to: 35 },
-  { id: 8, from: 36, to: 36 }, { id: 9, from: 37, to: 37 },
-  { id: 10, from: 38, to: 38 }, { id: 11, from: 39, to: 39 },
-];
-function bookOfLessonServer(l) {
-  const b = BOOKS_RANGES.find(x => l >= x.from && l <= x.to);
-  return b ? b.id : 1;
-}
-
-// Xác định phạm vi bài (scope) đang học của user, dựa TRÊN DỮ LIỆU lựa chọn Quyển/bài đã có sẵn
-// trong progress.ui (Phần 6: tận dụng dữ liệu hiện tại, không tạo hệ thống current-lesson mới).
-async function resolveStudyScope(ui) {
-  const vocabCounts = await getVocabCounts();
-  const allLessonsWithVocab = Object.keys(vocabCounts).map(Number).filter(n => vocabCounts[n] > 0);
-  const bookIds = (Array.isArray(ui.selectedBookIds) && ui.selectedBookIds.length) ? ui.selectedBookIds : [1];
-  const lessonsAllMode = ui.lessonsAllMode !== false;
-  let scopeLessons;
-  if (lessonsAllMode) {
-    scopeLessons = allLessonsWithVocab.filter(l => bookIds.includes(bookOfLessonServer(l)));
-  } else {
-    const sel = Array.isArray(ui.selectedLessons) ? ui.selectedLessons : [];
-    scopeLessons = allLessonsWithVocab.filter(l => sel.includes(l));
-  }
-  return { scopeLessons, allLessonsWithVocab };
-}
-
-// "Current lesson" (Phần 6): ưu tiên giá trị đã lưu (ui.currentLesson, được cập nhật mỗi khi user
-// học NEW word ở bài nào), nếu không có/không còn hợp lệ thì lấy bài NHỎ NHẤT (đầu tiên) trong
-// phạm vi đang chọn — để user học TỪ ĐẦU chương trình, không nhảy thẳng vào bài cuối.
-// FIX (câu hỏi/từ mới chỉ tập trung ở "bài mới nhất"): trước đây dùng Math.max — user MỚI (chưa
-// từng có ui.currentLesson, VD vừa đăng ký) hoặc vừa đổi phạm vi chọn khiến currentLesson cũ rơi ra
-// ngoài phạm vi mới, đều bị fallback thẳng vào bài SỐ LỚN NHẤT (bài cuối) trong phạm vi đang chọn —
-// rồi bị "kẹt" ở đó (currentLesson tự khoá vào bài vừa học) cho tới khi học hết sạch bài đó, nên từ
-// mới chỉ tập trung ở đúng 1 bài (bài lớn nhất/mới nhất) thay vì trải đều từ bài đầu.
-function resolveCurrentLesson(ui, scopeLessons) {
-  if (Number.isFinite(ui.currentLesson) && scopeLessons.includes(ui.currentLesson)) return ui.currentLesson;
-  if (scopeLessons.length) return Math.min(...scopeLessons);
-  return 1;
-}
-
-// Thứ tự ưu tiên NEW word (Phần 7/10/23): current lesson → lùi dần trong PHẠM VI đang chọn.
-// Chỉ khi phạm vi này không đủ mới lùi ra ngoài (mở rộng), ưu tiên bài GẦN current lesson nhất.
-function buildLessonPriorityOrder(currentLesson, scopeLessons, allLessonsWithVocab) {
-  const scopeSet = new Set(scopeLessons);
-  const inScopeBefore = [...scopeSet].filter(l => l < currentLesson).sort((a, b) => a - b);
-  const inScopeCurrent = [...scopeSet].filter(l => l === currentLesson);
-  const inScopeAfter = [...scopeSet].filter(l => l > currentLesson).sort((a, b) => a - b);
-  const inScopeOrder = [...inScopeBefore, ...inScopeCurrent, ...inScopeAfter];
-  // Phần mở rộng (chỉ dùng nếu trong scope không đủ NEW word): mọi bài NGOÀI scope, sắp theo
-  // khoảng cách gần current lesson nhất trước (Phần 10 bước 5, Phần 23 "chỉ mở rộng nếu cần").
-  const outside = allLessonsWithVocab
-    .filter(l => !scopeSet.has(l))
-    .sort((a, b) => Math.abs(a - currentLesson) - Math.abs(b - currentLesson) || b - a);
-  return { inScopeOrder, outside };
-}
-
-function studySettings(ui) {
-  return {
-    dailyReviewLimit: Number.isFinite(ui.dailyReviewLimit) ? ui.dailyReviewLimit : 50,
-    dailyNewLimit: Number.isFinite(ui.dailyNewLimit) ? ui.dailyNewLimit : 10,
-    newOnlyAfterDue: typeof ui.newOnlyAfterDue === 'boolean' ? ui.newOnlyAfterDue : true,
-  };
-}
-
-function formatVocabWord(row) {
-  return { hz: row.hz, py: row.py, vi: row.vi, l: row.l, tag: row.tag, hanviet: row.hanviet };
-}
-function formatFsrsCard(row) {
-  return {
-    hz: row.hz, l: row.l, py: row.py, vi: row.vi, tag: row.tag, hanviet: row.hanviet,
-    state: row.state, due: row.due, stability: row.stability, difficulty: row.difficulty,
-    elapsed_days: row.elapsed_days, scheduled_days: row.scheduled_days,
-    reps: row.reps, lapses: row.lapses, last_review: row.last_review,
-    wrongCount: row.wrong_count != null ? row.wrong_count : row.lapses,
-  };
-}
-
-// ── Dashboard "Hôm nay học" (Phần 13) ──
+// ── Dashboard "Hôm nay học" ──
 app.get('/api/study/today', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
   try {
     const user = authed.db.users[authed.username];
     const ui = (user.progress && user.progress.ui) || {};
-    const { scopeLessons, allLessonsWithVocab } = await resolveStudyScope(ui);
-    const currentLesson = resolveCurrentLesson(ui, scopeLessons);
-    // V71 (sửa lỗi "Từ mới: 0" gây hiểu lầm hết bài): đếm từ mới trên TOÀN BỘ phạm vi bài đang
-    // chọn (scopeLessons), KHÔNG chỉ riêng currentLesson — trước đây chỉ đếm đúng 1 bài hiện tại,
-    // nên nếu bài đó đã học hết thì hiện "Từ mới: 0" dù các bài khác trong phạm vi đã chọn vẫn còn
-    // rất nhiều từ chưa học (và còn khiến điều kiện "đã ôn hết" ở dưới báo sai).
-    const [dueCount, newInScope, weakCards] = await Promise.all([
-      countDueFsrsCards(authed.username),
-      countNewWordsInLessons(authed.username, scopeLessons),
-      getWeakFsrsCards(authed.username, 200),
-    ]);
-    res.json({
-      ok: true,
-      dueCount,
-      newInCurrentLesson: newInScope,
-      currentLesson,
-      hasScope: scopeLessons.length > 0 || allLessonsWithVocab.length > 0,
-      weakCount: weakCards.length,
-    });
+    const overview = await reviewService.getTodayOverview(authed.username, ui);
+    res.json({ ok: true, ...overview });
   } catch (e) { fail(res, e); }
 });
 
-// ── Lấy 1 session học (Phần 14/21): REVIEW trước, NEW sau; FSRS luôn ưu tiên hơn NEW (Phần 5/9) ──
+// ── Lấy 1 session học: REVIEW trước, NEW sau; FSRS luôn ưu tiên hơn NEW ──
 app.get('/api/study/session', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
   try {
     const user = authed.db.users[authed.username];
     const ui = (user.progress && user.progress.ui) || {};
-    const { dailyReviewLimit, dailyNewLimit, newOnlyAfterDue } = studySettings(ui);
-    const todayKey2 = todayKey();
-    // V72 (audit hiệu năng): totalDue (countDueFsrsCards) TRƯỚC ĐÂY nằm ở round riêng SAU Promise.all
-    // đầu, dù nó không cần dữ liệu gì từ scope/todayCounts cả — gộp cả 3 vào cùng 1 Promise.all.
-    const [{ scopeLessons, allLessonsWithVocab }, { newToday, reviewToday }, totalDue] = await Promise.all([
-      resolveStudyScope(ui),
-      getTodayStudyCounts(authed.username, todayKey2),
-      countDueFsrsCards(authed.username),
-    ]);
-    const currentLesson = resolveCurrentLesson(ui, scopeLessons);
-
-    const remainingReviewSlots = Math.max(0, dailyReviewLimit - reviewToday);
-    const remainingNewSlots = Math.max(0, dailyNewLimit - newToday);
-
-    // V72: dueCards (review) và lượt lấy NEW word ĐẦU TIÊN (trong phạm vi đang chọn) không phụ
-    // thuộc lẫn nhau — trước đây chạy tuần tự (dueCards xong mới tính new), giờ chạy song song.
-    // "newOnlyAfterDue" (Phần 9) vẫn giữ nguyên đúng logic: chặn new nếu còn backlog due vượt
-    // ngân sách hôm nay — điều kiện này chỉ cần totalDue/remainingReviewSlots (đã có ở trên), không
-    // cần đợi dueCards THỰC SỰ lấy về mới biết có nên chặn hay không.
-    const blockedByBacklog = newOnlyAfterDue && totalDue > remainingReviewSlots;
-    const { inScopeOrder, outside } = buildLessonPriorityOrder(currentLesson, scopeLessons, allLessonsWithVocab);
-    const [dueCards, firstPassNewCards] = await Promise.all([
-      remainingReviewSlots > 0 ? getDueFsrsCards(authed.username, remainingReviewSlots) : Promise.resolve([]),
-      (remainingNewSlots > 0 && !blockedByBacklog)
-        ? getNewWordsByLessonOrder(authed.username, inScopeOrder, remainingNewSlots)
-        : Promise.resolve([]),
-    ]);
-
-    // 2) Nếu trong phạm vi đang chọn không đủ NEW word, mới mở rộng ra ngoài (Phần 10 bước 5) —
-    //    bước này BẮT BUỘC tuần tự vì cần biết đã lấy được bao nhiêu ở bước trên rồi mới xin thêm.
-    let newCards = firstPassNewCards;
-    if (remainingNewSlots > 0 && !blockedByBacklog && newCards.length < remainingNewSlots && outside.length) {
-      const more = await getNewWordsByLessonOrder(
-        authed.username, outside, remainingNewSlots - newCards.length
-      );
-      newCards = newCards.concat(more);
-    }
-
-    const session = [
-      ...dueCards.map(c => ({ type: 'review', word: formatFsrsCard(c) })),
-      ...newCards.map(w => ({ type: 'new', word: formatVocabWord(w) })),
-    ];
-    // V71 (audit lặp từ): khử trùng lặp theo hz — phòng trường hợp CÙNG 1 chữ Hán được coi là 2
-    // "thẻ" khác nhau ở 2 bài (l) khác nhau (giáo trình HSK có thể dạy lại cùng 1 chữ ở bài sau).
-    // Với người học, thấy đúng 1 chữ Hán 2 lần trong 1 phiên VẪN LÀ lặp, bất kể l có khác nhau hay
-    // không — nên gộp về chỉ 1 thẻ/hz, ưu tiên giữ thẻ due (review) trước thẻ new nếu trùng.
-    const seenHz = new Set();
-    const dedupedSession = session.filter(it => {
-      if (seenHz.has(it.word.hz)) return false;
-      seenHz.add(it.word.hz);
-      return true;
-    });
-    res.json({
-      ok: true, session: dedupedSession,
-      reviewCount: dueCards.length, newCount: newCards.length,
-      currentLesson, totalDue,
-      blockedByBacklog,
-    });
+    const result = await reviewService.getStudySession(authed.username, ui);
+    res.json({ ok: true, ...result });
   } catch (e) { fail(res, e); }
 });
 
@@ -904,6 +753,54 @@ app.post('/api/settings/retention', async (req, res) => {
     // vì 500, đúng convention lỗi nghiệp vụ của các endpoint khác trong file này.
     res.json({ ok: false, error: e.message });
   }
+});
+
+// ── V76 Yêu cầu 6 — Reset FSRS (tự phục vụ, CHÍNH user đang đăng nhập tự làm cho tài khoản của
+//     mình, khác /api/admin/users/:key/reset vốn dành cho admin thao tác trên tài khoản NGƯỜI
+//     KHÁC). Chỉ xoá lịch ôn tập + dữ liệu ghi nhớ FSRS (fsrs_cards, review_history) — KHÔNG đụng
+//     study_sessions/user_settings/user_fsrs_weights/progress.ui (giữ nguyên cài đặt hiển thị,
+//     Quyển/bài đang chọn, desired retention...). Toàn bộ nằm trong 1 transaction Postgres
+//     (updateDBWithFsrsCleanup → BEGIN/COMMIT, lỗi giữa chừng tự ROLLBACK — Yêu cầu 8), không thể
+//     có trạng thái xoá dở dang. ──
+app.post('/api/fsrs/reset', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const result = await updateDBWithFsrsCleanup(authed.username, (db) => {
+      if (!db.users[authed.username]) return { ok: false, error: 'Không tìm thấy tài khoản' };
+      return { ok: true }; // không sửa gì trong app_store — Reset FSRS không đụng progress.ui/cài đặt
+    });
+    if (result.ok) {
+      reviewService.invalidateUserSettingsCache(authed.username);
+      logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'settings',
+        `Tự reset FSRS (fsrs_cards: ${result.fsrsCardsDeleted}, review_history: ${result.reviewHistoryDeleted})`);
+    }
+    res.json(result);
+  } catch (e) { fail(res, e); }
+});
+
+// ── V76 Yêu cầu 7 — Xoá toàn bộ dữ liệu học tập (tự phục vụ): đưa tài khoản về trạng thái như
+//     người dùng mới — xoá FSRS + toàn bộ analytics (study_sessions/user_settings/
+//     user_fsrs_weights, alsoDeleteAnalytics=true) + reset progress.ui về mặc định. GIỮ NGUYÊN tài
+//     khoản/email/mật khẩu/role và từ vựng hệ thống (không đụng bảng vocab_words/word_examples/
+//     hanzi_parts). Cùng transaction/khoá dòng app_store như mọi updateDB khác — Yêu cầu 8. ──
+app.post('/api/user/reset-learning-data', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const result = await updateDBWithFsrsCleanup(authed.username, (db) => {
+      const u = db.users[authed.username];
+      if (!u) return { ok: false, error: 'Không tìm thấy tài khoản' };
+      u.progress = emptyProgress(); // như tài khoản vừa đăng ký — KHÔNG đụng email/passwordHash/role
+      return { ok: true };
+    }, { alsoDeleteAnalytics: true });
+    if (result.ok) {
+      reviewService.invalidateUserSettingsCache(authed.username);
+      logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'settings',
+        `Tự xoá toàn bộ dữ liệu học tập (fsrs_cards: ${result.fsrsCardsDeleted}, review_history: ${result.reviewHistoryDeleted})`);
+    }
+    res.json(result);
+  } catch (e) { fail(res, e); }
 });
 
 // ── GET /api/fsrs/stats (Phần 8) ──
