@@ -38,10 +38,31 @@
   <div class="auth-box" style="max-width:320px;">
     <div class="auth-title" id="account-menu-name">👤</div>
     <button class="auth-submit" style="margin-top:10px" onclick="closeAccountMenu(); openChangePassword();">🔑 Đổi mật khẩu</button>
+    <button class="auth-submit" style="margin-top:10px;background:var(--l7a);box-shadow:0 4px 0 #b25f22;" onclick="openDangerConfirm('fsrs-reset')">🔄 Reset FSRS</button>
+    <button class="auth-submit" style="margin-top:10px;background:var(--fail);box-shadow:0 4px 0 #c23a3a;" onclick="openDangerConfirm('wipe-data')">🗑️ Xoá toàn bộ dữ liệu học tập</button>
     <button class="auth-submit" style="margin-top:10px;background:var(--fail);" onclick="closeAccountMenu(); if(confirm('Đăng xuất khỏi tài khoản này?')) authLogout();">🚪 Đăng xuất</button>
     <button class="auth-guest" onclick="closeAccountMenu()">Đóng</button>
   </div>
 </div>
+
+<!-- V76 (Yêu cầu 6/7/9): modal xác nhận DÙNG CHUNG cho cả "Reset FSRS" và "Xoá toàn bộ dữ liệu học
+     tập" — nội dung/màu nút đổi động theo hành động qua openDangerConfirm(kind) (xem js/settings.js),
+     tránh lặp lại gần như y hệt 1 khối modal 2 lần. Bắt buộc gõ đúng chữ RESET mới cho xác nhận. -->
+<div id="danger-confirm-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:999;display:none;align-items:center;justify-content:center;padding:20px;">
+  <div class="auth-box" style="max-width:340px;">
+    <div class="auth-title" id="danger-confirm-title">⚠️</div>
+    <div style="color:var(--muted);font-size:.82rem;text-align:center;margin-bottom:10px;line-height:1.5;" id="danger-confirm-desc"></div>
+    <div style="font-weight:800;font-size:.85rem;text-align:center;margin-bottom:12px;white-space:pre-line;color:var(--ink);" id="danger-confirm-question"></div>
+    <div class="auth-error" id="danger-confirm-error"></div>
+    <div class="auth-field">
+      <label>Gõ "RESET" (viết hoa) để xác nhận</label>
+      <input type="text" id="danger-confirm-input" autocomplete="off" placeholder="RESET">
+    </div>
+    <button class="auth-submit" id="danger-confirm-submit" onclick="submitDangerConfirm()">Xác nhận</button>
+    <button class="auth-guest" onclick="closeDangerConfirm()">Huỷ</button>
+  </div>
+</div>
+
 
 <div id="pw-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:998;display:none;align-items:center;justify-content:center;padding:20px;">
   <div class="auth-box" style="max-width:320px;">
@@ -120,6 +141,7 @@
 <script src="/js/hsk.js"></script>
 <script src="/js/admin.js"></script>
 <script src="/js/logs.js"></script>
+<script src="/js/settings.js"></script>
 <script src="/js/app.js"></script>
 </body>
 </html>
