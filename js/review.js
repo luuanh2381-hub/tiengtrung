@@ -16,7 +16,6 @@ let rvOptions = [];      // 4 lựa chọn trắc nghiệm của câu hiện t�
 let rvStartedAt = 0;     // performance.now() tại thời điểm câu hỏi THỰC SỰ hiển thị cho user (Phần 4)
 let rvAnswerChanges = 0; // UI hiện tại chọn là chốt ngay (không cho đổi trước khi submit) nên luôn 0 (Phần 16/17)
 let rvLastAnswer = null; // { correct, card, autoRating } — kết quả lượt vừa submit, để hiện feedback (Phần 18)
-let rvDoneHz = new Set(); // V71: hz đã trả lời ĐÚNG trong phiên này — không bao giờ nạp/hiện lại
 let rvTotalPlanned = 0;   // V71: cỡ hàng đợi lúc nạp (để tính % tiến độ; rvSession có thể tạm dài hơn do Again được chèn lại)
 let rvAnsweredCount = 0;  // V71: số câu đã trả lời (kể cả Again) trong phiên này
 const RV_QUIZ_TYPE = 'hz2vi'; // Phần 1: mặc định hỏi "chữ Hán → nghĩa", khớp đúng ví dụ trong yêu cầu V67
@@ -36,7 +35,7 @@ function rvDedupeSession(list) {
 async function startStudySession(weakMode) {
   rvWeakMode = !!weakMode;
   rvExamplePool = []; rvLastAnswer = null;
-  rvDoneHz = new Set(); rvAnsweredCount = 0;
+  rvAnsweredCount = 0;
   goTab('review');
   const el = document.getElementById('content');
   if (el) el.innerHTML = `<div class="study-empty">Đang tải phiên học...</div>`;
@@ -210,15 +209,18 @@ async function rvPick(btn, hz) {
 }
 
 // V71: thẻ Ở ĐẦU hàng đợi bị loại NGAY LẬP TỨC sau khi có kết quả server. Đúng → loại vĩnh viễn
-// khỏi phiên (rvDoneHz). Sai (Again) → chèn lại cách tối thiểu REPEAT_GAP thẻ khác, KHÔNG gọi lại
-// server giữa phiên — hàng đợi cạn thật (kể cả các thẻ Again đã được xử lý xong) mới coi là hết.
+// khỏi phiên (rvSession.shift() ngay dưới đây đã là nguồn sự thật duy nhất cho "còn lại gì trong
+// phiên" — V76 dọn bỏ biến rvDoneHz vì trước đây chỉ được .add() chứ không hề được đọc ở đâu, tức
+// không hề ảnh hưởng "từ tiếp theo là từ nào", Yêu cầu 2). Sai (Again) → chèn lại cách tối thiểu
+// REPEAT_GAP thẻ khác, KHÔNG gọi lại server giữa phiên — hàng đợi cạn thật (kể cả các thẻ Again đã
+// được xử lý xong) mới coi là hết.
 function rvAdvance() {
   if (currentTab !== 'review') return; // user đã rời màn hình, tránh render nhầm chỗ
   const it = rvSession.shift();
   if (it) {
     rvAnsweredCount++;
     const isCorrect = !!(rvLastAnswer && rvLastAnswer.correct);
-    if (isCorrect) { rvDoneHz.add(it.word.hz); sessionKnownHz.add(it.word.hz); saveSessionKnownHz(); sqPurgeHzFromAllQueues(it.word.hz); } // V74: loại khỏi TẤT CẢ tab khác; FIX (Ưu tiên 2): persist qua reload; FIX (Ưu tiên 1): purge khỏi hàng đợi tab khác
+    if (isCorrect) { sessionKnownHz.add(it.word.hz); saveSessionKnownHz(); sqPurgeHzFromAllQueues(it.word.hz); } // V74: loại khỏi TẤT CẢ tab khác; FIX (Ưu tiên 2): persist qua reload; FIX (Ưu tiên 1): purge khỏi hàng đợi tab khác
     else rvSession.splice(Math.min(REPEAT_GAP, rvSession.length), 0, it);
   }
   if (!rvSession.length) refreshServerMeta(); // hết phiên — làm mới streak/known thật

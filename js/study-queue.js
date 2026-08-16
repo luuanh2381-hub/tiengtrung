@@ -239,6 +239,32 @@ function sqPurgeHzFromAllQueues(hz) {
   }
 }
 
+// V76 (Yêu cầu 6/7 — js/settings.js gọi hàm này SAU KHI server xác nhận đã Reset FSRS / Xoá toàn
+// bộ dữ liệu học tập thành công): dọn sạch MỌI hàng đợi + trạng thái chống lặp đang giữ trong bộ
+// nhớ trình duyệt, để không còn thẻ/due nào "sống sót" từ trước lúc reset — không cần reload trang,
+// tab đang mở khi quay lại sẽ tự sqLoad()/loadFsrsPracticePool() lại từ đầu (thấy đúng "New" hết).
+function sqResetAllQueuesAndSessionState() {
+  const queues = [
+    typeof fcQueue !== 'undefined' ? fcQueue : null,
+    typeof qzQueue !== 'undefined' ? qzQueue : null,
+    typeof tyQueue !== 'undefined' ? tyQueue : null,
+    typeof lsQueue !== 'undefined' ? lsQueue : null,
+  ];
+  for (const sq of queues) {
+    if (!sq) continue;
+    sq.items = []; sq.totalPlanned = 0; sq.answeredCount = 0; sq.doneHz = new Set();
+  }
+  if (typeof rvSession !== 'undefined') rvSession = [];
+  if (typeof rvTotalPlanned !== 'undefined') rvTotalPlanned = 0;
+  if (typeof rvAnsweredCount !== 'undefined') rvAnsweredCount = 0;
+  sessionKnownHz = new Set();
+  saveSessionKnownHz();
+  // Outbox (Yêu cầu 4 — không double submit) có thể còn giữ review CHƯA gửi lên kịp từ TRƯỚC lúc
+  // reset — nếu để nguyên, lần flush kế tiếp sẽ "hồi sinh" đúng những gì vừa xoá. Reset phải triệt
+  // để nên bỏ luôn các review đang chờ gửi này, không cố gửi lại nữa.
+  try { localStorage.removeItem(reviewOutboxKey()); } catch {}
+}
+
 // Nạp hàng đợi 1 LẦN cho 1 lượt "vào tab" — dùng chung bởi mọi tab luyện tập (đăng nhập: FSRS
 // thật qua loadFsrsPracticePool; khách: pool cục bộ theo bài đang chọn). V74: lọc thêm
 // sessionKnownHz để không nạp lại từ vừa trả lời ĐÚNG ở 1 tab KHÁC trong cùng phiên.
