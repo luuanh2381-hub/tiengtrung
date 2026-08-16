@@ -727,13 +727,19 @@ function correctAnswerForQuizType(word, quizType) {
 app.post('/api/study/review', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
-  const { wordId, quizType, selectedAnswer, responseTimeMs, answerChanges } = req.body || {};
+  const { wordId, quizType, selectedAnswer, responseTimeMs, answerChanges, idempotencyKey } = req.body || {};
   const hz = wordId && wordId.hz;
   const l = wordId && Number(wordId.l);
   if (!hz || !Number.isFinite(l)) return res.json({ ok: false, error: 'Thiếu wordId {hz, l} hợp lệ' });
   if (typeof selectedAnswer !== 'string' || !selectedAnswer.trim()) {
     return res.json({ ok: false, error: 'Thiếu selectedAnswer' });
   }
+  // FIX (Ưu tiên 6 — chống spam review): idempotencyKey do client sinh 1 LẦN cho mỗi lượt trả lời
+  // thật (xem js/study-queue.js submitFsrsReview) — dùng để reviewFsrsCard() nhận diện double-click
+  // / gửi trùng từ outbox mà không tạo thêm dòng review_history hay chạy FSRS 2 lần. Không bắt
+  // buộc (client cũ có thể chưa gửi) nhưng khi có phải là chuỗi hợp lệ, không tin mù quáng độ dài.
+  const idemKey = (typeof idempotencyKey === 'string' && idempotencyKey.length >= 8 && idempotencyKey.length <= 100)
+    ? idempotencyKey : null;
   // responseTimeMs/answerChanges là input hành vi, không phải nguồn sự thật FSRS — vẫn phải làm
   // sạch (sanitize) trước khi dùng, không tin tuyệt đối số client gửi lên (Phần 3/4).
   const rtRaw = Number(responseTimeMs);
@@ -751,7 +757,7 @@ app.post('/api/study/review', async (req, res) => {
     // đây cũng là nơi desired_retention riêng của user (Phần 5) được áp dụng + study_sessions
     // (Phần 9) được cập nhật.
     const result = await reviewService.reviewCard({
-      userId: authed.username, hz, l, answerCorrect, responseTimeMs: rt, answerChanges: changes,
+      userId: authed.username, hz, l, answerCorrect, responseTimeMs: rt, answerChanges: changes, idempotencyKey: idemKey,
     });
     // Cập nhật "current lesson" CHỈ khi đây là 1 NEW word vừa được học lần đầu — tự động lùi/tiến
     // theo đúng bài user vừa thực sự học, không cần thao tác thủ công (Phần 6). Review của các từ
