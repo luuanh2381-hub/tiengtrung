@@ -218,7 +218,7 @@ function rvAdvance() {
   if (it) {
     rvAnsweredCount++;
     const isCorrect = !!(rvLastAnswer && rvLastAnswer.correct);
-    if (isCorrect) { rvDoneHz.add(it.word.hz); sessionKnownHz.add(it.word.hz); } // V74: loại khỏi TẤT CẢ tab khác
+    if (isCorrect) { rvDoneHz.add(it.word.hz); sessionKnownHz.add(it.word.hz); saveSessionKnownHz(); sqPurgeHzFromAllQueues(it.word.hz); } // V74: loại khỏi TẤT CẢ tab khác; FIX (Ưu tiên 2): persist qua reload; FIX (Ưu tiên 1): purge khỏi hàng đợi tab khác
     else rvSession.splice(Math.min(REPEAT_GAP, rvSession.length), 0, it);
   }
   if (!rvSession.length) refreshServerMeta(); // hết phiên — làm mới streak/known thật

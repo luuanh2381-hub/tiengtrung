@@ -121,6 +121,7 @@ async function authSubmit() {
     localStorage.removeItem('authGuest');
     studySession = { id: null, startedAt: 0, lastActivity: 0, cards: 0, correct: 0, wrong: 0 }; // Task 4/5: mỗi tài khoản có phiên học riêng, tránh lẫn phiên cũ
     sessionKnownHz = new Set(); // V74: phiên chống lặp chéo tab (study-queue.js) cũng phải riêng theo từng tài khoản
+    try { sessionStorage.removeItem(sessionKnownHzStoreKey()); } catch {} // FIX (Ưu tiên 2): đăng nhập mới thì không kế thừa dữ liệu persist cũ (nếu có) của đúng username này từ phiên trình duyệt trước
     progressState = data.progress || defaultProgress();
     currentRole = data.role || 'user';
     currentRank = data.rank || null;
@@ -145,6 +146,7 @@ function authContinueAsGuest() {
   currentRole = 'user'; currentRank = null;
   pauseStudyTimer(); studySession = { id: null, startedAt: 0, lastActivity: 0, cards: 0, correct: 0, wrong: 0 };
   sessionKnownHz = new Set(); // V74: reset phiên chống lặp chéo tab (study-queue.js)
+  try { sessionStorage.removeItem(sessionKnownHzStoreKey()); } catch {} // FIX (Ưu tiên 2)
   localStorage.removeItem('authToken'); localStorage.removeItem('authUsername');
   progressState = loadGuestProgressLocally();
   applyUIState();
@@ -202,6 +204,7 @@ async function authLogout() {
   currentRole = 'user'; currentRank = null;
   serverStreak = 0; serverLongestStreak = 0; serverKnownCount = 0;
   pauseStudyTimer(); studySession = { id: null, startedAt: 0, lastActivity: 0, cards: 0, correct: 0, wrong: 0 };
+  try { sessionStorage.removeItem(sessionKnownHzStoreKey()); } catch {} // FIX (Ưu tiên 2): xoá persist của username VỪA đăng xuất, trước khi đổi authUsername về null
   sessionKnownHz = new Set(); // V74: reset phiên chống lặp chéo tab (study-queue.js)
   localStorage.removeItem('authToken'); localStorage.removeItem('authUsername'); localStorage.removeItem('authGuest');
   progressState = defaultProgress();
