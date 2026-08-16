@@ -770,13 +770,17 @@ app.post('/api/fsrs/reset', async (req, res) => {
       if (!db.users[authed.username]) return { ok: false, error: 'Không tìm thấy tài khoản' };
       return { ok: true }; // không sửa gì trong app_store — Reset FSRS không đụng progress.ui/cài đặt
     });
-    if (result.ok) {
-      reviewService.invalidateUserSettingsCache(authed.username);
-      logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'settings',
-        `Tự reset FSRS (fsrs_cards: ${result.fsrsCardsDeleted}, review_history: ${result.reviewHistoryDeleted})`);
-    }
-    res.json(result);
-  } catch (e) { fail(res, e); }
+    if (!result.ok) return res.json({ success: false, message: result.error || 'FSRS reset failed' });
+    reviewService.invalidateUserSettingsCache(authed.username);
+    logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'settings',
+      `Tự reset FSRS (fsrs_cards: ${result.fsrsCardsDeleted}, review_history: ${result.reviewHistoryDeleted})`);
+    // V76 Yêu cầu 6 — response shape CỐ ĐỊNH đúng contract yêu cầu (chi tiết số dòng đã xoá vẫn
+    // được ghi vào activity_logs ở trên cho mục đích audit nội bộ, không trả ra ngoài response).
+    res.json({ success: true, message: 'FSRS reset completed' });
+  } catch (e) {
+    console.error('⚠️  Lỗi:', e && e.message);
+    res.status(500).json({ success: false, message: e.message || 'FSRS reset failed' });
+  }
 });
 
 // ── V76 Yêu cầu 7 — Xoá toàn bộ dữ liệu học tập (tự phục vụ): đưa tài khoản về trạng thái như
@@ -794,13 +798,16 @@ app.post('/api/user/reset-learning-data', async (req, res) => {
       u.progress = emptyProgress(); // như tài khoản vừa đăng ký — KHÔNG đụng email/passwordHash/role
       return { ok: true };
     }, { alsoDeleteAnalytics: true });
-    if (result.ok) {
-      reviewService.invalidateUserSettingsCache(authed.username);
-      logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'settings',
-        `Tự xoá toàn bộ dữ liệu học tập (fsrs_cards: ${result.fsrsCardsDeleted}, review_history: ${result.reviewHistoryDeleted})`);
-    }
-    res.json(result);
-  } catch (e) { fail(res, e); }
+    if (!result.ok) return res.json({ success: false, message: result.error || 'Learning data reset failed' });
+    reviewService.invalidateUserSettingsCache(authed.username);
+    logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'settings',
+      `Tự xoá toàn bộ dữ liệu học tập (fsrs_cards: ${result.fsrsCardsDeleted}, review_history: ${result.reviewHistoryDeleted})`);
+    // V76 Yêu cầu 6 — response shape CỐ ĐỊNH đúng contract yêu cầu.
+    res.json({ success: true, message: 'Learning data reset completed' });
+  } catch (e) {
+    console.error('⚠️  Lỗi:', e && e.message);
+    res.status(500).json({ success: false, message: e.message || 'Learning data reset failed' });
+  }
 });
 
 // ── GET /api/fsrs/stats (Phần 8) ──
