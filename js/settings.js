@@ -63,10 +63,11 @@ async function submitDangerConfirm() {
   try {
     const res = await fetch(cfg.endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() } });
     const data = await res.json().catch(() => null);
-    if (!data || !data.ok) { showErr((data && data.error) || 'Có lỗi xảy ra, thử lại sau.'); return; }
+    // V76 (Yêu cầu 6 — response contract cố định {success, message}, thay cho {ok, error} trước đó).
+    if (!data || !data.success) { showErr((data && data.message) || 'Có lỗi xảy ra, thử lại sau.'); return; }
     await afterDangerActionSuccess();
     closeDangerConfirm();
-    alert(cfg.successMsg); // Yêu cầu 9: thông báo thành công
+    alert(cfg.successMsg || data.message); // Yêu cầu 9: thông báo thành công
   } catch (e) {
     showErr('Lỗi kết nối: ' + e.message); // Yêu cầu 9: thông báo thất bại
   } finally {
