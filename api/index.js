@@ -526,9 +526,10 @@ app.get('/api/vocab/counts', async (req, res) => {
 // quyết định NEW word nào được học trước. Xem docs/fsrs.md để biết chi tiết kiến trúc.
 // ════════════════════════════════════════════════════
 
-// Giữ ĐỒNG BỘ THỦ CÔNG với mảng BOOKS trong index.html (chỉ cần from/to để biết ranh giới
-// Quyển/HSK — server cần thông tin này để lesson-priority không "tràn" sang Quyển khác khi
-// user đang lessonsAllMode). Nếu sửa BOOKS trong index.html (thêm Quyển mới), nhớ sửa cả ở đây.
+// Giữ ĐỒNG BỘ THỦ CÔNG với mảng BOOKS trong js/ui.js (V74: tách ra từ index.html khi refactor
+// thành module — chỉ cần from/to để biết ranh giới Quyển/HSK — server cần thông tin này để
+// lesson-priority không "tràn" sang Quyển khác khi user đang lessonsAllMode). Nếu sửa BOOKS
+// trong js/ui.js (thêm Quyển mới), nhớ sửa cả ở đây.
 const BOOKS_RANGES = [
   { id: 1, from: 1, to: 15 }, { id: 2, from: 16, to: 30 },
   { id: 12, from: 100, to: 109 }, { id: 13, from: 110, to: 119 },
