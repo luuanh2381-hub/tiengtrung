@@ -18,7 +18,14 @@ async function loadFsrsPracticePool(limit) {
     const res = await fetch('/api/study/session', { headers: authHeaders() });
     const data = await res.json();
     if (!data.ok) return { words: [], error: data.error || 'Không tải được hàng đợi FSRS' };
-    const words = (data.session || []).map(it => it.word).slice(0, limit);
+    // FIX (Bug 2 gốc — đổi số câu/số thẻ làm hàng đợi rỗng hoặc thiếu từ): TRƯỚC ĐÂY .slice(0,
+    // limit) cắt NGAY TẠI ĐÂY, TRƯỚC KHI sqLoad() lọc sessionKnownHz. Nếu N từ ĐẦU danh sách server
+    // trả về đã được trả lời ĐÚNG trong phiên (rất hay gặp khi vừa đổi limit giữa phiên đang học),
+    // slice(0, limit) chỉ vớt đúng nhóm "đã học" đó — lọc sessionKnownHz xong hàng đợi trống trơn dù
+    // server còn thừa rất nhiều thẻ due/new phía sau. KHÔNG cắt ở đây nữa: trả về NGUYÊN danh sách
+    // (đã bị chặn ở mức ngân sách/ngày phía server rồi nên không quá lớn), để sqLoad() lọc
+    // sessionKnownHz xong MỚI cắt đúng limit — thứ tự lọc-rồi-cắt, không phải cắt-rồi-lọc.
+    const words = (data.session || []).map(it => it.word);
     return { words, blockedByBacklog: !!data.blockedByBacklog, totalDue: data.totalDue || 0 };
   } catch (e) {
     return { words: [], error: e.message };
@@ -35,10 +42,24 @@ function loadReviewOutbox() {
 function saveReviewOutbox(list) {
   try { localStorage.setItem(reviewOutboxKey(), JSON.stringify(list)); } catch {}
 }
-function queueReviewOutbox(payload) {
+// FIX (Bug 1 gốc — mất review khi refresh/đóng tab giữa lúc request đang bay): TRƯỚC ĐÂY outbox
+// chỉ được ghi trong NHÁNH LỖI của _submitFsrsReviewImpl (add-on-failure) — nếu trang bị đóng/F5
+// đúng lúc request ĐANG BAY (chưa kịp thành công lẫn chưa kịp báo lỗi), request bị trình duyệt huỷ
+// giữa chừng, nhánh lỗi KHÔNG BAO GIỜ chạy tới, payload KHÔNG BAO GIỜ vào outbox — mất vĩnh viễn dù
+// UI đã hiện "đã học". Giờ ghi outbox NGAY TRƯỚC KHI gửi (write-ahead) — an toàn dù request có kịp
+// xong hay không; gỡ khỏi outbox theo đúng idempotencyKey khi CÓ kết quả (thành công hoặc lỗi vĩnh
+// viễn). Luôn đọc lại localStorage MỚI NHẤT ngay trước khi ghi (KHÔNG giữ 1 bản list cũ qua await)
+// để không ghi đè mất các thay đổi đồng thời từ lượt submit/flush khác đang chạy song song.
+function addToOutbox(payload) {
   const list = loadReviewOutbox();
   list.push({ payload, queuedAt: Date.now() });
   saveReviewOutbox(list);
+}
+function removeFromOutbox(idempotencyKey) {
+  if (!idempotencyKey) return;
+  const list = loadReviewOutbox();
+  const next = list.filter(e => e.payload.idempotencyKey !== idempotencyKey);
+  if (next.length !== list.length) saveReviewOutbox(next);
 }
 // V74: phan biet loi TAM THOI (mat mang, hoac server 5xx vi DB/lock tam thoi truc trac) - nen giu
 // trong outbox de thu lai - voi loi VINH VIEN (HTTP 200 nhung ok:false vi payload thieu/sai du lieu) -
@@ -51,27 +72,36 @@ function isRetryableReviewFailure(res, data) {
   return !data; // JSON khong doc duoc (vd server crash giua chung) -> coi la tam thoi, thu lai
 }
 let _flushingOutbox = false;
+// FIX (Bug 1 — race điều kiện outbox): TRƯỚC ĐÂY đọc `list` 1 LẦN ở đầu vòng lặp rồi await fetch()
+// — trong lúc await đó, 1 lượt submitFsrsReview() KHÁC (user trả lời câu tiếp theo trong lúc outbox
+// đang tự gửi lại) có thể ghi thêm/gỡ bớt outbox; khi vòng lặp này quay lại `saveReviewOutbox(list)`
+// với bản `list` CŨ đã chụp từ đầu, nó GHI ĐÈ mất đúng thay đổi đồng thời đó. Giờ đọc lại outbox MỚI
+// NHẤT ở đầu MỖI vòng lặp, và gỡ đúng 1 mục theo idempotencyKey (không dùng list[0]/shift() dựa vào
+// vị trí đã chụp trước đó nữa) — an toàn dù có nhiều nơi cùng đọc/ghi outbox song song.
 async function flushReviewOutbox() {
   if (_flushingOutbox || !isLoggedIn()) return;
   _flushingOutbox = true;
   try {
-    let list = loadReviewOutbox();
-    while (list.length) {
+    while (true) {
+      const list = loadReviewOutbox();
+      if (!list.length) break;
+      const entry = list[0];
       let res, data;
       try {
         res = await fetch('/api/study/review', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify(list[0].payload),
+          body: JSON.stringify(entry.payload),
+          keepalive: true, // sống sót qua lúc tab bị đóng/điều hướng giữa chừng request này
         });
         data = await res.json().catch(() => null);
       } catch (e) { break; } // van mat mang - dung, thu lai o lan trigger ke tiep (con nguyen trong outbox)
       if (!data || !data.ok) {
         if (isRetryableReviewFailure(res, data)) break; // loi tam thoi - GIU nguyen trong outbox, thu lai sau
-        // loi vinh vien (payload sai) - bo qua muc nay de khong ket outbox mai mai
+        removeFromOutbox(entry.payload.idempotencyKey); // loi vinh vien (payload sai) - bo qua muc nay de khong ket outbox mai mai
+        continue;
       }
-      list.shift();
-      saveReviewOutbox(list);
+      removeFromOutbox(entry.payload.idempotencyKey);
     }
   } finally { _flushingOutbox = false; }
 }
@@ -91,14 +121,32 @@ document.addEventListener('visibilitychange', () => {
 // Đóng tab/đóng app/điều hướng đi nơi khác: gửi 1 heartbeat cuối cùng (keepalive để sống sót qua lúc
 // trang đang bị huỷ) để không mất vài giây/phút học cuối cùng trước khi heartbeat 20s kế tiếp kịp chạy.
 window.addEventListener('pagehide', () => {
-  if (!studySession.id) return;
+  if (studySession.id) {
+    try {
+      fetch('/api/study/session/heartbeat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ sessionId: studySession.id }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch {}
+  }
+  // FIX (Bug 1 — "có flush trước unload"): cố gắng gửi NỐT mọi review còn kẹt trong outbox ngay lúc
+  // trang bị đóng/điều hướng đi (vd review vừa write-ahead vào outbox nhưng fetch() gốc trong
+  // _submitFsrsReviewImpl chưa kịp xong). Best-effort — KHÔNG await (unload có thể huỷ context
+  // trước khi await tiếp tục chạy) — vẫn AN TOÀN dù request này không kịp hoàn tất, vì: (1) outbox
+  // đã giữ sẵn payload (write-ahead) nên lần mở app kế tiếp (bootAuth → flushReviewOutbox) vẫn tự
+  // gửi lại; (2) idempotencyKey khiến việc gửi trùng (request này VÀ flush lần sau) không tạo 2
+  // dòng lịch sử / không chạy FSRS 2 lần.
   try {
-    fetch('/api/study/session/heartbeat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ sessionId: studySession.id }),
-      keepalive: true,
-    }).catch(() => {});
+    for (const entry of loadReviewOutbox()) {
+      fetch('/api/study/review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify(entry.payload),
+        keepalive: true,
+      }).catch(() => {});
+    }
   } catch {}
 });
 
@@ -119,8 +167,7 @@ const _inFlightReviews = new Map();
 
 // -- Gui 1 luot tra loi len reviewService (FSRS-6 that) - dung CHUNG cho MOI tab luyen tap
 // (Review/Flashcard/Trac nghiem/Go chu/Nghe-chon) cua user da dang nhap. Server luon la nguon su
-// that cuoi cung cho answerCorrect + rating. Noi GOI ham nay KHONG duoc await truoc khi chuyen
-// cau (Task 2 - khong cho Neon); neu mat mang, payload vao outbox de tu gui lai (Task 3). --
+// that cuoi cung cho answerCorrect + rating. --
 function submitFsrsReview(args) {
   const w = args.word;
   const inFlightKey = w.hz + '|' + w.l + '|' + args.quizType;
@@ -129,6 +176,12 @@ function submitFsrsReview(args) {
   _inFlightReviews.set(inFlightKey, p);
   return p;
 }
+// FIX (Bug 1 gốc — write-ahead): ghi outbox NGAY TRƯỚC KHI gửi (không còn "add-on-failure" như
+// trước — nếu trang bị đóng/F5 đúng lúc request đang bay, nhánh lỗi/catch không kịp chạy nên
+// payload không bao giờ vào outbox, mất vĩnh viễn). Thêm keepalive để request sống sót qua lúc
+// trang bị đóng/điều hướng giữa chừng. Gỡ khỏi outbox theo idempotencyKey khi có kết quả xác định
+// (thành công HOẶC lỗi vĩnh viễn) — lỗi tạm thời/mất mạng thì GIỮ nguyên trong outbox (đã nằm sẵn
+// từ write-ahead, không cần xử lý gì thêm ở nhánh đó).
 async function _submitFsrsReviewImpl({ word, quizType, selectedAnswer, responseTimeMs, answerChanges }) {
   const payload = {
     wordId: { hz: word.hz, l: word.l },
@@ -138,31 +191,47 @@ async function _submitFsrsReviewImpl({ word, quizType, selectedAnswer, responseT
     answerChanges: Number.isFinite(answerChanges) ? answerChanges : 0,
     idempotencyKey: genIdempotencyKey(),
   };
+  addToOutbox(payload);
   let res, data;
   try {
     res = await fetch('/api/study/review', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(payload),
+      keepalive: true,
     });
     data = await res.json().catch(() => null);
   } catch (e) {
-    console.error('Loi ket noi khi luu review - da xep vao outbox de gui lai:', e);
-    queueReviewOutbox(payload);
-    return { ok: false, error: e.message, queued: true };
+    console.error('Loi ket noi khi luu review - da nam san trong outbox (write-ahead) de gui lai:', e);
+    return { ok: false, error: e.message, queued: true }; // đã nằm sẵn trong outbox từ addToOutbox() ở trên
   }
   if (!data || !data.ok) {
     console.error('Khong luu duoc luot review:', data && data.error);
     if (isRetryableReviewFailure(res, data)) {
-      // V74: loi server tam thoi (vd 500 do DB/lock) khong duoc coi la "xong" - phai xep vao outbox,
-      // neu khong review nay se mat vinh vien du UI da bao "da luu".
-      queueReviewOutbox(payload);
+      // V74: loi server tam thoi (vd 500 do DB/lock) khong duoc coi la "xong" - GIU nguyen trong
+      // outbox (da nam san tu write-ahead), neu khong review nay se mat vinh vien du UI da bao "da luu".
       return { ok: false, error: data && data.error, queued: true };
     }
+    removeFromOutbox(payload.idempotencyKey); // loi vinh vien (payload sai) - bo khoi outbox, khong lap lai mai mai
     return data || { ok: false, error: 'Phan hoi khong hop le tu server' };
   }
+  removeFromOutbox(payload.idempotencyKey); // thanh cong - go khoi outbox
   bumpStudySessionCounters(!!data.answerCorrect); // Task 4: cards_reviewed/dung/sai tang dan theo THOI GIAN THUC
   return data;
+}
+
+// FIX (Bug 1 — "UI không được chuyển câu khi Neon chưa lưu"): wrapper CHỜ submitFsrsReview() thay
+// vì để bindX() chạy nền không chờ như trước — dùng ở mọi bindX() trước khi advance sang câu kế
+// tiếp. Vẫn có TRẦN chờ tối đa (không treo UI vô hạn nếu mạng chết hẳn) — an toàn về dữ liệu dù rơi
+// vào nhánh timeout, vì payload đã write-ahead vào outbox NGAY từ đầu _submitFsrsReviewImpl, không
+// phụ thuộc gì vào việc caller có đợi đủ lâu hay không; outbox tự gửi lại ở lần online/quay lại
+// tab/mở app kế tiếp (xem flushReviewOutbox).
+const SUBMIT_REVIEW_MAX_WAIT_MS = 6000;
+function submitFsrsReviewAwaited(args) {
+  return Promise.race([
+    submitFsrsReview(args),
+    new Promise(resolve => setTimeout(() => resolve({ ok: false, timedOut: true, queued: true }), SUBMIT_REVIEW_MAX_WAIT_MS)),
+  ]);
 }
 
 // ════════════════════════════════════════════════════
@@ -209,7 +278,101 @@ function sqDedupeByHz(words) {
   return words.filter(w => { if (seen.has(w.hz)) return false; seen.add(w.hz); return true; });
 }
 
-function sqCreate() { return { items: [], doneHz: new Set(), totalPlanned: 0, answeredCount: 0 }; }
+function sqCreate() { return { items: [], doneHz: new Set(), totalPlanned: 0, answeredCount: 0, sessionId: null }; }
+
+// ════════════════════════════════════════════════════
+// FIX (Bug 2 gốc — "Session Persistence"): TRƯỚC ĐÂY qzQueue/fcQueue/tyQueue/lsQueue/rvSession +
+// answeredCount/totalPlanned CHỈ tồn tại trong biến JS (bộ nhớ) — F5/tải lại trang xoá sạch toàn bộ
+// vị trí/thứ tự/tiến trình đang học dở, dù sessionKnownHz (ở trên) đã chống lặp được các từ trả lời
+// ĐÚNG. Lưu TOÀN BỘ trạng thái hàng đợi (sessionId, items còn lại, doneHz, totalPlanned,
+// answeredCount + dữ liệu phụ như điểm số) vào localStorage sau MỖI lần đổi — khôi phục ĐÚNG session
+// cũ khi mở lại trang thay vì luôn tạo session mới. Hết hạn sau SQ_SESSION_MAX_AGE_MS để không "hồi
+// sinh" một session bỏ dở quá lâu (lúc đó thẻ due/mới trên server có thể đã khác nhiều).
+// ════════════════════════════════════════════════════
+const SQ_SESSION_MAX_AGE_MS = 45 * 60 * 1000; // 45 phút
+
+function sqStorageKey(mode) { return 'sqState_' + mode + '_' + (authUsername || ''); }
+
+function sqPersist(mode, sq, extra) {
+  if (!authUsername) return;
+  try {
+    localStorage.setItem(sqStorageKey(mode), JSON.stringify({
+      sessionId: sq.sessionId,
+      items: sq.items,
+      doneHz: [...sq.doneHz],
+      totalPlanned: sq.totalPlanned,
+      answeredCount: sq.answeredCount,
+      savedAt: Date.now(),
+      extra: extra || {},
+    }));
+  } catch {}
+}
+function sqClearPersisted(mode) {
+  try { localStorage.removeItem(sqStorageKey(mode)); } catch {}
+}
+function sqReadPersisted(mode) {
+  if (!authUsername) return null;
+  try {
+    const raw = localStorage.getItem(sqStorageKey(mode));
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    if (!saved || !Array.isArray(saved.items) || !saved.sessionId) return null;
+    if (Date.now() - (saved.savedAt || 0) > SQ_SESSION_MAX_AGE_MS) return null;
+    return saved;
+  } catch { return null; }
+}
+// Khôi phục session đã lưu VÀO ĐÚNG object hàng đợi (sq) truyền vào — lọc lại bằng sessionKnownHz
+// phòng trường hợp bản lưu đã CŨ hơn 1 lượt "trả lời đúng ở tab khác" xảy ra sau khi lưu (v.d. tab
+// này chưa kịp render/persist lại sau khi bị sqPurgeHzFromAllQueues sửa ở tab khác) — những thẻ bị
+// lọc ra vì lý do đó được tính luôn vào answeredCount (coi như đã xong, tránh lệch tổng số).
+function sqRestoreIntoQueue(mode, sq) {
+  const saved = sqReadPersisted(mode);
+  if (!saved || !saved.items.length) return null;
+  const filteredItems = saved.items.filter(w => !sessionKnownHz.has((w.hz || (w.word && w.word.hz))));
+  const purged = saved.items.length - filteredItems.length;
+  if (!filteredItems.length) return null;
+  sq.items = filteredItems;
+  sq.doneHz = new Set(saved.doneHz);
+  sq.totalPlanned = saved.totalPlanned;
+  sq.answeredCount = saved.answeredCount + purged;
+  sq.sessionId = saved.sessionId;
+  return saved.extra || {};
+}
+
+// FIX (Bug 2 gốc — đổi số câu/số thẻ reset toàn bộ tiến trình): thay vì sqLoad() lại từ đầu (huỷ
+// hàng đợi đang học dở, reset answeredCount/totalPlanned về 0), CHỈ điều chỉnh KÍCH THƯỚC hàng đợi
+// hiện có theo limit MỚI — giữ nguyên thứ tự + tiến trình đã làm (Ví dụ: đã học 1-40/100, đổi 10
+// câu → 20 câu, tiếp tục từ 41, KHÔNG quay lại từ 1). Tăng limit → nạp thêm từ CÙNG nguồn FSRS thật
+// (lọc trùng với hàng đợi hiện tại + sessionKnownHz) rồi nối vào cuối. Giảm limit → cắt bớt phần
+// CHƯA học ở cuối hàng đợi, không đụng tới phần đã trả lời/thẻ đang hiển thị.
+async function sqAdjustLimit(sq, newLimit) {
+  const remainingWanted = Math.max(0, newLimit - sq.answeredCount);
+  if (sq.items.length > remainingWanted) {
+    sq.items = sq.items.slice(0, Math.max(remainingWanted, Math.min(sq.items.length, 1)));
+    sq.totalPlanned = sq.answeredCount + sq.items.length;
+    return { ok: true };
+  }
+  if (sq.items.length >= remainingWanted) {
+    sq.totalPlanned = sq.answeredCount + sq.items.length;
+    return { ok: true };
+  }
+  const currentHz = new Set(sq.items.map(w => w.hz));
+  const stillNeeded = remainingWanted - sq.items.length;
+  if (!isLoggedIn()) {
+    const extra = sqDedupeByHz(shuffle(getFilteredWords()))
+      .filter(w => !sessionKnownHz.has(w.hz) && !currentHz.has(w.hz))
+      .slice(0, stillNeeded);
+    sq.items = sq.items.concat(extra);
+    sq.totalPlanned = sq.answeredCount + sq.items.length;
+    return { ok: true };
+  }
+  const { words, error } = await loadFsrsPracticePool(remainingWanted + sq.answeredCount);
+  if (error) return { error };
+  const extra = sqDedupeByHz(words).filter(w => !sessionKnownHz.has(w.hz) && !currentHz.has(w.hz)).slice(0, stillNeeded);
+  sq.items = sq.items.concat(extra);
+  sq.totalPlanned = sq.answeredCount + sq.items.length;
+  return { ok: true };
+}
 
 // FIX (Ưu tiên 1 — "một từ đã hoàn thành trong phiên hiện tại không được xuất hiện lại ở tab
 // khác"): TRƯỚC ĐÂY sessionKnownHz chỉ được lọc tại thời điểm sqLoad() nạp hàng đợi — nếu 1 từ đã
@@ -263,17 +426,22 @@ function sqResetAllQueuesAndSessionState() {
   // reset — nếu để nguyên, lần flush kế tiếp sẽ "hồi sinh" đúng những gì vừa xoá. Reset phải triệt
   // để nên bỏ luôn các review đang chờ gửi này, không cố gửi lại nữa.
   try { localStorage.removeItem(reviewOutboxKey()); } catch {}
+  // FIX (Bug 2 — session persistence): dọn luôn mọi hàng đợi ĐÃ LƯU (localStorage) của cả 5 tab —
+  // nếu để sót, refresh sau khi reset sẽ "khôi phục" nhầm đúng những thẻ vừa bị xoá FSRS.
+  ['review', 'review-weak', 'flash', 'quiz', 'type', 'listen'].forEach(sqClearPersisted);
 }
 
 // Nạp hàng đợi 1 LẦN cho 1 lượt "vào tab" — dùng chung bởi mọi tab luyện tập (đăng nhập: FSRS
 // thật qua loadFsrsPracticePool; khách: pool cục bộ theo bài đang chọn). V74: lọc thêm
 // sessionKnownHz để không nạp lại từ vừa trả lời ĐÚNG ở 1 tab KHÁC trong cùng phiên.
 async function sqLoad(sq, limit) {
-  sq.doneHz = new Set(); sq.answeredCount = 0;
+  sq.doneHz = new Set(); sq.answeredCount = 0; sq.sessionId = genIdempotencyKey();
   if (isLoggedIn()) {
     const { words, error } = await loadFsrsPracticePool(limit);
     if (error) return { error };
-    sq.items = sqDedupeByHz(words).filter(w => !sessionKnownHz.has(w.hz));
+    // FIX (Bug 2 — thứ tự lọc/cắt): lọc sessionKnownHz TRƯỚC, cắt limit SAU (xem loadFsrsPracticePool
+    // ở trên — trước đây cắt limit TRƯỚC khi lọc, có thể làm hàng đợi trống oan dù server còn thẻ).
+    sq.items = sqDedupeByHz(words).filter(w => !sessionKnownHz.has(w.hz)).slice(0, limit);
   } else {
     sq.items = sqDedupeByHz(shuffle(getFilteredWords())).filter(w => !sessionKnownHz.has(w.hz)).slice(0, limit);
   }

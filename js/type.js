@@ -16,15 +16,34 @@ function tySetCount(v) {
   questionCount=parseInt(v);
   progressState.ui.questionCount = questionCount;
   cacheProgressLocally(); scheduleSync();
-  bindType(true); // đổi số câu → cần nạp lại hàng đợi thật sự
+  // FIX (Bug 2 gốc — đổi số câu reset tiến trình): 'adjust' chỉ đổi KÍCH THƯỚC hàng đợi hiện có,
+  // giữ nguyên phần đã học — không còn bindType(true) ép nạp lại từ đầu.
+  bindType('adjust');
 }
 function bindType(forceReload) { _bindTypeAsync(forceReload); }
 // V70/V71: user ĐÃ ĐĂNG NHẬP gõ đúng hàng đợi FSRS thật (due + new hôm nay), nạp 1 LẦN vào
 // tyQueue rồi chống lặp hoàn toàn ở client (xem sqAdvance).
 // V74 (audit lặp câu hỏi): quay lại tab 'type' giữa phiên đang học dở không được nạp lại hàng đợi
 // (trước đây luôn sqLoad() lại mỗi lần render()/goTab() gọi bindType()) — chỉ vẽ lại câu hiện tại.
+// forceReload: falsy = vào tab bình thường (giữ hàng đợi nếu có; lần đầu trong trang thử khôi phục
+// từ localStorage — FIX Bug 2 "refresh mất tiến trình"); 'adjust' = đổi số câu, chỉ resize hàng đợi
+// hiện có; true = ép nạp mới hoàn toàn (dự phòng).
+let tyRestoreAttempted = false;
 async function _bindTypeAsync(forceReload) {
+  if (forceReload === 'adjust' && (tyQueue.items.length > 0 || tyQueue.answeredCount > 0)) {
+    const { error } = await sqAdjustLimit(tyQueue, questionCount);
+    if (currentTab !== 'type') return;
+    const area1 = document.getElementById('ty-area');
+    if (error) { if (area1) area1.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
+    tyRenderQ();
+    return;
+  }
   if (!forceReload && tyQueue.items.length > 0) { tyRenderQ(); return; }
+  if (!forceReload && !tyRestoreAttempted) {
+    tyRestoreAttempted = true;
+    const extra = sqRestoreIntoQueue('type', tyQueue);
+    if (extra) { tyScore = extra.score || 0; tyRenderQ(); return; }
+  }
   tyScore = 0;
   const area = document.getElementById('ty-area');
   if (isLoggedIn() && area) area.innerHTML = `<div class="panel center" style="padding:24px">⏳ Đang tải hàng đợi FSRS...</div>`;
@@ -34,6 +53,7 @@ async function _bindTypeAsync(forceReload) {
   tyRenderQ();
 }
 function tyRenderQ() {
+  sqPersist('type', tyQueue, { score: tyScore }); // FIX (Bug 2 — session persistence): lưu lại mọi lần vẽ để refresh không mất tiến trình
   const area = document.getElementById('ty-area'); if (!area) return;
   if (tyQueue.totalPlanned === 0) {
     const msg = isLoggedIn()
@@ -68,8 +88,19 @@ function tyRenderQ() {
 // V70/V71: trả lời/bỏ qua đi qua ĐÚNG reviewService.reviewCard() (user đã đăng nhập). sqAdvance()
 // đảm bảo thẻ vừa đúng bị loại khỏi phiên ngay, thẻ sai/bỏ qua chỉ lặp lại sau tối thiểu
 // REPEAT_GAP thẻ khác — không tự ý gọi lại server giữa chừng phiên.
-function tyCheck() {
+// FIX (Bug 1 gốc — "UI chuyển câu nhưng Neon chưa lưu"): TRƯỚC ĐÂY advance qua setTimeout chạy ĐỘC
+// LẬP với submitFsrsReview() (chạy nền, không chờ) — UI có thể chuyển câu (và user refresh/đóng
+// tab) trước khi Neon xác nhận đã lưu. Giờ ĐỢI submitFsrsReviewAwaited() (có trần chờ) SONG SONG
+// với đúng khoảng nghỉ hiển thị đáp án 1600ms như cũ — mạng nhanh thì thời gian không đổi.
+// FIX (chống lặp tuyệt đối — Kiểm tra/Bỏ qua không bị khoá UI như nút trắc nghiệm): thêm cờ
+// tySubmitting để chặn bấm "Kiểm tra"/"Bỏ qua"/Enter nhiều lần trong lúc đang đợi — trước đây chỉ
+// khoá mỗi ô input, 2 nút vẫn bấm được, có thể gọi sqAdvance() 2 lần chồng nhau cho CÙNG 1 thẻ,
+// làm thẻ kế tiếp bị "nuốt" mất 1 câu không hiển thị.
+let tySubmitting = false;
+async function tyCheck() {
+  if (tySubmitting) return;
   const inp = document.getElementById('ty-input'); if(!inp) return;
+  tySubmitting = true;
   const val = inp.value.trim();
   const w = tyQueue.items[0];
   const okLocally = val === w.hz;
@@ -80,26 +111,32 @@ function tyCheck() {
   if (okLocally) playDing(); else playBuzz();
   speak(w.hz);
   inp.disabled=true;
-  // FIX (Task 2 — Optimistic UI): advance ngay bằng kết quả local, KHÔNG await Neon trước khi hẹn
-  // giờ chuyển câu. submitFsrsReview() chạy nền song song với timeout hiển thị feedback.
   if (okLocally) tyScore++;
   if (isLoggedIn()) {
-    submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('type'), selectedAnswer: val || '⨯ (bỏ trống) ⨯', responseTimeMs });
+    await Promise.all([
+      submitFsrsReviewAwaited({ word: w, quizType: fsrsQuizTypeFor('type'), selectedAnswer: val || '⨯ (bỏ trống) ⨯', responseTimeMs }),
+      new Promise(r => setTimeout(r, 1600)),
+    ]);
   } else {
     guestMarkActivity();
+    await new Promise(r => setTimeout(r, 1600));
   }
-  setTimeout(()=>{ sqAdvance(tyQueue, okLocally); tyRenderQ(); }, 1600);
+  tySubmitting = false;
+  if (currentTab !== 'type' || tyQueue.items[0] !== w) return; // user đã rời tab hoặc hàng đợi đã đổi trong lúc chờ
+  sqAdvance(tyQueue, okLocally); tyRenderQ();
 }
-function tySkip() {
+async function tySkip() {
+  if (tySubmitting) return;
+  tySubmitting = true;
   const w = tyQueue.items[0];
   const responseTimeMs = performance.now() - tyStartedAt;
-  // FIX (Task 2 — Optimistic UI): trước đây await xong mới advance → "Bỏ qua" bị treo chờ Neon.
-  // Advance ngay lập tức, gửi review chạy nền.
   if (isLoggedIn()) {
-    submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('type'), selectedAnswer: '⨯ (bỏ qua) ⨯', responseTimeMs });
+    await submitFsrsReviewAwaited({ word: w, quizType: fsrsQuizTypeFor('type'), selectedAnswer: '⨯ (bỏ qua) ⨯', responseTimeMs });
   } else {
     guestMarkActivity();
   }
+  tySubmitting = false;
+  if (currentTab !== 'type' || tyQueue.items[0] !== w) return;
   sqAdvance(tyQueue, false); // bỏ qua luôn tính là chưa nhớ (Again)
   tyRenderQ();
 }

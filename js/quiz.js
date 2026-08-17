@@ -21,13 +21,16 @@ function qzSetCount(v) {
   qzQuestionCount=parseInt(v);
   progressState.ui.qzQuestionCount = qzQuestionCount;
   cacheProgressLocally(); scheduleSync();
-  bindQuiz(true); // đổi số câu → cần nạp lại hàng đợi thật sự
+  // FIX (Bug 2 gốc — đổi số câu reset tiến trình): trước đây bindQuiz(true) ép nạp lại hàng đợi từ
+  // đầu (mất answeredCount/thứ tự đang học dở). 'adjust' chỉ đổi KÍCH THƯỚC hàng đợi hiện có (xem
+  // sqAdjustLimit ở study-queue.js) — giữ nguyên phần đã học.
+  bindQuiz('adjust');
 }
 function qzSetType(t) {
   qzType=t;
   progressState.ui.qzType = qzType;
   cacheProgressLocally(); scheduleSync();
-  bindQuiz(true); // đổi chế độ hỏi → cần nạp lại hàng đợi thật sự
+  bindQuiz('adjust'); // đổi chiều hỏi không đổi TẬP từ đang học — giữ nguyên hàng đợi (xem qzSetCount)
 }
 
 // Tải toàn bộ ví dụ theo từ (kho đảm bảo mỗi từ có sẵn vài câu) cho các bài đang học
@@ -56,10 +59,27 @@ function bindQuiz(forceReload) { _bindQuizAsync(forceReload); }
 // phiên. KHÁCH vẫn dùng pool theo bài đang chọn để thử app, không lưu tiến độ.
 // V74 (audit lặp câu hỏi): render()/goTab() gọi bindQuiz() MỖI LẦN vào tab 'quiz' — trước đây luôn
 // sqLoad() lại dù đang học dở giữa chừng, xoá mất trạng thái chống lặp (thẻ vừa đúng có thể hiện
-// lại sau khi rời rồi quay lại tab). Còn câu trong hàng đợi thì chỉ vẽ lại. qzSetCount/qzSetType
-// truyền forceReload=true vì đổi số câu/chế độ hỏi cần 1 hàng đợi mới thật sự.
+// lại sau khi rời rồi quay lại tab). Còn câu trong hàng đợi thì chỉ vẽ lại.
+// forceReload nhận 3 giá trị: falsy = vào tab bình thường (giữ nguyên nếu đang có hàng đợi, thử
+// khôi phục từ localStorage nếu đây là lần đầu bind trong trang này — FIX Bug 2 "refresh mất tiến
+// trình"); 'adjust' = đổi số câu/chiều hỏi, chỉ thay đổi KÍCH THƯỚC hàng đợi hiện có (sqAdjustLimit)
+// — không mất tiến trình; true = ép nạp mới hoàn toàn (hiện không còn nơi nào gọi, giữ lại để dự phòng).
+let qzRestoreAttempted = false;
 async function _bindQuizAsync(forceReload) {
+  const area0 = document.getElementById('qz-area');
+  if (forceReload === 'adjust' && (qzQueue.items.length > 0 || qzQueue.answeredCount > 0)) {
+    const { error } = await sqAdjustLimit(qzQueue, qzQuestionCount);
+    if (currentTab !== 'quiz') return;
+    if (error) { if (area0) area0.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
+    qzRenderQ();
+    return;
+  }
   if (!forceReload && qzQueue.items.length > 0) { qzRenderQ(); return; }
+  if (!forceReload && !qzRestoreAttempted) {
+    qzRestoreAttempted = true;
+    const extra = sqRestoreIntoQueue('quiz', qzQueue);
+    if (extra) { qzScore = extra.score || 0; qzRenderQ(); qzLoadSentencePool().then(() => qzRenderQ()); return; }
+  }
   qzScore = 0;
   const area = document.getElementById('qz-area');
   if (isLoggedIn() && area) area.innerHTML = `<div class="panel center" style="padding:24px">⏳ Đang tải hàng đợi FSRS...</div>`;
@@ -71,6 +91,7 @@ async function _bindQuizAsync(forceReload) {
 }
 
 function qzRenderQ() {
+  sqPersist('quiz', qzQueue, { score: qzScore }); // FIX (Bug 2 — session persistence): lưu lại mọi lần vẽ để refresh không mất tiến trình
   const area = document.getElementById('qz-area');
   if (!area) return;
   if (qzQueue.totalPlanned === 0) {
@@ -127,7 +148,7 @@ function qzRenderQ() {
 // xác định đúng/sai + suy FSRS rating. sqAdvance() đảm bảo thẻ vừa đúng bị loại khỏi phiên ngay,
 // thẻ sai chỉ lặp lại sau tối thiểu REPEAT_GAP thẻ khác — KHÔNG bao giờ tự gọi lại server giữa
 // chừng phiên (hàng đợi cạn thật mới coi là hết phiên, xem qzRenderQ).
-function qzPick(btn, hz) {
+async function qzPick(btn, hz) {
   const w = qzQueue.items[0];
   const isCorrectLocally = btn._correct;
   const responseTimeMs = performance.now() - qzStartedAt;
@@ -138,17 +159,23 @@ function qzPick(btn, hz) {
   });
   if (isCorrectLocally) playDing(); else playBuzz();
   speak(w.hz);
-  // FIX (Task 2 — Optimistic UI): trước đây await submitFsrsReview() XONG mới setTimeout chuyển
-  // câu — nghĩa là UI phải chờ trọn round-trip Neon rồi mới bắt đầu đếm 1400ms. Giờ dùng NGAY kết
-  // quả đã biết ở client (đáp án đúng đã nhúng sẵn trong DOM) để tính điểm + hẹn giờ chuyển câu,
-  // gọi submitFsrsReview() chạy NỀN song song — không chặn đường chuyển câu của user.
   if (isCorrectLocally) qzScore++;
+  // FIX (Bug 1 gốc — "UI chuyển câu nhưng Neon chưa lưu"): TRƯỚC ĐÂY submitFsrsReview() chạy NỀN,
+  // KHÔNG chờ, nên UI có thể chuyển câu (và user có thể refresh/đóng tab) trước khi Neon xác nhận
+  // đã lưu — mất dữ liệu. Giờ ĐỢI submitFsrsReviewAwaited() (có trần chờ, xem study-queue.js) SONG
+  // SONG với đúng khoảng nghỉ hiển thị đáp án 1400ms như cũ — mạng nhanh thì tổng thời gian KHÔNG
+  // đổi so với trước (vẫn 1400ms), mạng chậm thì đợi thêm chứ không chuyển câu "hụt".
   if (isLoggedIn()) {
-    submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor(qzType), selectedAnswer: btn.dataset.v, responseTimeMs });
+    await Promise.all([
+      submitFsrsReviewAwaited({ word: w, quizType: fsrsQuizTypeFor(qzType), selectedAnswer: btn.dataset.v, responseTimeMs }),
+      new Promise(r => setTimeout(r, 1400)),
+    ]);
   } else {
     guestMarkActivity();
+    await new Promise(r => setTimeout(r, 1400));
   }
-  setTimeout(()=>{ sqAdvance(qzQueue, isCorrectLocally); qzRenderQ(); }, 1400);
+  if (currentTab !== 'quiz' || qzQueue.items[0] !== w) return; // user đã rời tab hoặc hàng đợi đã đổi trong lúc chờ
+  sqAdvance(qzQueue, isCorrectLocally); qzRenderQ();
 }
 
 // Nhóm từ theo chủ đề ngữ nghĩa (cùng phạm trù dễ gây nhầm lẫn khi học, dù chữ Hán không liên quan)

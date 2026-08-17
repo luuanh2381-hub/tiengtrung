@@ -27,20 +27,41 @@ function fcChangeCount(v) {
   questionCount = v === 'Tất cả' ? 9999 : parseInt(v);
   progressState.ui.questionCount = questionCount;
   cacheProgressLocally(); scheduleSync();
-  bindFlash(true); // đổi số thẻ → cần nạp lại hàng đợi thật sự
+  // FIX (Bug 2 gốc — đổi số thẻ reset tiến trình): 'adjust' chỉ đổi KÍCH THƯỚC hàng đợi hiện có
+  // (sqAdjustLimit ở study-queue.js), giữ nguyên phần đã học — không còn bindFlash(true) ép nạp lại từ đầu.
+  bindFlash('adjust');
 }
 
 // V70/V71: user ĐÃ ĐĂNG NHẬP lấy thẻ từ ĐÚNG hàng đợi FSRS thật (due + new hôm nay, cùng nguồn với
 // "Hôm nay học"/Trắc nghiệm/Gõ chữ/Nghe-chọn), nạp 1 LẦN vào fcQueue rồi chống lặp hoàn toàn ở
 // client (xem sqAdvance). KHÁCH (không thể có thẻ FSRS thật) vẫn dùng pool theo bài đang chọn.
+// forceReload: falsy = vào tab bình thường (giữ hàng đợi nếu có; lần đầu trong trang thử khôi phục
+// từ localStorage — FIX Bug 2 "refresh mất tiến trình"); 'adjust' = đổi số thẻ, chỉ resize hàng đợi
+// hiện có; true = ép nạp mới hoàn toàn (dự phòng, hiện không còn nơi nào gọi).
+let fcRestoreAttempted = false;
 async function bindFlash(forceReload) {
   fcFlipped = false;
+  if (forceReload === 'adjust' && (fcQueue.items.length > 0 || fcQueue.answeredCount > 0)) {
+    const limit = questionCount === 9999 ? 9999 : questionCount;
+    const { error } = await sqAdjustLimit(fcQueue, limit);
+    if (currentTab !== 'flash') return;
+    if (error) {
+      const content = document.getElementById('content');
+      if (content) content.innerHTML = `<div class="panel center" style="padding:40px">⚠️ ${error}</div>`;
+      return;
+    }
+    fcUpdate();
+    return;
+  }
   // V74 (audit lặp câu hỏi): render()/goTab() gọi lại bindFlash() MỖI LẦN vào tab 'flash', kể cả
   // khi chỉ rời sang tab khác rồi quay lại giữa phiên đang học dở — trước đây luôn sqLoad() lại,
   // xoá mất tiến độ + trạng thái chống lặp cũ (thẻ vừa đúng có thể hiện lại). Còn thẻ trong hàng
-  // đợi (chưa hết phiên) thì chỉ vẽ lại, KHÔNG nạp lại. fcChangeCount() vẫn truyền forceReload=true
-  // vì đổi số thẻ cần 1 hàng đợi mới thật sự.
+  // đợi (chưa hết phiên) thì chỉ vẽ lại, KHÔNG nạp lại.
   if (!forceReload && fcQueue.items.length > 0) { fcUpdate(); return; }
+  if (!forceReload && !fcRestoreAttempted) {
+    fcRestoreAttempted = true;
+    if (sqRestoreIntoQueue('flash', fcQueue)) { fcUpdate(); return; }
+  }
   const limit = questionCount === 9999 ? 9999 : questionCount;
   const front = document.getElementById('fc-front');
   if (isLoggedIn() && front) front.innerHTML = `<div class="fc-hint">⏳ Đang tải hàng đợi FSRS...</div>`;
@@ -101,6 +122,7 @@ function renderHanziParts(hz, expanded) {
 }
 
 function fcUpdate() {
+  sqPersist('flash', fcQueue); // FIX (Bug 2 — session persistence): lưu lại mọi lần vẽ để refresh không mất tiến trình
   if (fcQueue.totalPlanned === 0) {
     const msg = isLoggedIn()
       ? '🎉 Không còn thẻ nào đến hạn hoặc từ mới trong ngân sách hôm nay!<br><span style="font-size:.85rem;color:var(--muted)">Vào "🎯 Hôm nay học" để xem/chỉnh giới hạn.</span>'
@@ -240,15 +262,20 @@ async function pronounceTest() {
 // (Again nếu chưa nhớ; Good/Hard/Easy tuỳ baseline nếu đã nhớ, Phần 6/9/10 lib/fsrs-auto-rating.js).
 // V70/V71: ok=true/false đã đủ xác định answerCorrect ở server (selectedAnswer=w.vi khi true,
 // sentinel chắc chắn sai khi false) nên biết ngay kết quả, không cần chờ round-trip mới sqAdvance.
-function fcAnswer(ok) {
+// FIX (Bug 1 gốc — "UI chuyển câu nhưng Neon chưa lưu"): TRƯỚC ĐÂY sqAdvance()/fcUpdate() chạy
+// NGAY, submitFsrsReview() chạy nền không chờ — thẻ kế tiếp có thể hiện ra (và user có thể
+// refresh/đóng tab) trước khi Neon xác nhận đã lưu. Giờ ĐỢI submitFsrsReviewAwaited() (có trần chờ)
+// trước khi sang thẻ tiếp theo.
+async function fcAnswer(ok) {
   const w = fcQueue.items[0];
   if (!w) return;
   if (isLoggedIn()) {
     const selectedAnswer = ok ? w.vi : '⨯ (tự chấm: chưa nhớ) ⨯';
-    submitFsrsReview({ word: w, quizType: 'hz2vi', selectedAnswer, responseTimeMs: fcResponseTimeMs });
+    await submitFsrsReviewAwaited({ word: w, quizType: 'hz2vi', selectedAnswer, responseTimeMs: fcResponseTimeMs });
   } else {
     guestMarkActivity();
   }
+  if (currentTab !== 'flash' || fcQueue.items[0] !== w) return; // user đã rời tab hoặc hàng đợi đã đổi trong lúc chờ
   sqAdvance(fcQueue, ok);
   fcFlipped = false;
   fcUpdate();

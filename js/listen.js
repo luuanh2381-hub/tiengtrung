@@ -16,7 +16,9 @@ function lsSetCount(v) {
   questionCount=parseInt(v);
   progressState.ui.questionCount = questionCount;
   cacheProgressLocally(); scheduleSync();
-  bindListen(true); // đổi số câu → cần nạp lại hàng đợi thật sự
+  // FIX (Bug 2 gốc — đổi số câu reset tiến trình): 'adjust' chỉ đổi KÍCH THƯỚC hàng đợi hiện có,
+  // giữ nguyên phần đã học — không còn bindListen(true) ép nạp lại từ đầu.
+  bindListen('adjust');
 }
 
 function bindListen(forceReload) { _bindListenAsync(forceReload); }
@@ -25,8 +27,25 @@ function bindListen(forceReload) { _bindListenAsync(forceReload); }
 // chọn để thử app.
 // V74 (audit lặp câu hỏi): quay lại tab 'listen' giữa phiên đang học dở không được nạp lại hàng đợi
 // (trước đây luôn sqLoad() lại mỗi lần render()/goTab() gọi bindListen()) — chỉ vẽ lại câu hiện tại.
+// forceReload: falsy = vào tab bình thường (giữ hàng đợi nếu có; lần đầu trong trang thử khôi phục
+// từ localStorage — FIX Bug 2 "refresh mất tiến trình"); 'adjust' = đổi số câu, chỉ resize hàng đợi
+// hiện có; true = ép nạp mới hoàn toàn (dự phòng).
+let lsRestoreAttempted = false;
 async function _bindListenAsync(forceReload) {
+  if (forceReload === 'adjust' && (lsQueue.items.length > 0 || lsQueue.answeredCount > 0)) {
+    const { error } = await sqAdjustLimit(lsQueue, questionCount);
+    if (currentTab !== 'listen') return;
+    const area1 = document.getElementById('ls-area');
+    if (error) { if (area1) area1.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
+    lsRenderQ();
+    return;
+  }
   if (!forceReload && lsQueue.items.length > 0) { lsRenderQ(); return; }
+  if (!forceReload && !lsRestoreAttempted) {
+    lsRestoreAttempted = true;
+    const extra = sqRestoreIntoQueue('listen', lsQueue);
+    if (extra) { lsScore = extra.score || 0; lsRenderQ(); return; }
+  }
   lsScore = 0;
   const area = document.getElementById('ls-area');
   if (isLoggedIn() && area) area.innerHTML = `<div class="panel center" style="padding:24px">⏳ Đang tải hàng đợi FSRS...</div>`;
@@ -37,6 +56,7 @@ async function _bindListenAsync(forceReload) {
 }
 
 function lsRenderQ() {
+  sqPersist('listen', lsQueue, { score: lsScore }); // FIX (Bug 2 — session persistence): lưu lại mọi lần vẽ để refresh không mất tiến trình
   const area = document.getElementById('ls-area'); if(!area) return;
   if (lsQueue.totalPlanned === 0) {
     const msg = isLoggedIn()
@@ -74,7 +94,10 @@ function lsRenderWord(w) {
 
 // V70/V71: trả lời đi qua ĐÚNG reviewService.reviewCard() (user đã đăng nhập). sqAdvance() đảm
 // bảo thẻ vừa đúng bị loại khỏi phiên ngay, thẻ sai chỉ lặp lại sau tối thiểu REPEAT_GAP thẻ khác.
-function lsPickWord(btn, chosen, correct) {
+// FIX (Bug 1 gốc — "UI chuyển câu nhưng Neon chưa lưu"): ĐỢI submitFsrsReviewAwaited() (có trần
+// chờ, xem study-queue.js) SONG SONG với đúng khoảng nghỉ hiển thị đáp án 1400ms như cũ, thay vì để
+// submitFsrsReview() chạy nền không chờ như trước — mạng nhanh thì thời gian không đổi.
+async function lsPickWord(btn, chosen, correct) {
   const w = lsQueue.items[0];
   const isCorrectLocally = chosen === correct;
   const responseTimeMs = performance.now() - lsStartedAt;
@@ -85,14 +108,17 @@ function lsPickWord(btn, chosen, correct) {
     b.disabled=true;
   });
   if(isCorrectLocally) playDing(); else playBuzz();
-  // FIX (Task 2 — Optimistic UI): advance ngay bằng kết quả local, submitFsrsReview() chạy nền —
-  // không còn chờ round-trip Neon mới bắt đầu đếm giờ chuyển câu.
   if (isCorrectLocally) lsScore++;
   if (isLoggedIn()) {
-    submitFsrsReview({ word: w, quizType: fsrsQuizTypeFor('listen'), selectedAnswer: chosen, responseTimeMs });
+    await Promise.all([
+      submitFsrsReviewAwaited({ word: w, quizType: fsrsQuizTypeFor('listen'), selectedAnswer: chosen, responseTimeMs }),
+      new Promise(r => setTimeout(r, 1400)),
+    ]);
   } else {
     guestMarkActivity();
+    await new Promise(r => setTimeout(r, 1400));
   }
-  setTimeout(()=>{ sqAdvance(lsQueue, isCorrectLocally); lsRenderQ(); }, 1400);
+  if (currentTab !== 'listen' || lsQueue.items[0] !== w) return; // user đã rời tab hoặc hàng đợi đã đổi trong lúc chờ
+  sqAdvance(lsQueue, isCorrectLocally); lsRenderQ();
 }
 

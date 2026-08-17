@@ -18,7 +18,18 @@ let rvAnswerChanges = 0; // UI hiện tại chọn là chốt ngay (không cho �
 let rvLastAnswer = null; // { correct, card, autoRating } — kết quả lượt vừa submit, để hiện feedback (Phần 18)
 let rvTotalPlanned = 0;   // V71: cỡ hàng đợi lúc nạp (để tính % tiến độ; rvSession có thể tạm dài hơn do Again được chèn lại)
 let rvAnsweredCount = 0;  // V71: số câu đã trả lời (kể cả Again) trong phiên này
+let rvSessionId = null;   // FIX (Bug 2 — session persistence): định danh phiên hiện tại, dùng để lưu/khôi phục qua localStorage
 const RV_QUIZ_TYPE = 'hz2vi'; // Phần 1: mặc định hỏi "chữ Hán → nghĩa", khớp đúng ví dụ trong yêu cầu V67
+
+// FIX (Bug 2 — session persistence): lưu lại TOÀN BỘ trạng thái phiên "Hôm nay học" hiện tại
+// (items/sessionId/totalPlanned/answeredCount + tóm tắt) — dùng cùng cơ chế sqPersist() ở
+// study-queue.js. Khoá riêng theo weakMode ('review' thường vs 'review-weak') để không lẫn 2 loại
+// phiên khi khôi phục.
+function rvPersist() {
+  sqPersist('review' + (rvWeakMode ? '-weak' : ''),
+    { sessionId: rvSessionId, items: rvSession, doneHz: new Set(), totalPlanned: rvTotalPlanned, answeredCount: rvAnsweredCount },
+    { summary: rvSummary });
+}
 
 // V71: khử trùng lặp {type,word} theo word.hz — cùng lý do với sqDedupeByHz (1 chữ Hán có thể gắn
 // với 2 "thẻ" khác nhau ở 2 bài khác nhau phía server). V74: lọc thêm sessionKnownHz (study-queue.js)
@@ -34,8 +45,33 @@ function rvDedupeSession(list) {
 
 async function startStudySession(weakMode) {
   rvWeakMode = !!weakMode;
+  // FIX (Bug 2 gốc — refresh giữa phiên "Hôm nay học" làm mất tiến trình): nếu vẫn còn 1 phiên hợp
+  // lệ (cùng weakMode, lưu chưa quá hạn — xem SQ_SESSION_MAX_AGE_MS) từ trước lúc rời trang/F5, TIẾP
+  // TỤC đúng phiên đó thay vì luôn gọi API tạo phiên mới — không mất câu đang học dở, không lặp từ đầu.
+  // (rvSession là 1 biến top-level riêng, không phải object dạng sq* — đọc trực tiếp bằng
+  // sqReadPersisted() rồi gán tay vào đúng các biến rv*, không tái dùng sqRestoreIntoQueue() vốn
+  // dành cho object có field .items/.totalPlanned/... thật sự.)
+  const savedKey = 'review' + (rvWeakMode ? '-weak' : '');
+  const saved = sqReadPersisted(savedKey);
+  if (saved && saved.items.length) {
+    const filteredItems = saved.items.filter(it => !sessionKnownHz.has(it.word.hz));
+    const purged = saved.items.length - filteredItems.length;
+    if (filteredItems.length) {
+      rvSession = filteredItems;
+      rvSessionId = saved.sessionId;
+      rvTotalPlanned = saved.totalPlanned;
+      rvAnsweredCount = saved.answeredCount + purged;
+      rvSummary = (saved.extra && saved.extra.summary) || rvSummary;
+      rvExamplePool = []; rvLastAnswer = null;
+      goTab('review');
+      rvPrepareCurrentCard();
+      render();
+      return;
+    }
+  }
   rvExamplePool = []; rvLastAnswer = null;
   rvAnsweredCount = 0;
+  rvSessionId = genIdempotencyKey();
   goTab('review');
   const el = document.getElementById('content');
   if (el) el.innerHTML = `<div class="study-empty">Đang tải phiên học...</div>`;
@@ -66,6 +102,7 @@ async function startStudySession(weakMode) {
       .then(r => r.json()).then(d => { if (d.ok) rvExamplePool = d.examples || []; })
       .catch(() => {});
   }
+  rvPersist();
   rvPrepareCurrentCard();
   render();
 }
@@ -186,18 +223,18 @@ async function rvPick(btn, hz) {
   if (isCorrectLocally) playDing(); else playBuzz();
   speak(w.hz);
 
-  // FIX (Task 2 — Optimistic UI, lỗi nghiêm trọng nhất tìm thấy): TRƯỚC ĐÂY await trọn round-trip
-  // Neon rồi MỚI hiện đáp án + MỚI hẹn giờ chuyển câu — nghĩa là cả màn hình "đáp án" lẫn tốc độ
-  // chuyển câu của TAB HỌC CHÍNH (Học mới + Ôn tập) phụ thuộc thẳng vào độ trễ mạng. Giờ hiện đáp
-  // án + hẹn giờ chuyển câu NGAY bằng kết quả đã biết ở client; ghi FSRS thật chạy NỀN qua
-  // submitFsrsReview() dùng chung (đã có outbox chống mất dữ liệu — Task 3, Task 4 gộp logic).
+  // Hiện đáp án NGAY bằng kết quả đã biết ở client (đáp án đúng đã nhúng sẵn trong DOM) — không đợi
+  // Neon mới hiện đúng/sai, giữ UI phản hồi tức thời.
   rvLastAnswer = { correct: isCorrectLocally, card: null, autoRating: null };
   rvPhase = 'answered';
   rvSubmitting = false;
   render();
-  setTimeout(rvAdvance, 1600); // Chuyển câu tiếp theo tự động — không cần user bấm gì thêm (Phần 17).
 
-  submitFsrsReview({ word: w, quizType: RV_QUIZ_TYPE, selectedAnswer, responseTimeMs, answerChanges: rvAnswerChanges })
+  // FIX (Bug 1 gốc — "UI chuyển câu nhưng Neon chưa lưu"): TRƯỚC ĐÂY setTimeout(rvAdvance, 1600)
+  // chạy ĐỘC LẬP với submitFsrsReview() (chạy nền, không chờ) — câu tiếp theo có thể hiện ra (và
+  // user có thể refresh/đóng tab) trước khi Neon xác nhận đã lưu. Giờ ĐỢI submitFsrsReviewAwaited()
+  // (có trần chờ, xem study-queue.js) SONG SONG với đúng khoảng nghỉ hiển thị đáp án 1600ms như cũ.
+  const reviewPromise = submitFsrsReviewAwaited({ word: w, quizType: RV_QUIZ_TYPE, selectedAnswer, responseTimeMs, answerChanges: rvAnswerChanges })
     .then(data => {
       // Chỉ cập nhật lại màn hình nếu user VẪN đang xem đúng câu này (chưa bị rvAdvance chuyển đi).
       if (attemptId !== rvAttemptId || rvPhase !== 'answered' || currentTab !== 'review') return;
@@ -206,6 +243,9 @@ async function rvPick(btn, hz) {
         render(); // cập nhật dòng "đã lưu lịch ôn sau N ngày" cho chính xác (nếu kịp trước khi advance)
       }
     });
+  await Promise.all([reviewPromise, new Promise(r => setTimeout(r, 1600))]);
+  if (attemptId !== rvAttemptId || currentTab !== 'review') return; // user đã sang câu khác/rời tab trong lúc chờ
+  rvAdvance();
 }
 
 // V71: thẻ Ở ĐẦU hàng đợi bị loại NGAY LẬP TỨC sau khi có kết quả server. Đúng → loại vĩnh viễn
@@ -223,7 +263,8 @@ function rvAdvance() {
     if (isCorrect) { sessionKnownHz.add(it.word.hz); saveSessionKnownHz(); sqPurgeHzFromAllQueues(it.word.hz); } // V74: loại khỏi TẤT CẢ tab khác; FIX (Ưu tiên 2): persist qua reload; FIX (Ưu tiên 1): purge khỏi hàng đợi tab khác
     else rvSession.splice(Math.min(REPEAT_GAP, rvSession.length), 0, it);
   }
-  if (!rvSession.length) refreshServerMeta(); // hết phiên — làm mới streak/known thật
+  if (!rvSession.length) { refreshServerMeta(); sqClearPersisted('review' + (rvWeakMode ? '-weak' : '')); } // hết phiên — làm mới streak/known thật, dọn session đã lưu
+  else rvPersist(); // FIX (Bug 2 — session persistence): lưu lại sau mỗi câu để refresh không mất tiến trình
   rvPrepareCurrentCard();
   render();
 }
