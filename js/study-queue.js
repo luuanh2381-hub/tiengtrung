@@ -15,6 +15,9 @@ function fsrsQuizTypeFor(mode) {
 //     ngân sách due/new mỗi ngày với "Hôm nay học" — không phải 4 nguồn đếm riêng biệt nữa. ──
 async function loadFsrsPracticePool(limit) {
   try {
+    // FIX (Vấn đề 5): đảm bảo server đã thấy đúng Quyển/bài MỚI NHẤT (không dính debounce 700ms)
+    // trước khi truy vấn — nếu không, server có thể trả nhầm theo lựa chọn CŨ.
+    await flushProgressSync();
     const res = await fetch('/api/study/session', { headers: authHeaders() });
     const data = await res.json();
     if (!data.ok) return { words: [], error: data.error || 'Không tải được hàng đợi FSRS' };
@@ -106,6 +109,14 @@ async function flushReviewOutbox() {
   } finally { _flushingOutbox = false; }
 }
 window.addEventListener('online', flushReviewOutbox);
+// FIX (Vấn đề 1 — "mất dữ liệu khi mất mạng tạm thời"): TRƯỚC ĐÂY outbox CHỈ được thử gửi lại khi có
+// sự kiện 'online', quay lại tab (visibilitychange), hoặc mở app. Nếu tab vẫn đang MỞ VÀ HIỂN THỊ
+// nhưng mạng chập chờn vài chục giây (rất hay gặp trên di động, không phải lúc nào cũng bắn đúng
+// sự kiện 'offline'/'online'), 1 review bị outbox giữ lại có thể phải chờ RẤT LÂU (tới khi user đổi
+// tab/refresh) mới được thử gửi lại — không mất dữ liệu, nhưng độ trễ đồng bộ lên Neon không đảm
+// bảo. Thêm nhịp tự thử lại định kỳ khi tab đang hiển thị, để outbox không bao giờ "ngủ quên".
+setInterval(() => { if (document.visibilityState === 'visible') flushReviewOutbox(); }, 20000);
+window.addEventListener('focus', flushReviewOutbox); // thêm 1 trigger nữa cho các trường hợp visibilitychange không bắn (webview/iframe)
 // V74: rời khỏi trang (đổi tab trình duyệt, khoá màn hình, chuyển app khác) phải DỪNG đếm giờ học
 // ngay lập tức, không chỉ dừng khi chuyển tab TRONG app (render() đã xử lý việc đó). Quay lại thì
 // ensureStudySession() tự nối tiếp đúng phiên cũ nếu còn trong 15 phút (không mất, không đếm bù thời
@@ -184,6 +195,12 @@ function submitFsrsReview(args) {
 // (thành công HOẶC lỗi vĩnh viễn) — lỗi tạm thời/mất mạng thì GIỮ nguyên trong outbox (đã nằm sẵn
 // từ write-ahead, không cần xử lý gì thêm ở nhánh đó).
 async function _submitFsrsReviewImpl({ word, quizType, selectedAnswer, responseTimeMs, answerChanges }) {
+  // FIX (Vấn đề 1 — đúng thứ tự lên Neon): nếu outbox đang kẹt sẵn các lượt CŨ hơn (chưa gửi được
+  // do mất mạng/lỗi tạm thời trước đó), tranh thủ thử gửi NỀN (không await, không chặn lượt hiện
+  // tại) TRƯỚC KHI thêm lượt mới vào outbox — giảm tối đa khoảng thời gian các lượt cũ hơn bị "đứng
+  // sau" lượt sắp ghi, tránh trường hợp hiếm: 2 lượt review CÙNG 1 thẻ đến Neon không đúng thứ tự
+  // thời gian thật (đặt TRƯỚC addToOutbox để không tự gửi trùng ngay chính payload sắp thêm).
+  flushReviewOutbox();
   const payload = {
     wordId: { hz: word.hz, l: word.l },
     quizType,
@@ -483,10 +500,13 @@ function sqPurgeHzFromAllQueues(hz) {
     const rest = sq.items.slice(1).filter(w => w.hz !== hz);
     sq.items = [head, ...rest];
   }
-  if (typeof rvSession !== 'undefined' && rvSession.length) {
-    const head = rvSession[0];
-    const rest = rvSession.slice(1).filter(it => it.word.hz !== hz);
-    rvSession = [head, ...rest];
+  // FIX (Vấn đề 7 — Review dùng CHUNG object rvQueue, không còn biến rời rvSession/rvTotalPlanned/
+  // rvAnsweredCount): items của rvQueue có dạng {type, word} (khác các sq khác lưu thẳng word), nên
+  // lọc theo w.word.hz thay vì w.hz.
+  if (typeof rvQueue !== 'undefined' && rvQueue.items.length) {
+    const head = rvQueue.items[0];
+    const rest = rvQueue.items.slice(1).filter(it => it.word.hz !== hz);
+    rvQueue.items = [head, ...rest];
   }
 }
 
@@ -505,9 +525,7 @@ function sqResetAllQueuesAndSessionState() {
     if (!sq) continue;
     sq.items = []; sq.totalPlanned = 0; sq.answeredCount = 0; sq.doneHz = new Set();
   }
-  if (typeof rvSession !== 'undefined') rvSession = [];
-  if (typeof rvTotalPlanned !== 'undefined') rvTotalPlanned = 0;
-  if (typeof rvAnsweredCount !== 'undefined') rvAnsweredCount = 0;
+  if (typeof rvQueue !== 'undefined') { rvQueue.items = []; rvQueue.totalPlanned = 0; rvQueue.answeredCount = 0; rvQueue.completedCards = []; }
   sessionKnownHz = new Set();
   saveSessionKnownHz();
   // Outbox (Yêu cầu 4 — không double submit) có thể còn giữ review CHƯA gửi lên kịp từ TRƯỚC lúc
@@ -547,9 +565,7 @@ function sqInvalidateQueuesForSelectionChange() {
     if (!sq) continue;
     sq.items = []; sq.totalPlanned = 0; sq.answeredCount = 0; sq.doneHz = new Set();
   }
-  if (typeof rvSession !== 'undefined') rvSession = [];
-  if (typeof rvTotalPlanned !== 'undefined') rvTotalPlanned = 0;
-  if (typeof rvAnsweredCount !== 'undefined') rvAnsweredCount = 0;
+  if (typeof rvQueue !== 'undefined') { rvQueue.items = []; rvQueue.totalPlanned = 0; rvQueue.answeredCount = 0; rvQueue.completedCards = []; }
   ['review', 'review-weak', 'flash', 'quiz', 'type', 'listen'].forEach(sqClearPersisted);
 }
 

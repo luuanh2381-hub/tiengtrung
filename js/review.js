@@ -1,19 +1,25 @@
-// js/review.js — Tab "Hôm nay học" → phiên ôn tập thật (rv*), auto-rating FSRS, không còn nút Again/Hard/Good/Easy
+// js/review.js — Tab "Hôm nay học" → phiên ôn tập thật, auto-rating FSRS, không còn nút Again/Hard/Good/Easy
 // ════════════════════════════════════════════════════
 // REVIEW SESSION — V67: AUTO FSRS RATING, không còn nút Again/Hard/Good/Easy.
-// Flow mới (Phần 1/2/17): hiện chữ Hán → user chọn 1 trong 4 đáp án trắc nghiệm → hệ thống tự
-// xác định đúng/sai + đo responseTime → gửi lên server → server tự suy ra FSRS rating, gọi
-// ts-fsrs, lưu lịch → lộ đáp án đầy đủ (pinyin/nghĩa/Hán Việt/chiết tự/ví dụ) → tự chuyển câu kế.
-// Người dùng KHÔNG bao giờ thấy rating Again/Hard/Good/Easy trong chế độ mặc định (Phần 2/18).
+// Flow (Phần 1/2/17): hiện chữ Hán → user chọn 1 trong 4 đáp án trắc nghiệm → hệ thống tự xác định
+// đúng/sai + đo responseTime → gửi lên server → server tự suy ra FSRS rating, gọi ts-fsrs, lưu
+// lịch → lộ đáp án đầy đủ (pinyin/nghĩa/Hán Việt/chiết tự/ví dụ) → tự chuyển câu kế.
 //
-// V77 (Study Day/Study Session): 1 Study Session ("Hôm nay học") giờ lưu đủ các field theo Yêu
-// cầu 5 (sessionId/startTime/endTime/completedCards/queue/lessonFilter) — xem rvPersist(). Vào
-// lại bằng startStudySession(weakMode) MẶC ĐỊNH tiếp tục đúng phiên đang dở (nếu còn, đúng ngày,
-// đúng Quyển/bài đang chọn — Yêu cầu 6/7); truyền forceNew=true để CHỦ ĐỘNG đóng phiên dở và mở
-// phiên MỚI (Yêu cầu 2 — nút "Học mới", gọi từ js/study-session.js). rvRelearnFromStart() là hành
-// động "Học lại từ đầu" TƯỜNG MINH riêng (Yêu cầu 8), không bao giờ được gọi tự động.
+// V78 (Vấn đề 7 — "Session phải là nguồn dữ liệu duy nhất"): TRƯỚC ĐÂY Review giữ 1 bộ biến RỜI
+// RẠC (rvSession/rvSessionId/rvTotalPlanned/rvAnsweredCount/rvStartTime/rvEndTime/
+// rvCompletedCards/rvLessonFilter) tách biệt hoàn toàn khỏi object sq* mà Flashcard/Trắc nghiệm/Gõ
+// chữ/Nghe-chọn đang dùng — 2 nơi định nghĩa "1 Study Session" khác nhau, dễ lệch theo thời gian.
+// Giờ Review dùng CHUNG đúng 1 object `rvQueue` tạo bằng sqCreate() (y hệt fcQueue/qzQueue/
+// tyQueue/lsQueue), và dùng CHUNG các hàm quản lý phiên ở study-queue.js (sqPersist/
+// sqReadPersisted/sqClearPersisted/sqStartNewSession/sqRelearnFromStart/sqSnapshotLessonFilter/
+// ssArchiveSession...) — chỉ khác 1 điểm domain thật sự (không phải "state riêng" tuỳ tiện): item
+// của rvQueue có dạng {type, word} (để phân biệt "Từ mới"/"Ôn tập") thay vì thẳng là word, và nguồn
+// nạp là /api/study/session (trộn due+new) hoặc /api/study/weak-words — nên có rvFetchFreshSession()
+// + rvAdvanceQueue() riêng thay vì sqLoad()/sqAdvance() dùng thẳng (2 hàm đó giả định item = word).
+// currentIndex trong yêu cầu chính là rvQueue.items[0] (hàng đợi FIFO, "vị trí hiện tại" luôn là
+// đầu hàng đợi — cùng mô hình với 4 tab kia, không có index rời).
 // ════════════════════════════════════════════════════
-let rvSession = [];
+let rvQueue = sqCreate(); // StudySessionManager dùng chung: {items,doneHz,totalPlanned,answeredCount,sessionId,startTime,endTime,completedCards,lessonFilter,dayKey}
 let rvPhase = 'question'; // 'question' (đang chờ chọn đáp án) | 'answered' (đã có kết quả)
 let rvWeakMode = false;
 let rvSummary = { reviewCount: 0, newCount: 0 };
@@ -23,32 +29,18 @@ let rvOptions = [];      // 4 lựa chọn trắc nghiệm của câu hiện t�
 let rvStartedAt = 0;     // performance.now() tại thời điểm câu hỏi THỰC SỰ hiển thị cho user (Phần 4)
 let rvAnswerChanges = 0; // UI hiện tại chọn là chốt ngay (không cho đổi trước khi submit) nên luôn 0 (Phần 16/17)
 let rvLastAnswer = null; // { correct, card, autoRating } — kết quả lượt vừa submit, để hiện feedback (Phần 18)
-let rvTotalPlanned = 0;   // V71: cỡ hàng đợi lúc nạp (để tính % tiến độ; rvSession có thể tạm dài hơn do Again được chèn lại)
-let rvAnsweredCount = 0;  // V71: số câu đã trả lời (kể cả Again) trong phiên này
-let rvSessionId = null;   // FIX (Bug 2 — session persistence): định danh phiên hiện tại, dùng để lưu/khôi phục qua localStorage
-let rvStartTime = 0;      // V77 (Yêu cầu 5): thời điểm Study Session hiện tại được mở
-let rvEndTime = null;     // V77 (Yêu cầu 5): thời điểm hàng đợi cạn (Study Session kết thúc) — null khi còn đang học dở
-let rvCompletedCards = []; // V77 (Yêu cầu 5): danh sách {hz,l,correct,at} đã hoàn thành trong Study Session này
-let rvLessonFilter = null; // V77 (Yêu cầu 5): Quyển/bài đang chọn tại thời điểm Study Session được tạo
-let rvBlockedByBacklog = false; // FIX (audit — màn "Xong phiên học 0/0" gây hiểu lầm): server chặn từ mới vì còn backlog due (có thể ở Quyển/bài KHÁC phạm vi đang chọn) và cài đặt "Chỉ học từ mới sau khi hết backlog" đang bật
-let rvTotalDue = 0; // FIX (audit): tổng số thẻ due TOÀN TÀI KHOẢN (không riêng phạm vi đang chọn) — dùng để giải thích lý do bị chặn ở trên
+let rvBlockedByBacklog = false; // server chặn từ mới vì còn backlog due (có thể ở Quyển/bài KHÁC phạm vi đang chọn) và cài đặt "Chỉ học từ mới sau khi hết backlog" đang bật
+let rvTotalDue = 0; // tổng số thẻ due TOÀN TÀI KHOẢN (không riêng phạm vi đang chọn) — dùng để giải thích lý do bị chặn ở trên
 const RV_QUIZ_TYPE = 'hz2vi'; // Phần 1: mặc định hỏi "chữ Hán → nghĩa", khớp đúng ví dụ trong yêu cầu V67
 
-// FIX (Bug 2 — session persistence): lưu lại TOÀN BỘ trạng thái phiên "Hôm nay học" hiện tại
-// (items/sessionId/totalPlanned/answeredCount + tóm tắt) — dùng cùng cơ chế sqPersist() ở
-// study-queue.js. Khoá riêng theo weakMode ('review' thường vs 'review-weak') để không lẫn 2 loại
-// phiên khi khôi phục. V77: bổ sung đủ startTime/endTime/completedCards/lessonFilter (Yêu cầu 5).
 function rvStorageMode() { return 'review' + (rvWeakMode ? '-weak' : ''); }
-function rvPersist() {
-  sqPersist(rvStorageMode(), {
-    sessionId: rvSessionId, items: rvSession, doneHz: new Set(), totalPlanned: rvTotalPlanned, answeredCount: rvAnsweredCount,
-    startTime: rvStartTime, endTime: rvEndTime, completedCards: rvCompletedCards, lessonFilter: rvLessonFilter, dayKey: todayKey(),
-  }, { summary: rvSummary });
-}
+// Tất cả việc lưu/khôi phục phiên giờ đi thẳng qua sqPersist/sqReadPersisted (study-queue.js) trên
+// đúng object rvQueue — không còn hàm rvPersist() tự lắp tay từng field như trước.
 
 // V71: khử trùng lặp {type,word} theo word.hz — cùng lý do với sqDedupeByHz (1 chữ Hán có thể gắn
 // với 2 "thẻ" khác nhau ở 2 bài khác nhau phía server). V74: lọc thêm sessionKnownHz (study-queue.js)
-// để không nạp lại từ vừa trả lời ĐÚNG ở tab Flashcard/Trắc nghiệm/Gõ chữ/Nghe-chọn trong cùng phiên.
+// để không nạp lại từ vừa trả lời ĐÚNG ở tab Flashcard/Trắc nghiệm/Gõ chữ/Nghe-chọn hoặc phiên khác
+// trong CÙNG NGÀY (Study Day — V77).
 function rvDedupeSession(list) {
   const seen = new Set();
   return list.filter(it => {
@@ -57,7 +49,7 @@ function rvDedupeSession(list) {
     return true;
   });
 }
-// V77 (dùng riêng cho rvRelearnFromStart — Yêu cầu 8): khử trùng lặp theo hz CHỈ trong nội bộ danh
+// V77 (dùng riêng cho "Học lại từ đầu" — Yêu cầu 8): khử trùng lặp theo hz CHỈ trong nội bộ danh
 // sách vừa tải, KHÔNG lọc sessionKnownHz — vì "Học lại từ đầu" CỐ Ý cho phép ôn lại từ đã hoàn
 // thành hôm nay.
 function rvDedupeByHzOnly(list) {
@@ -65,7 +57,7 @@ function rvDedupeByHzOnly(list) {
   return list.filter(it => { if (seen.has(it.word.hz)) return false; seen.add(it.word.hz); return true; });
 }
 
-// V77: gọi API lấy 1 bộ từ MỚI (due/new thật từ server, hoặc weak-words) — dùng chung cho cả
+// V77/V78: gọi API lấy 1 bộ từ MỚI (due/new thật từ server, hoặc weak-words) — dùng chung cho cả
 // nhánh "tải phiên mới" của startStudySession() lẫn rvRelearnFromStart(), tránh 2 nơi tự viết lại
 // cùng 1 logic rồi lệch nhau theo thời gian.
 async function rvFetchFreshSession(ignoreDayDedupe) {
@@ -77,6 +69,9 @@ async function rvFetchFreshSession(ignoreDayDedupe) {
       const list = data.words.map(w => ({ type: 'review', word: w }));
       return { list: ignoreDayDedupe ? rvDedupeByHzOnly(list) : rvDedupeSession(list), reviewCount: list.length, newCount: 0, blockedByBacklog: false, totalDue: 0 };
     }
+    // FIX (Vấn đề 5 — "Chọn bài học không hoạt động"): đảm bảo server đã thấy đúng Quyển/bài MỚI
+    // NHẤT (không dính debounce 700ms của scheduleSync) trước khi truy vấn.
+    await flushProgressSync();
     const res = await fetch('/api/study/session', { headers: authHeaders() });
     const data = await res.json();
     if (!data.ok) return { error: data.error || 'Không tải được phiên học' };
@@ -84,8 +79,6 @@ async function rvFetchFreshSession(ignoreDayDedupe) {
     return {
       list: ignoreDayDedupe ? rvDedupeByHzOnly(raw) : rvDedupeSession(raw),
       reviewCount: data.reviewCount || 0, newCount: data.newCount || 0,
-      // FIX (audit): mang theo lý do bị chặn (nếu có) để renderReview() giải thích rõ cho user,
-      // thay vì im lặng hiện "Xong phiên học! Đã ôn 0 từ, học 0 từ mới" gây hiểu lầm là lỗi.
       blockedByBacklog: !!data.blockedByBacklog, totalDue: data.totalDue || 0,
     };
   } catch (e) {
@@ -95,36 +88,34 @@ async function rvFetchFreshSession(ignoreDayDedupe) {
 
 // forceNew: false/undefined = hành vi "Học tiếp" (mặc định) — nếu còn 1 Study Session hợp lệ dang
 // dở (cùng weakMode, đúng ngày hôm nay, đúng Quyển/bài đang chọn — xem sqReadPersisted/
-// sqLessonFilterMatches), TIẾP TỤC đúng phiên đó; không có thì tự nạp phiên mới (như trước nay).
-// true = hành vi "Học mới" (Yêu cầu 2) — CHỦ ĐỘNG đóng/ghi nhật ký phiên dang dở (nếu có) rồi mở
-// phiên hoàn toàn MỚI, vẫn tôn trọng sessionKnownHz/FSRS due (Yêu cầu 3/4). Gọi từ
-// js/study-session.js (ssResumeChoice/ssNewChoice) khi phát hiện có phiên dang dở, hoặc trực tiếp
-// khi không có gì dang dở để hỏi.
+// sqLessonFilterMatches), TIẾP TỤC đúng phiên đó (khôi phục đủ queue/currentIndex(=items[0])/
+// lessonFilter/completedCards/answeredCards/seenCards — Vấn đề 3); không có thì tự nạp phiên mới.
+// true = hành vi "Học mới" (Vấn đề 4) — CHỦ ĐỘNG đóng/ghi nhật ký phiên dang dở (nếu có) rồi mở
+// phiên hoàn toàn MỚI, không lấy lại card đã hoàn thành/vừa học/chưa đến hạn FSRS (Vấn đề 4), tự
+// tiếp tục đúng từ CHƯA học kế tiếp (không quay lại đầu danh sách).
 async function startStudySession(weakMode, forceNew) {
   rvWeakMode = !!weakMode;
   const savedKey = rvStorageMode();
-  // FIX (Bug 2 gốc — refresh giữa phiên "Hôm nay học" làm mất tiến trình): nếu vẫn còn 1 phiên hợp
-  // lệ (cùng weakMode, lưu chưa quá hạn, đúng Study Day, đúng Quyển/bài đang chọn) từ trước lúc rời
-  // trang/F5, TIẾP TỤC đúng phiên đó thay vì luôn gọi API tạo phiên mới — không mất câu đang học
-  // dở, không lặp từ đầu. (rvSession là 1 biến top-level riêng, không phải object dạng sq* — đọc
-  // trực tiếp bằng sqReadPersisted() rồi gán tay vào đúng các biến rv*, không tái dùng
-  // sqRestoreIntoQueue() vốn dành cho object có field .items/.totalPlanned/... thật sự.)
   if (!forceNew) {
+    // FIX (Vấn đề 3 — "Học tiếp" phải khôi phục ĐỦ queue/currentIndex/lessonFilter/completedCards/
+    // answeredCards/seenCards): đọc thẳng qua sqReadPersisted() dùng chung với 4 tab kia, rồi gán
+    // trực tiếp vào rvQueue (thay vì trước đây copy tay từng field vào các biến rời rvSession/...).
     const saved = sqReadPersisted(savedKey);
     if (saved && saved.items.length && sqLessonFilterMatches(saved.lessonFilter)) {
       const filteredItems = saved.items.filter(it => !sessionKnownHz.has(it.word.hz));
       const purged = saved.items.length - filteredItems.length;
       if (filteredItems.length) {
-        rvSession = filteredItems;
-        rvSessionId = saved.sessionId;
-        rvTotalPlanned = saved.totalPlanned;
-        rvAnsweredCount = saved.answeredCount + purged;
-        rvStartTime = saved.startTime || Date.now();
-        rvEndTime = null;
-        rvCompletedCards = Array.isArray(saved.completedCards) ? saved.completedCards : [];
-        rvLessonFilter = saved.lessonFilter || sqSnapshotLessonFilter();
+        rvQueue.items = filteredItems;
+        rvQueue.sessionId = saved.sessionId;
+        rvQueue.totalPlanned = saved.totalPlanned;
+        rvQueue.answeredCount = saved.answeredCount + purged;
+        rvQueue.startTime = saved.startTime || Date.now();
+        rvQueue.endTime = null;
+        rvQueue.completedCards = Array.isArray(saved.completedCards) ? saved.completedCards : [];
+        rvQueue.lessonFilter = saved.lessonFilter || sqSnapshotLessonFilter();
+        rvQueue.dayKey = saved.dayKey || todayKey();
         rvSummary = (saved.extra && saved.extra.summary) || rvSummary;
-        rvBlockedByBacklog = false; rvTotalDue = 0; // FIX (audit): phiên đang khôi phục chắc chắn có thẻ thật, không liên quan gì tới lý do "bị chặn"
+        rvBlockedByBacklog = false; rvTotalDue = 0; // phiên đang khôi phục chắc chắn có thẻ thật, không liên quan lý do "bị chặn"
         rvExamplePool = []; rvLastAnswer = null;
         goTab('review');
         rvPrepareCurrentCard();
@@ -133,67 +124,64 @@ async function startStudySession(weakMode, forceNew) {
       }
     }
   } else {
-    // V77 (Yêu cầu 2 — "Học mới"): đóng phiên đang dở vào nhật ký ngày trước khi thay bằng phiên mới.
-    ssArchiveSession(savedKey, {
-      sessionId: rvSessionId, startTime: rvStartTime, endTime: rvEndTime || Date.now(),
-      answeredCount: rvAnsweredCount, completedCards: rvCompletedCards, lessonFilter: rvLessonFilter,
-    });
+    // V77 (Vấn đề 4 — "Học mới"): đóng phiên đang dở vào nhật ký ngày trước khi thay bằng phiên mới.
+    ssArchiveSession(savedKey, rvQueue);
     sqClearPersisted(savedKey);
   }
   rvExamplePool = []; rvLastAnswer = null;
-  rvAnsweredCount = 0;
-  rvSessionId = genIdempotencyKey();
-  rvStartTime = Date.now(); rvEndTime = null; rvCompletedCards = [];
-  rvLessonFilter = sqSnapshotLessonFilter();
+  rvQueue = sqCreate();
+  rvQueue.sessionId = genIdempotencyKey();
+  rvQueue.startTime = Date.now();
+  rvQueue.lessonFilter = sqSnapshotLessonFilter();
+  rvQueue.dayKey = todayKey();
   goTab('review');
   const el = document.getElementById('content');
   if (el) el.innerHTML = `<div class="study-empty">Đang tải phiên học...</div>`;
   const { list, error, reviewCount, newCount, blockedByBacklog, totalDue } = await rvFetchFreshSession(false);
   if (error) { alert(error); goTab('today'); return; }
-  rvSession = list;
+  rvQueue.items = list;
   rvSummary = { reviewCount: reviewCount || 0, newCount: newCount || 0 };
   rvBlockedByBacklog = !!blockedByBacklog;
   rvTotalDue = totalDue || 0;
-  rvTotalPlanned = rvSession.length;
+  rvQueue.totalPlanned = rvQueue.items.length;
   // Nạp trước kho ví dụ cho các bài xuất hiện trong session (Phần 24) — không chặn hiển thị.
-  const lessonsInSession = [...new Set(rvSession.map(it => it.word.l))];
+  const lessonsInSession = [...new Set(rvQueue.items.map(it => it.word.l))];
   if (lessonsInSession.length && !isGuest && authToken) {
     fetch('/api/word-examples?lessons=' + lessonsInSession.join(','), { headers: authHeaders() })
       .then(r => r.json()).then(d => { if (d.ok) rvExamplePool = d.examples || []; })
       .catch(() => {});
   }
-  rvPersist();
+  sqPersist(savedKey, rvQueue, { summary: rvSummary });
   rvPrepareCurrentCard();
   render();
 }
 
-// V77 (Yêu cầu 8 — "Học lại từ đầu" cho "Hôm nay học"): hành động TƯỜNG MINH riêng, chỉ chạy khi
-// user chủ động bấm nút — KHÔNG bao giờ được gọi tự động ở bất kỳ đâu khác. Đóng/ghi nhật ký phiên
-// hiện tại rồi nạp lại đúng bộ từ (due/new thật hoặc weak-words) NHƯNG cố ý bỏ qua sessionKnownHz
-// để có thể ôn lại đúng những từ vừa hoàn thành trong ngày. Không đụng tới FSRS thật trên server.
+// V77 (Vấn đề 8/Yêu cầu 8 — "Học lại từ đầu" cho "Hôm nay học"): hành động TƯỜNG MINH riêng, chỉ
+// chạy khi user chủ động bấm nút — KHÔNG bao giờ được gọi tự động ở bất kỳ đâu khác. Đóng/ghi nhật
+// ký phiên hiện tại rồi nạp lại đúng bộ từ (due/new thật hoặc weak-words) NHƯNG cố ý bỏ qua
+// sessionKnownHz để có thể ôn lại đúng những từ vừa hoàn thành trong ngày. Không đụng tới FSRS thật
+// trên server.
 async function rvRelearnFromStart() {
   const savedKey = rvStorageMode();
-  ssArchiveSession(savedKey, {
-    sessionId: rvSessionId, startTime: rvStartTime, endTime: Date.now(),
-    answeredCount: rvAnsweredCount, completedCards: rvCompletedCards, lessonFilter: rvLessonFilter,
-  });
+  ssArchiveSession(savedKey, rvQueue);
   sqClearPersisted(savedKey);
   rvExamplePool = []; rvLastAnswer = null;
-  rvAnsweredCount = 0;
-  rvSessionId = genIdempotencyKey();
-  rvStartTime = Date.now(); rvEndTime = null; rvCompletedCards = [];
-  rvLessonFilter = sqSnapshotLessonFilter();
+  rvQueue = sqCreate();
+  rvQueue.sessionId = genIdempotencyKey();
+  rvQueue.startTime = Date.now();
+  rvQueue.lessonFilter = sqSnapshotLessonFilter();
+  rvQueue.dayKey = todayKey();
   goTab('review');
   const el = document.getElementById('content');
   if (el) el.innerHTML = `<div class="study-empty">Đang tải phiên học...</div>`;
   const { list, error, reviewCount, newCount, blockedByBacklog, totalDue } = await rvFetchFreshSession(true);
   if (error) { alert(error); goTab('today'); return; }
-  rvSession = list;
+  rvQueue.items = list;
   rvSummary = { reviewCount: reviewCount || 0, newCount: newCount || 0 };
   rvBlockedByBacklog = !!blockedByBacklog;
   rvTotalDue = totalDue || 0;
-  rvTotalPlanned = rvSession.length;
-  rvPersist();
+  rvQueue.totalPlanned = rvQueue.items.length;
+  sqPersist(savedKey, rvQueue, { summary: rvSummary });
   rvPrepareCurrentCard();
   render();
 }
@@ -204,11 +192,11 @@ function rvFindExample(hz) {
   return matches[Math.floor(Math.random() * matches.length)];
 }
 
-// Sinh 4 lựa chọn trắc nghiệm cho thẻ Ở ĐẦU hàng đợi, và bắt đầu đo responseTime NGAY tại đây
-// (thời điểm câu hỏi thực sự sẵn sàng cho user — Phần 4, không tính thời gian từ lúc mở session).
+// Sinh 4 lựa chọn trắc nghiệm cho thẻ Ở ĐẦU hàng đợi (currentIndex = rvQueue.items[0]), và bắt đầu
+// đo responseTime NGAY tại đây (thời điểm câu hỏi thực sự sẵn sàng cho user — Phần 4).
 function rvPrepareCurrentCard() {
-  if (!rvSession.length) return;
-  const w = rvSession[0].word;
+  if (!rvQueue.items.length) return;
+  const w = rvQueue.items[0].word;
   rvOptions = rvMakeOpts(w);
   rvAnswerChanges = 0;
   rvPhase = 'question';
@@ -229,14 +217,9 @@ function rvSavedLine(r) {
 }
 
 function renderReview() {
-  if (!rvSession.length) {
-    // FIX (audit — màn "Xong phiên học! Đã ôn 0 từ, học 0 từ mới" gây hiểu lầm là lỗi): TRƯỚC ĐÂY
-    // dùng CHUNG 1 màn "🎉 Xong phiên học!" cho cả 2 trường hợp khác nhau hẳn: (a) đã thật sự học
-    // xong 1 phiên có thẻ, và (b) server không hề trả về thẻ nào ngay từ đầu (ví dụ: cài đặt "Chỉ
-    // học từ mới sau khi hết backlog ôn tập" đang chặn vì còn thẻ due ở Quyển/bài KHÁC phạm vi đang
-    // chọn, hoặc đã dùng hết giới hạn/ngày) — dashboard "Hôm nay học" vẫn có thể báo còn N từ mới
-    // (số đó đếm KHÔNG cùng điều kiện với lúc nạp phiên thật). Giờ tách riêng, giải thích rõ lý do
-    // thay vì hiện y như vừa hoàn thành phiên học.
+  if (!rvQueue.items.length) {
+    // FIX (audit — màn "Xong phiên học! Đã ôn 0 từ, học 0 từ mới" gây hiểu lầm là lỗi): tách riêng
+    // "chưa từng có gì để học" (kèm lý do cụ thể) khỏi "đã thật sự học xong 1 phiên có thẻ".
     if (rvSummary.reviewCount === 0 && rvSummary.newCount === 0) {
       const reason = rvBlockedByBacklog
         ? `⏳ Bạn đang có ${rvTotalDue} thẻ CẦN ÔN đến hạn (có thể ở Quyển/bài khác ngoài phạm vi đang chọn) — hệ thống đang chặn học từ mới cho tới khi ôn hết backlog này (cài đặt "Chỉ học từ mới sau khi hết backlog ôn tập" đang bật). Vào Cài đặt hằng ngày để tắt, hoặc chọn đúng Quyển/bài đang có thẻ due để ôn trước.`
@@ -259,9 +242,9 @@ function renderReview() {
       </div>
     </div>`;
   }
-  const item = rvSession[0];
+  const item = rvQueue.items[0];
   const w = item.word;
-  const pct = Math.min(100, Math.round((rvAnsweredCount / (rvTotalPlanned||1)) * 100));
+  const pct = Math.min(100, Math.round((rvQueue.answeredCount / (rvQueue.totalPlanned||1)) * 100));
   const tagLabel = item.type === 'new' ? '🆕 Từ mới' : '🔁 Ôn tập';
   let body;
   if (rvPhase === 'question') {
@@ -297,7 +280,7 @@ function renderReview() {
   }
   return `
     <div class="rv-progress-wrap"><div class="rv-progress-fill" style="width:${pct}%;"></div></div>
-    <div class="rv-counter">Câu ${rvAnsweredCount + 1} · còn ${rvSession.length} trong hàng đợi</div>
+    <div class="rv-counter">Câu ${rvQueue.answeredCount + 1} · còn ${rvQueue.items.length} trong hàng đợi</div>
     <div class="rv-card">${body}</div>
   `;
 }
@@ -306,8 +289,8 @@ function renderReview() {
 // làm cho tab Trắc nghiệm — để rvPick() biết ngay đáp án vừa chọn đúng hay sai mà không cần chờ
 // server trả lời (server vẫn là nguồn sự thật cuối cùng, việc này chỉ để phản hồi UI tức thời).
 function bindReview() {
-  if (rvPhase !== 'question' || !rvSession.length) return;
-  const w = rvSession[0].word;
+  if (rvPhase !== 'question' || !rvQueue.items.length) return;
+  const w = rvQueue.items[0].word;
   document.querySelectorAll('#rv-opts .quiz-opt').forEach(b => {
     b._correct = (b.dataset.v === w.vi);
   });
@@ -322,7 +305,7 @@ async function rvPick(btn, hz) {
   if (rvSubmitting || rvPhase !== 'question') return;
   rvSubmitting = true;
   const responseTimeMs = Math.round(performance.now() - rvStartedAt); // Phần 4
-  const item = rvSession[0];
+  const item = rvQueue.items[0];
   const w = item.word;
   const isCorrectLocally = !!btn._correct;
   const selectedAnswer = btn.dataset.v;
@@ -343,13 +326,12 @@ async function rvPick(btn, hz) {
   rvSubmitting = false;
   render();
 
-  // FIX (Bug 1 gốc — "UI chuyển câu nhưng Neon chưa lưu"): TRƯỚC ĐÂY setTimeout(rvAdvance, 1600)
-  // chạy ĐỘC LẬP với submitFsrsReview() (chạy nền, không chờ) — câu tiếp theo có thể hiện ra (và
-  // user có thể refresh/đóng tab) trước khi Neon xác nhận đã lưu. Giờ ĐỢI submitFsrsReviewAwaited()
-  // (có trần chờ, xem study-queue.js) SONG SONG với đúng khoảng nghỉ hiển thị đáp án 1600ms như cũ.
+  // FIX (Vấn đề 1 — "UI chuyển câu nhưng Neon chưa lưu"): ĐỢI submitFsrsReviewAwaited() (write-
+  // ahead vào outbox NGAY từ đầu — xem study-queue.js, có trần chờ, không treo UI vô hạn) SONG
+  // SONG với đúng khoảng nghỉ hiển thị đáp án 1600ms, KHÔNG advance câu trước khi có kết quả này.
   const reviewPromise = submitFsrsReviewAwaited({ word: w, quizType: RV_QUIZ_TYPE, selectedAnswer, responseTimeMs, answerChanges: rvAnswerChanges })
     .then(data => {
-      // Chỉ cập nhật lại màn hình nếu user VẪN đang xem đúng câu này (chưa bị rvAdvance chuyển đi).
+      // Chỉ cập nhật lại màn hình nếu user VẪN đang xem đúng câu này (chưa bị rvAdvanceQueue chuyển đi).
       if (attemptId !== rvAttemptId || rvPhase !== 'answered' || currentTab !== 'review') return;
       if (data && data.ok) {
         rvLastAnswer = { correct: data.answerCorrect, card: data.card, autoRating: data.debug ? data.debug.autoRating : null };
@@ -358,36 +340,34 @@ async function rvPick(btn, hz) {
     });
   await Promise.all([reviewPromise, new Promise(r => setTimeout(r, 1600))]);
   if (attemptId !== rvAttemptId || currentTab !== 'review') return; // user đã sang câu khác/rời tab trong lúc chờ
-  rvAdvance();
+  rvAdvanceQueue();
 }
 
-// V71: thẻ Ở ĐẦU hàng đợi bị loại NGAY LẬP TỨC sau khi có kết quả server. Đúng → loại vĩnh viễn
-// khỏi phiên (rvSession.shift() ngay dưới đây đã là nguồn sự thật duy nhất cho "còn lại gì trong
-// phiên" — V76 dọn bỏ biến rvDoneHz vì trước đây chỉ được .add() chứ không hề được đọc ở đâu, tức
-// không hề ảnh hưởng "từ tiếp theo là từ nào", Yêu cầu 2). Sai (Again) → chèn lại cách tối thiểu
-// REPEAT_GAP thẻ khác, KHÔNG gọi lại server giữa phiên — hàng đợi cạn thật (kể cả các thẻ Again đã
-// được xử lý xong) mới coi là hết.
-function rvAdvance() {
+// V71/V78: thẻ Ở ĐẦU hàng đợi (rvQueue.items[0] = currentIndex) bị loại NGAY LẬP TỨC sau khi có kết
+// quả server. Đúng → loại vĩnh viễn khỏi phiên. Sai (Again) → chèn lại cách tối thiểu REPEAT_GAP
+// thẻ khác, KHÔNG gọi lại server giữa phiên — hàng đợi cạn thật (kể cả các thẻ Again đã được xử lý
+// xong) mới coi là hết. Hàm này tương đương sqAdvance() ở study-queue.js nhưng thao tác trên item
+// dạng {type,word} thay vì thẳng word — vẫn dùng CHUNG đúng field completedCards/answeredCount/
+// endTime/sessionKnownHz với 4 tab kia (Vấn đề 6/7), chỉ khác cách truy cập .word.hz.
+function rvAdvanceQueue() {
   if (currentTab !== 'review') return; // user đã rời màn hình, tránh render nhầm chỗ
-  const it = rvSession.shift();
+  const it = rvQueue.items.shift();
   if (it) {
-    rvAnsweredCount++;
+    rvQueue.answeredCount++;
     const isCorrect = !!(rvLastAnswer && rvLastAnswer.correct);
-    // V77 (Yêu cầu 5 — completedCards): tích luỹ đúng danh sách thẻ đã hoàn thành trong Study
-    // Session hiện tại (khác sessionKnownHz vốn dùng chung cho cả ngày, nhiều phiên).
-    if (!Array.isArray(rvCompletedCards)) rvCompletedCards = [];
-    rvCompletedCards.push({ hz: it.word.hz, l: it.word.l, correct: isCorrect, at: Date.now() });
-    if (isCorrect) { sessionKnownHz.add(it.word.hz); saveSessionKnownHz(); sqPurgeHzFromAllQueues(it.word.hz); } // V74: loại khỏi TẤT CẢ tab khác; FIX (Ưu tiên 2): persist qua reload; FIX (Ưu tiên 1): purge khỏi hàng đợi tab khác
-    else rvSession.splice(Math.min(REPEAT_GAP, rvSession.length), 0, it);
+    if (!Array.isArray(rvQueue.completedCards)) rvQueue.completedCards = [];
+    rvQueue.completedCards.push({ hz: it.word.hz, l: it.word.l, correct: isCorrect, at: Date.now() });
+    if (isCorrect) { sessionKnownHz.add(it.word.hz); saveSessionKnownHz(); sqPurgeHzFromAllQueues(it.word.hz); } // V74: loại khỏi TẤT CẢ tab khác; FIX: persist qua reload; purge khỏi hàng đợi tab khác
+    else rvQueue.items.splice(Math.min(REPEAT_GAP, rvQueue.items.length), 0, it);
   }
-  if (!rvSession.length) {
-    rvEndTime = Date.now(); // V77 (Yêu cầu 5): Study Session kết thúc
-    ssArchiveSession(rvStorageMode(), {
-      sessionId: rvSessionId, startTime: rvStartTime, endTime: rvEndTime,
-      answeredCount: rvAnsweredCount, completedCards: rvCompletedCards, lessonFilter: rvLessonFilter,
-    });
-    refreshServerMeta(); sqClearPersisted(rvStorageMode()); // hết phiên — làm mới streak/known thật, dọn session đã lưu
-  } else rvPersist(); // FIX (Bug 2 — session persistence): lưu lại sau mỗi câu để refresh không mất tiến trình
+  const savedKey = rvStorageMode();
+  if (!rvQueue.items.length) {
+    rvQueue.endTime = Date.now();
+    ssArchiveSession(savedKey, rvQueue);
+    refreshServerMeta(); sqClearPersisted(savedKey); // hết phiên — làm mới streak/known thật, dọn session đã lưu
+  } else {
+    sqPersist(savedKey, rvQueue, { summary: rvSummary }); // FIX (Bug 2 — session persistence): lưu lại sau mỗi câu để refresh không mất tiến trình
+  }
   rvPrepareCurrentCard();
   render();
 }

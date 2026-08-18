@@ -20,7 +20,8 @@ function refreshCurrentCardDisplay() {
   if (currentTab === 'quiz' && qzQueue.totalPlanned > 0) { qzRenderQ(); return; }
   if (currentTab === 'type' && tyQueue.totalPlanned > 0) { tyRenderQ(); return; }
   if (currentTab === 'listen' && lsQueue.totalPlanned > 0) { lsRenderQ(); return; }
-  if (currentTab === 'review' && rvSession.length >= 0 && rvTotalPlanned > 0) {
+  // FIX (Vấn đề 7 — Review dùng chung rvQueue thay vì rvSession/rvTotalPlanned rời rạc):
+  if (currentTab === 'review' && rvQueue.items.length >= 0 && rvQueue.totalPlanned > 0) {
     const el = document.getElementById('content');
     if (el) { el.innerHTML = renderReview(); bindReview(); }
     return;

@@ -286,6 +286,31 @@ function updateSyncIndicator() {
   badge.innerHTML = dot + rankIcon + '👤 ' + authUsername + (currentRole === 'superadmin' ? ' 👑🛠️' : currentRole === 'admin' ? ' 🛠️' : '');
 }
 
+// FIX (Vấn đề 5 — "Chọn bài học không hoạt động"): scheduleSync() debounce 700ms rồi mới đẩy
+// progress.ui (gồm selectedBookIds/selectedLessons/lessonsAllMode) lên server. Nếu user vừa đổi
+// Quyển/bài rồi bấm "Bắt đầu học"/vào tab luyện tập NGAY (trong vòng 700ms), server truy vấn
+// /api/study/session vẫn đọc user.progress.ui CŨ (bản debounce chưa kịp chạy) — lấy nhầm đúng bộ
+// lọc CŨ, trông như "chọn bài học không hoạt động". flushProgressSync() huỷ debounce hiện tại và
+// đẩy NGAY, trả về promise để nơi gọi await được — đảm bảo server luôn thấy đúng lựa chọn MỚI NHẤT
+// trước khi truy vấn bất kỳ dữ liệu học nào phụ thuộc vào nó (gọi ở loadFsrsPracticePool() và
+// rvFetchFreshSession() ngay trước khi fetch /api/study/session).
+async function flushProgressSync() {
+  if (isGuest || !authToken) return;
+  clearTimeout(syncTimer);
+  syncOk = null; updateSyncIndicator();
+  try {
+    const res = await fetch('/api/progress', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(progressState),
+    });
+    const data = await res.json();
+    syncOk = !!data.ok;
+    if (data.rank) { currentRank = data.rank; updateUserBadge(); }
+  } catch { syncOk = false; }
+  updateSyncIndicator();
+}
+
 // Khởi động: nếu đã đăng nhập trước đó trên máy này, vào thẳng app bằng dữ liệu lưu tạm
 // (không phải đợi mạng phản hồi mới cho vào — đây là nguyên nhân gây ra màn hình đăng nhập
 // hiện thoáng qua vài giây mỗi lần mở app), rồi âm thầm đồng bộ lại với server phía sau.
