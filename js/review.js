@@ -30,6 +30,8 @@ let rvStartTime = 0;      // V77 (Yêu cầu 5): thời điểm Study Session hi
 let rvEndTime = null;     // V77 (Yêu cầu 5): thời điểm hàng đợi cạn (Study Session kết thúc) — null khi còn đang học dở
 let rvCompletedCards = []; // V77 (Yêu cầu 5): danh sách {hz,l,correct,at} đã hoàn thành trong Study Session này
 let rvLessonFilter = null; // V77 (Yêu cầu 5): Quyển/bài đang chọn tại thời điểm Study Session được tạo
+let rvBlockedByBacklog = false; // FIX (audit — màn "Xong phiên học 0/0" gây hiểu lầm): server chặn từ mới vì còn backlog due (có thể ở Quyển/bài KHÁC phạm vi đang chọn) và cài đặt "Chỉ học từ mới sau khi hết backlog" đang bật
+let rvTotalDue = 0; // FIX (audit): tổng số thẻ due TOÀN TÀI KHOẢN (không riêng phạm vi đang chọn) — dùng để giải thích lý do bị chặn ở trên
 const RV_QUIZ_TYPE = 'hz2vi'; // Phần 1: mặc định hỏi "chữ Hán → nghĩa", khớp đúng ví dụ trong yêu cầu V67
 
 // FIX (Bug 2 — session persistence): lưu lại TOÀN BỘ trạng thái phiên "Hôm nay học" hiện tại
@@ -73,7 +75,7 @@ async function rvFetchFreshSession(ignoreDayDedupe) {
       const data = await res.json();
       if (!data.ok) return { error: data.error || 'Không tải được từ hay quên' };
       const list = data.words.map(w => ({ type: 'review', word: w }));
-      return { list: ignoreDayDedupe ? rvDedupeByHzOnly(list) : rvDedupeSession(list), reviewCount: list.length, newCount: 0 };
+      return { list: ignoreDayDedupe ? rvDedupeByHzOnly(list) : rvDedupeSession(list), reviewCount: list.length, newCount: 0, blockedByBacklog: false, totalDue: 0 };
     }
     const res = await fetch('/api/study/session', { headers: authHeaders() });
     const data = await res.json();
@@ -82,6 +84,9 @@ async function rvFetchFreshSession(ignoreDayDedupe) {
     return {
       list: ignoreDayDedupe ? rvDedupeByHzOnly(raw) : rvDedupeSession(raw),
       reviewCount: data.reviewCount || 0, newCount: data.newCount || 0,
+      // FIX (audit): mang theo lý do bị chặn (nếu có) để renderReview() giải thích rõ cho user,
+      // thay vì im lặng hiện "Xong phiên học! Đã ôn 0 từ, học 0 từ mới" gây hiểu lầm là lỗi.
+      blockedByBacklog: !!data.blockedByBacklog, totalDue: data.totalDue || 0,
     };
   } catch (e) {
     return { error: e.message };
@@ -119,6 +124,7 @@ async function startStudySession(weakMode, forceNew) {
         rvCompletedCards = Array.isArray(saved.completedCards) ? saved.completedCards : [];
         rvLessonFilter = saved.lessonFilter || sqSnapshotLessonFilter();
         rvSummary = (saved.extra && saved.extra.summary) || rvSummary;
+        rvBlockedByBacklog = false; rvTotalDue = 0; // FIX (audit): phiên đang khôi phục chắc chắn có thẻ thật, không liên quan gì tới lý do "bị chặn"
         rvExamplePool = []; rvLastAnswer = null;
         goTab('review');
         rvPrepareCurrentCard();
@@ -142,10 +148,12 @@ async function startStudySession(weakMode, forceNew) {
   goTab('review');
   const el = document.getElementById('content');
   if (el) el.innerHTML = `<div class="study-empty">Đang tải phiên học...</div>`;
-  const { list, error, reviewCount, newCount } = await rvFetchFreshSession(false);
+  const { list, error, reviewCount, newCount, blockedByBacklog, totalDue } = await rvFetchFreshSession(false);
   if (error) { alert(error); goTab('today'); return; }
   rvSession = list;
   rvSummary = { reviewCount: reviewCount || 0, newCount: newCount || 0 };
+  rvBlockedByBacklog = !!blockedByBacklog;
+  rvTotalDue = totalDue || 0;
   rvTotalPlanned = rvSession.length;
   // Nạp trước kho ví dụ cho các bài xuất hiện trong session (Phần 24) — không chặn hiển thị.
   const lessonsInSession = [...new Set(rvSession.map(it => it.word.l))];
@@ -178,10 +186,12 @@ async function rvRelearnFromStart() {
   goTab('review');
   const el = document.getElementById('content');
   if (el) el.innerHTML = `<div class="study-empty">Đang tải phiên học...</div>`;
-  const { list, error, reviewCount, newCount } = await rvFetchFreshSession(true);
+  const { list, error, reviewCount, newCount, blockedByBacklog, totalDue } = await rvFetchFreshSession(true);
   if (error) { alert(error); goTab('today'); return; }
   rvSession = list;
   rvSummary = { reviewCount: reviewCount || 0, newCount: newCount || 0 };
+  rvBlockedByBacklog = !!blockedByBacklog;
+  rvTotalDue = totalDue || 0;
   rvTotalPlanned = rvSession.length;
   rvPersist();
   rvPrepareCurrentCard();
@@ -220,6 +230,24 @@ function rvSavedLine(r) {
 
 function renderReview() {
   if (!rvSession.length) {
+    // FIX (audit — màn "Xong phiên học! Đã ôn 0 từ, học 0 từ mới" gây hiểu lầm là lỗi): TRƯỚC ĐÂY
+    // dùng CHUNG 1 màn "🎉 Xong phiên học!" cho cả 2 trường hợp khác nhau hẳn: (a) đã thật sự học
+    // xong 1 phiên có thẻ, và (b) server không hề trả về thẻ nào ngay từ đầu (ví dụ: cài đặt "Chỉ
+    // học từ mới sau khi hết backlog ôn tập" đang chặn vì còn thẻ due ở Quyển/bài KHÁC phạm vi đang
+    // chọn, hoặc đã dùng hết giới hạn/ngày) — dashboard "Hôm nay học" vẫn có thể báo còn N từ mới
+    // (số đó đếm KHÔNG cùng điều kiện với lúc nạp phiên thật). Giờ tách riêng, giải thích rõ lý do
+    // thay vì hiện y như vừa hoàn thành phiên học.
+    if (rvSummary.reviewCount === 0 && rvSummary.newCount === 0) {
+      const reason = rvBlockedByBacklog
+        ? `⏳ Bạn đang có ${rvTotalDue} thẻ CẦN ÔN đến hạn (có thể ở Quyển/bài khác ngoài phạm vi đang chọn) — hệ thống đang chặn học từ mới cho tới khi ôn hết backlog này (cài đặt "Chỉ học từ mới sau khi hết backlog ôn tập" đang bật). Vào Cài đặt hằng ngày để tắt, hoặc chọn đúng Quyển/bài đang có thẻ due để ôn trước.`
+        : `Không có thẻ nào đến hạn ôn hoặc còn trong ngân sách từ mới hôm nay ở phạm vi Quyển/bài đang chọn.`;
+      return `<div class="rv-done">
+        <div class="rv-done-num">📭</div>
+        <div style="font-size:1.3rem;font-weight:800;margin:10px 0;">Chưa có gì để học</div>
+        <div style="color:var(--muted);margin-bottom:20px;">${reason}</div>
+        <button class="btn btn-primary" onclick="goTab('today')">Về Hôm nay học</button>
+      </div>`;
+    }
     return `<div class="rv-done">
       <div class="rv-done-num">🎉</div>
       <div style="font-size:1.3rem;font-weight:800;margin:10px 0;">Xong phiên học!</div>
