@@ -120,8 +120,14 @@ async function authSubmit() {
     localStorage.setItem('authUsername', authUsername);
     localStorage.removeItem('authGuest');
     studySession = { id: null, startedAt: 0, lastActivity: 0, cards: 0, correct: 0, wrong: 0 }; // Task 4/5: mỗi tài khoản có phiên học riêng, tránh lẫn phiên cũ
-    sessionKnownHz = new Set(); // V74: phiên chống lặp chéo tab (study-queue.js) cũng phải riêng theo từng tài khoản
-    try { sessionStorage.removeItem(sessionKnownHzStoreKey()); } catch {} // FIX (Ưu tiên 2): đăng nhập mới thì không kế thừa dữ liệu persist cũ (nếu có) của đúng username này từ phiên trình duyệt trước
+    // V77 (Study Day/Study Session): TRƯỚC ĐÂY đăng nhập luôn XOÁ TRẮNG sessionKnownHz — nghĩa là
+    // đăng xuất rồi đăng nhập lại CÙNG NGÀY sẽ vô tình cho phép học lại đúng những từ vừa hoàn
+    // thành trước đó (vi phạm Yêu cầu 3). Giờ nạp lại ĐÚNG bộ "đã hoàn thành hôm nay" đã lưu sẵn
+    // (khoá theo đúng authUsername + đúng ngày, xem sessionKnownHzStoreKey ở study-queue.js) —
+    // không còn xoá trắng, tài khoản này vẫn nhớ đúng những gì đã học trong ngày dù có đăng xuất/
+    // đăng nhập lại giữa chừng.
+    _sessionKnownHzDay = todayKey();
+    sessionKnownHz = loadSessionKnownHz();
     progressState = data.progress || defaultProgress();
     currentRole = data.role || 'user';
     currentRank = data.rank || null;
@@ -145,8 +151,8 @@ function authContinueAsGuest() {
   authToken = null; authUsername = null;
   currentRole = 'user'; currentRank = null;
   pauseStudyTimer(); studySession = { id: null, startedAt: 0, lastActivity: 0, cards: 0, correct: 0, wrong: 0 };
-  sessionKnownHz = new Set(); // V74: reset phiên chống lặp chéo tab (study-queue.js)
-  try { sessionStorage.removeItem(sessionKnownHzStoreKey()); } catch {} // FIX (Ưu tiên 2)
+  _sessionKnownHzDay = todayKey();
+  sessionKnownHz = loadSessionKnownHz(); // V77: nạp đúng "đã hoàn thành hôm nay" của phiên khách (nếu có), không xoá trắng nữa — xem authSubmit
   localStorage.removeItem('authToken'); localStorage.removeItem('authUsername');
   progressState = loadGuestProgressLocally();
   applyUIState();
@@ -204,8 +210,11 @@ async function authLogout() {
   currentRole = 'user'; currentRank = null;
   serverStreak = 0; serverLongestStreak = 0; serverKnownCount = 0;
   pauseStudyTimer(); studySession = { id: null, startedAt: 0, lastActivity: 0, cards: 0, correct: 0, wrong: 0 };
-  try { sessionStorage.removeItem(sessionKnownHzStoreKey()); } catch {} // FIX (Ưu tiên 2): xoá persist của username VỪA đăng xuất, trước khi đổi authUsername về null
-  sessionKnownHz = new Set(); // V74: reset phiên chống lặp chéo tab (study-queue.js)
+  // V77: KHÔNG còn xoá localStorage "đã hoàn thành hôm nay" của username vừa đăng xuất — dữ liệu
+  // này thuộc về đúng Study Day hôm nay của tài khoản đó, phải còn nguyên nếu họ đăng nhập lại
+  // trong CÙNG NGÀY (Yêu cầu 3). authUsername đổi về null ngay dưới đây nên set trong bộ nhớ cũng
+  // phải đổi theo (không còn ai đăng nhập -> không có "đã hoàn thành hôm nay" nào áp dụng).
+  sessionKnownHz = new Set();
   localStorage.removeItem('authToken'); localStorage.removeItem('authUsername'); localStorage.removeItem('authGuest');
   progressState = defaultProgress();
   applyUIState();

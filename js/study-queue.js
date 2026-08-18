@@ -112,6 +112,7 @@ window.addEventListener('online', flushReviewOutbox);
 // gian đã rời đi) — tái dùng đúng 2 hàm đã có, không tạo thêm cơ chế mới.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
+    ssCheckDayRollover(); // V77 (Study Day/Study Session): app mở qua đêm không đóng tab -> tự chuyển đúng "ngày học" mới
     flushReviewOutbox();
     if (STUDY_TABS.has(currentTab)) ensureStudySession();
   } else if (STUDY_TABS.has(currentTab)) {
@@ -261,15 +262,36 @@ const REPEAT_GAP = 10; // N: số thẻ tối thiểu trước khi 1 thẻ bị 
 // ngay sau reload dù vẫn cùng 1 phiên đăng nhập. Persist qua sessionStorage (tự xoá khi ĐÓNG hẳn
 // tab/trình duyệt — đúng nghĩa "phiên hiện tại", khác localStorage là vĩnh viễn) để reload giữ
 // nguyên trạng thái chống lặp; đăng nhập/đăng xuất/đổi user vẫn reset đúng như trước (auth.js).
-function sessionKnownHzStoreKey() { return 'sessionKnownHz_' + (authUsername || ''); }
+// V77 (Yêu cầu 1/3 — tách "Study Day" khỏi "Study Session"): TRƯỚC ĐÂY sessionKnownHz sống trong
+// sessionStorage — mất NGAY khi đóng hẳn tab/trình duyệt, nên mở lại app CÙNG NGÀY (vd tối mở lại
+// app sau khi đã đóng hẳn lúc trưa) vẫn có thể gặp lại đúng từ vừa hoàn thành ở phiên trước, dù
+// chưa đến hạn FSRS. Giờ chuyển sang localStorage + khoá theo ĐÚNG "Study Day" hiện tại
+// (todayKey()) — "đã hoàn thành hôm nay" sống suốt CẢ NGÀY, qua mọi lần đóng/mở app, qua MỌI Study
+// Session trong ngày (sáng/trưa/tối — đúng Yêu cầu 3/4), chỉ tự hết hiệu lực khi sang ngày mới
+// (khoá đổi theo ngày -> set của ngày mới rỗng, không cần dọn tay).
+function todayKey() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function sessionKnownHzStoreKey() { return 'dayKnownHz_' + todayKey() + '_' + (authUsername || ''); }
 function loadSessionKnownHz() {
-  try { return new Set(JSON.parse(sessionStorage.getItem(sessionKnownHzStoreKey()) || '[]')); }
+  try { return new Set(JSON.parse(localStorage.getItem(sessionKnownHzStoreKey()) || '[]')); }
   catch { return new Set(); }
 }
 function saveSessionKnownHz() {
-  try { sessionStorage.setItem(sessionKnownHzStoreKey(), JSON.stringify([...sessionKnownHz])); } catch {}
+  try { localStorage.setItem(sessionKnownHzStoreKey(), JSON.stringify([...sessionKnownHz])); } catch {}
 }
-let sessionKnownHz = loadSessionKnownHz(); // V74: hz đã trả lời ĐÚNG ở BẤT KỲ tab luyện tập nào trong phiên hiện tại
+let sessionKnownHz = loadSessionKnownHz(); // V77: hz đã hoàn thành (trả lời ĐÚNG) ở BẤT KỲ tab/Study Session nào trong ĐÚNG Study Day hôm nay
+let _sessionKnownHzDay = todayKey();
+// Gọi định kỳ (xem visibilitychange) — app mở xuyên qua nửa đêm (không đóng tab) phải tự chuyển
+// đúng bộ nhớ "hôm nay" của NGÀY MỚI, không tiếp tục chặn nhầm bằng dữ liệu của Study Day hôm qua.
+function ssCheckDayRollover() {
+  const k = todayKey();
+  if (k === _sessionKnownHzDay) return;
+  _sessionKnownHzDay = k;
+  sessionKnownHz = loadSessionKnownHz();
+}
 
 // Khử trùng lặp theo hz — phòng trường hợp cùng 1 chữ Hán xuất hiện ở nhiều bài (l khác nhau)
 // khiến dueCards/newCards phía server chứa 2 "thẻ" khác nhau nhưng CÙNG mặt chữ với người học.
@@ -278,7 +300,55 @@ function sqDedupeByHz(words) {
   return words.filter(w => { if (seen.has(w.hz)) return false; seen.add(w.hz); return true; });
 }
 
-function sqCreate() { return { items: [], doneHz: new Set(), totalPlanned: 0, answeredCount: 0, sessionId: null }; }
+// V77 (Yêu cầu 5 — 1 Study Session phải lưu đủ: sessionId/startTime/endTime/completedCards/queue/
+// lessonFilter): queue = sq.items; completedCards = sq.completedCards (danh sách {hz,l,correct,at}
+// tích luỹ qua sqAdvance, khác doneHz vốn chỉ có ý nghĩa chống lặp trong hàng đợi).
+function sqCreate() {
+  return {
+    items: [], doneHz: new Set(), totalPlanned: 0, answeredCount: 0, sessionId: null,
+    startTime: null, endTime: null, completedCards: [], lessonFilter: null, dayKey: null,
+  };
+}
+
+// Chụp lại đúng Quyển/bài đang chọn tại thời điểm 1 Study Session được tạo — lưu kèm session
+// (Yêu cầu 5: field lessonFilter) để phát hiện lựa chọn đã đổi từ lúc đó (dùng khi khôi phục).
+function sqSnapshotLessonFilter() {
+  return {
+    selectedBookIds: [...selectedBookIds].sort((a, b) => a - b),
+    selectedLessons: [...selectedLessons].sort((a, b) => a - b),
+    lessonsAllMode: !!lessonsAllMode,
+  };
+}
+function sqLessonFilterMatches(saved) {
+  if (!saved) return true; // phiên lưu từ TRƯỚC khi có field này — không chặn, coi như khớp
+  const now = sqSnapshotLessonFilter();
+  return now.lessonsAllMode === saved.lessonsAllMode
+    && JSON.stringify(now.selectedBookIds) === JSON.stringify(saved.selectedBookIds || [])
+    && JSON.stringify(now.selectedLessons) === JSON.stringify(saved.selectedLessons || []);
+}
+
+// V77 (Yêu cầu 1 — nhật ký các Study Session ĐÃ ĐÓNG trong ngày, cho ĐÚNG 1 Study Day): mỗi khi 1
+// Study Session bị đóng lại (dù đã học xong hay bị "Học mới"/"Học lại từ đầu" chủ động đóng sớm),
+// ghi 1 dòng tóm tắt vào đây — CHỈ để hiển thị/tra cứu, KHÔNG ảnh hưởng dữ liệu FSRS thật (vốn đã
+// nằm an toàn trên server ngay tại thời điểm trả lời — xem reviewService.reviewCard).
+function ssDayLogKey(mode) { return 'studyDaySessions_' + mode + '_' + (authUsername || '') + '_' + todayKey(); }
+function ssArchiveSession(mode, sq) {
+  if (!authUsername || !sq || !sq.sessionId || !(sq.answeredCount > 0)) return; // chưa học câu nào thì không đáng ghi nhận
+  try {
+    const list = JSON.parse(localStorage.getItem(ssDayLogKey(mode)) || '[]');
+    list.push({
+      sessionId: sq.sessionId,
+      startTime: sq.startTime || null,
+      endTime: sq.endTime || Date.now(),
+      completedCards: Array.isArray(sq.completedCards) ? sq.completedCards.length : (sq.answeredCount || 0),
+      lessonFilter: sq.lessonFilter || null,
+    });
+    localStorage.setItem(ssDayLogKey(mode), JSON.stringify(list.slice(-20))); // tối đa 20 phiên gần nhất/ngày, tránh phình bộ nhớ
+  } catch {}
+}
+function ssGetDayLog(mode) {
+  try { return JSON.parse(localStorage.getItem(ssDayLogKey(mode)) || '[]'); } catch { return []; }
+}
 
 // ════════════════════════════════════════════════════
 // FIX (Bug 2 gốc — "Session Persistence"): TRƯỚC ĐÂY qzQueue/fcQueue/tyQueue/lsQueue/rvSession +
@@ -302,6 +372,13 @@ function sqPersist(mode, sq, extra) {
       doneHz: [...sq.doneHz],
       totalPlanned: sq.totalPlanned,
       answeredCount: sq.answeredCount,
+      // V77 (Yêu cầu 5): các field còn lại của 1 Study Session — startTime/endTime/completedCards/
+      // lessonFilter — lưu kèm đầy đủ để refresh/khôi phục không mất bất kỳ phần nào của phiên.
+      startTime: sq.startTime || null,
+      endTime: sq.endTime || null,
+      completedCards: Array.isArray(sq.completedCards) ? sq.completedCards : [],
+      lessonFilter: sq.lessonFilter || sqSnapshotLessonFilter(),
+      dayKey: sq.dayKey || todayKey(),
       savedAt: Date.now(),
       extra: extra || {},
     }));
@@ -318,6 +395,11 @@ function sqReadPersisted(mode) {
     const saved = JSON.parse(raw);
     if (!saved || !Array.isArray(saved.items) || !saved.sessionId) return null;
     if (Date.now() - (saved.savedAt || 0) > SQ_SESSION_MAX_AGE_MS) return null;
+    // V77 (Yêu cầu 1 — 1 Study Session luôn thuộc về ĐÚNG 1 Study Day): 1 phiên còn dang dở từ
+    // NGÀY HÔM TRƯỚC không được tự "nối" sang ngày mới coi như đang tiếp tục — sqLoad()/
+    // sqStartNewSession() sẽ tự nạp phiên MỚI cho ngày hôm nay. Tiến độ cũ không mất gì (đã ghi
+    // FSRS thật trên server ngay lúc trả lời), chỉ riêng hàng đợi/vị trí đang dở của hôm qua thôi.
+    if (saved.dayKey && saved.dayKey !== todayKey()) return null;
     return saved;
   } catch { return null; }
 }
@@ -336,6 +418,12 @@ function sqRestoreIntoQueue(mode, sq) {
   sq.totalPlanned = saved.totalPlanned;
   sq.answeredCount = saved.answeredCount + purged;
   sq.sessionId = saved.sessionId;
+  // V77 (Yêu cầu 5/6): khôi phục ĐỦ các field của Study Session, không chỉ riêng hàng đợi.
+  sq.startTime = saved.startTime || Date.now();
+  sq.endTime = null;
+  sq.completedCards = Array.isArray(saved.completedCards) ? saved.completedCards : [];
+  sq.lessonFilter = saved.lessonFilter || sqSnapshotLessonFilter();
+  sq.dayKey = saved.dayKey || todayKey();
   return saved.extra || {};
 }
 
@@ -429,6 +517,9 @@ function sqResetAllQueuesAndSessionState() {
   // FIX (Bug 2 — session persistence): dọn luôn mọi hàng đợi ĐÃ LƯU (localStorage) của cả 5 tab —
   // nếu để sót, refresh sau khi reset sẽ "khôi phục" nhầm đúng những thẻ vừa bị xoá FSRS.
   ['review', 'review-weak', 'flash', 'quiz', 'type', 'listen'].forEach(sqClearPersisted);
+  // V77 (Yêu cầu 1): dọn luôn nhật ký Study Session trong ngày — không còn ý nghĩa gì sau khi toàn
+  // bộ dữ liệu học tập/FSRS đã bị xoá.
+  ['review', 'review-weak', 'flash', 'quiz', 'type', 'listen'].forEach(m => { try { localStorage.removeItem(ssDayLogKey(m)); } catch {} });
 }
 
 // FIX (chọn bài học không lọc đúng — "Sau khi refresh hoặc quay lại học, bài đã chọn bị mất" /
@@ -465,19 +556,62 @@ function sqInvalidateQueuesForSelectionChange() {
 // Nạp hàng đợi 1 LẦN cho 1 lượt "vào tab" — dùng chung bởi mọi tab luyện tập (đăng nhập: FSRS
 // thật qua loadFsrsPracticePool; khách: pool cục bộ theo bài đang chọn). V74: lọc thêm
 // sessionKnownHz để không nạp lại từ vừa trả lời ĐÚNG ở 1 tab KHÁC trong cùng phiên.
-async function sqLoad(sq, limit) {
+// V77 (Yêu cầu 1/5/8): opts.ignoreDayDedupe (mặc định false) — CHỈ true khi gọi từ
+// sqRelearnFromStart() ("Học lại từ đầu", hành động TƯỜNG MINH do user chủ động bấm) — bỏ qua lọc
+// sessionKnownHz cho riêng lượt nạp này để cố ý ôn lại đúng những từ vừa hoàn thành trong ngày.
+// Mọi lượt gọi khác (vào tab bình thường, "Học tiếp", "Học mới") LUÔN tôn trọng sessionKnownHz
+// (Yêu cầu 3: không lấy lại từ đã hoàn thành hôm nay nếu chưa đến hạn FSRS).
+async function sqLoad(sq, limit, opts) {
+  const ignoreDayDedupe = !!(opts && opts.ignoreDayDedupe);
   sq.doneHz = new Set(); sq.answeredCount = 0; sq.sessionId = genIdempotencyKey();
+  sq.startTime = Date.now(); sq.endTime = null; sq.completedCards = [];
+  sq.dayKey = todayKey(); sq.lessonFilter = sqSnapshotLessonFilter();
+  const dedupeSet = ignoreDayDedupe ? new Set() : sessionKnownHz;
   if (isLoggedIn()) {
     const { words, error } = await loadFsrsPracticePool(limit);
     if (error) return { error };
     // FIX (Bug 2 — thứ tự lọc/cắt): lọc sessionKnownHz TRƯỚC, cắt limit SAU (xem loadFsrsPracticePool
     // ở trên — trước đây cắt limit TRƯỚC khi lọc, có thể làm hàng đợi trống oan dù server còn thẻ).
-    sq.items = sqDedupeByHz(words).filter(w => !sessionKnownHz.has(w.hz)).slice(0, limit);
+    sq.items = sqDedupeByHz(words).filter(w => !dedupeSet.has(w.hz)).slice(0, limit);
   } else {
-    sq.items = sqDedupeByHz(shuffle(getFilteredWords())).filter(w => !sessionKnownHz.has(w.hz)).slice(0, limit);
+    sq.items = sqDedupeByHz(shuffle(getFilteredWords())).filter(w => !dedupeSet.has(w.hz)).slice(0, limit);
   }
   sq.totalPlanned = sq.items.length;
   return { ok: true };
+}
+
+// V77 (Yêu cầu 2 — "Học mới" tạo phiên MỚI): đóng/ghi nhật ký phiên đang có (nếu còn dang dở) rồi
+// nạp phiên MỚI — vẫn tôn trọng sessionKnownHz/FSRS due như mọi lượt nạp khác (Yêu cầu 3), và vì
+// nguồn NEW word phía server (getNewWordsByLessonOrder) chỉ trả từ CHƯA có fsrs_cards, phiên mới
+// luôn tự động tiếp tục đúng từ CHƯA học tiếp theo — KHÔNG bao giờ quay lại đầu danh sách (Yêu cầu 4).
+async function sqStartNewSession(mode, sq, limit) {
+  ssArchiveSession(mode, sq);
+  sqClearPersisted(mode);
+  const result = await sqLoad(sq, limit);
+  if (result.ok) sqPersist(mode, sq);
+  return result;
+}
+
+// V77 (Yêu cầu 8 — "Học lại từ đầu" PHẢI là hành động rõ ràng, KHÔNG được tự động thực hiện): nạp
+// lại hàng đợi từ vị trí đầu tiên, CỐ Ý bỏ qua sessionKnownHz CHỈ cho riêng lượt nạp này, để user
+// chủ động ôn lại đúng những từ vừa học/ôn trong ngày. KHÔNG đụng tới dữ liệu FSRS thật trên server
+// (due/stability/difficulty/...) — trả lời lại vẫn đi qua đúng reviewService.reviewCard() như mọi
+// lượt khác, chỉ tạo thêm 1 lượt review hợp lệ mới, không phải "xoá tiến trình cũ" (Yêu cầu: không
+// được reset tiến trình học trước đó). Hàm này CHỈ được gọi từ 1 nút bấm tường minh của user.
+async function sqRelearnFromStart(mode, sq, limit) {
+  ssArchiveSession(mode, sq);
+  sqClearPersisted(mode);
+  const result = await sqLoad(sq, limit, { ignoreDayDedupe: true });
+  if (result.ok) sqPersist(mode, sq);
+  return result;
+}
+
+// Có 1 Study Session còn dang dở (đã trả lời ít nhất 1 câu, còn thẻ chưa học trong hàng đợi, đúng
+// Study Day hôm nay) hay không — dùng để quyết định có cần hỏi rõ "Học tiếp"/"Học mới" hay không
+// (Yêu cầu 2) thay vì tự động resume/ghi đè ngầm.
+function sqHasDanglingSession(mode) {
+  const saved = sqReadPersisted(mode);
+  return !!(saved && saved.items && saved.items.length > 0 && saved.answeredCount > 0 && sqLessonFilterMatches(saved.lessonFilter));
 }
 
 // Gọi SAU KHI có kết quả (server hoặc tự chấm ở khách) cho thẻ đang ở ĐẦU hàng đợi.
@@ -485,15 +619,20 @@ function sqAdvance(sq, isCorrect) {
   const w = sq.items.shift();
   if (!w) return;
   sq.answeredCount++;
+  // V77 (Yêu cầu 5 — completedCards): tích luỹ đúng danh sách thẻ đã hoàn thành của Study Session
+  // này, khác doneHz (chỉ dùng nội bộ để chống lặp trong hàng đợi hiện tại).
+  if (!Array.isArray(sq.completedCards)) sq.completedCards = [];
+  sq.completedCards.push({ hz: w.hz, l: w.l, correct: !!isCorrect, at: Date.now() });
   if (isCorrect) {
     sq.doneHz.add(w.hz); // loại vĩnh viễn khỏi phiên này — không bao giờ lặp lại nữa
-    sessionKnownHz.add(w.hz); // V74: loại khỏi TẤT CẢ tab khác trong cùng phiên (chống lặp CHÉO tab)
+    sessionKnownHz.add(w.hz); // V77: loại khỏi TẤT CẢ tab khác + tất cả Study Session khác TRONG NGÀY (chống lặp cả chéo tab lẫn chéo phiên)
     saveSessionKnownHz(); // FIX (Ưu tiên 2): persist ngay để F5/reload không mất trạng thái chống lặp
     sqPurgeHzFromAllQueues(w.hz); // FIX (Ưu tiên 1): loại NGAY khỏi các hàng đợi tab khác đang giữ sẵn từ này phía sau
   } else {
     const pos = Math.min(REPEAT_GAP, sq.items.length); // chèn lại cách tối thiểu N thẻ khác
     sq.items.splice(pos, 0, w);
   }
+  if (sq.items.length === 0) sq.endTime = Date.now(); // V77 (Yêu cầu 5): hàng đợi cạn thật -> Study Session kết thúc, ghi endTime
 }
 
 

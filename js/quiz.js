@@ -105,7 +105,10 @@ function qzRenderQ() {
     area.innerHTML = `<div class="panel exam-result">
       <div class="exam-score">${qzScore}/${qzQueue.answeredCount}</div>
       <div class="exam-rank">${qzRank(qzScore/qzQueue.answeredCount)}</div>
-      <button class="btn btn-primary" onclick="bindQuiz()">Làm lại</button>
+      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+        <button class="btn btn-primary" onclick="qzContinueSession()">▶️ Học tiếp</button>
+        <button class="btn" onclick="qzRelearnFromStart()">🔁 Học lại từ đầu</button>
+      </div>
     </div>`;
     if (isLoggedIn()) refreshServerMeta(); // hết phiên — làm mới streak/known thật
     return;
@@ -267,5 +270,24 @@ function rvMakeOpts(w) { return makeQuizOpts(w, WORDS.filter(x => isLoggedIn() |
 
 function qzRank(r) {
   if(r>=.9) return '🏆 Xuất sắc'; if(r>=.7) return '👍 Tốt'; if(r>=.5) return '📚 Cần ôn'; return '🔄 Học lại';
+}
+
+// V77 (Yêu cầu 2/8): "Học tiếp" = nạp Study Session MỚI tiếp theo (Yêu cầu 4: tự lấy đúng từ CHƯA
+// học kế tiếp, không quay lại đầu danh sách). "Học lại từ đầu" = hành động TƯỜNG MINH riêng (Yêu
+// cầu 8), chỉ chạy khi bấm đúng nút này, ôn lại đúng bộ câu vừa xong bất kể đã hoàn thành hôm nay
+// hay chưa; không đụng tới FSRS thật trên server.
+async function qzContinueSession() {
+  const { error } = await sqStartNewSession('quiz', qzQueue, qzQuestionCount);
+  if (currentTab !== 'quiz') return;
+  if (error) { const a = document.getElementById('qz-area'); if (a) a.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
+  qzRenderQ();
+  qzLoadSentencePool().then(() => qzRenderQ());
+}
+async function qzRelearnFromStart() {
+  const { error } = await sqRelearnFromStart('quiz', qzQueue, qzQuestionCount);
+  if (currentTab !== 'quiz') return;
+  if (error) { const a = document.getElementById('qz-area'); if (a) a.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
+  qzRenderQ();
+  qzLoadSentencePool().then(() => qzRenderQ());
 }
 

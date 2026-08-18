@@ -75,6 +75,25 @@ async function bindFlash(forceReload) {
   fcUpdate();
 }
 
+// V77 (Yêu cầu 2/8): "Học tiếp" trên màn hình Xong phiên = nạp Study Session MỚI tiếp theo (Yêu
+// cầu 4: server tự trả đúng từ CHƯA học kế tiếp theo, không quay lại đầu danh sách). "Học lại từ
+// đầu" là hành động TƯỜNG MINH riêng (Yêu cầu 8) — chỉ chạy khi bấm đúng nút này, ôn lại đúng bộ
+// từ vừa xong bất kể đã "hoàn thành hôm nay" hay chưa; không đụng tới FSRS thật trên server.
+async function fcContinueSession() {
+  const limit = questionCount === 9999 ? 9999 : questionCount;
+  const { error } = await sqStartNewSession('flash', fcQueue, limit);
+  if (currentTab !== 'flash') return;
+  if (error) { document.getElementById('content').innerHTML = `<div class="panel center" style="padding:40px">⚠️ ${error}</div>`; return; }
+  fcUpdate();
+}
+async function fcRelearnFromStart() {
+  const limit = questionCount === 9999 ? 9999 : questionCount;
+  const { error } = await sqRelearnFromStart('flash', fcQueue, limit);
+  if (currentTab !== 'flash') return;
+  if (error) { document.getElementById('content').innerHTML = `<div class="panel center" style="padding:40px">⚠️ ${error}</div>`; return; }
+  fcUpdate();
+}
+
 // Chiết tự bộ thủ lấy từ database (AI sinh, phủ toàn bộ từ vựng) — tải 1 lần lúc mở app
 let dbHanziParts = {};
 async function loadHanziParts() {
@@ -132,7 +151,11 @@ function fcUpdate() {
   }
   if (fcQueue.items.length === 0) {
     const msg = `🎉 Xong! Đã học ${fcQueue.doneHz.size} thẻ trong phiên này.`;
-    document.getElementById('content').innerHTML = `<div class="panel center" style="padding:40px">${msg}<br><button class="btn btn-primary" style="margin-top:14px" onclick="bindFlash()">Học tiếp</button></div>`;
+    document.getElementById('content').innerHTML = `<div class="panel center" style="padding:40px">${msg}
+      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:14px">
+        <button class="btn btn-primary" onclick="fcContinueSession()">▶️ Học tiếp</button>
+        <button class="btn" onclick="fcRelearnFromStart()">🔁 Học lại từ đầu</button>
+      </div></div>`;
     if (isLoggedIn()) refreshServerMeta();
     return;
   }

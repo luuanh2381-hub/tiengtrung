@@ -62,7 +62,11 @@ function tyRenderQ() {
     area.innerHTML = `<div class="panel center" style="padding:24px">${msg}</div>`; return;
   }
   if (tyQueue.items.length === 0) {
-    area.innerHTML=`<div class="panel exam-result"><div class="exam-score">${tyScore}/${tyQueue.answeredCount}</div><div class="exam-rank">${qzRank(tyScore/tyQueue.answeredCount)}</div><button class="btn btn-primary" onclick="bindType()">Làm lại</button></div>`;
+    area.innerHTML=`<div class="panel exam-result"><div class="exam-score">${tyScore}/${tyQueue.answeredCount}</div><div class="exam-rank">${qzRank(tyScore/tyQueue.answeredCount)}</div>
+      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+        <button class="btn btn-primary" onclick="tyContinueSession()">▶️ Học tiếp</button>
+        <button class="btn" onclick="tyRelearnFromStart()">🔁 Học lại từ đầu</button>
+      </div></div>`;
     if (isLoggedIn()) refreshServerMeta(); // hết phiên — làm mới streak/known thật
     return;
   }
@@ -138,6 +142,22 @@ async function tySkip() {
   tySubmitting = false;
   if (currentTab !== 'type' || tyQueue.items[0] !== w) return;
   sqAdvance(tyQueue, false); // bỏ qua luôn tính là chưa nhớ (Again)
+  tyRenderQ();
+}
+
+// V77 (Yêu cầu 2/8): "Học tiếp" = nạp Study Session MỚI tiếp theo (Yêu cầu 4: tự lấy đúng từ CHƯA
+// học kế tiếp, không quay lại đầu danh sách). "Học lại từ đầu" = hành động TƯỜNG MINH riêng (Yêu
+// cầu 8), chỉ chạy khi bấm đúng nút này; không đụng tới FSRS thật trên server.
+async function tyContinueSession() {
+  const { error } = await sqStartNewSession('type', tyQueue, questionCount);
+  if (currentTab !== 'type') return;
+  if (error) { const a = document.getElementById('ty-area'); if (a) a.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
+  tyRenderQ();
+}
+async function tyRelearnFromStart() {
+  const { error } = await sqRelearnFromStart('type', tyQueue, questionCount);
+  if (currentTab !== 'type') return;
+  if (error) { const a = document.getElementById('ty-area'); if (a) a.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
   tyRenderQ();
 }
 

@@ -11,10 +11,10 @@ function renderHome() {
   <div class="panel">
     <div class="panel-title">Bắt đầu học nhanh</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-      <button class="btn btn-primary" onclick="goTab('flash')">📖 Flashcard</button>
-      <button class="btn" style="background:var(--l8c);color:var(--l8a);" onclick="goTab('quiz')">📝 Trắc nghiệm</button>
-      <button class="btn" style="background:var(--l9c);color:var(--l9a);" onclick="goTab('listen')">🎧 Nghe chọn</button>
-      <button class="btn" style="background:var(--l10c);color:var(--l10a);" onclick="goTab('type')">⌨️ Gõ chữ</button>
+      <button class="btn btn-primary" onclick="ssEnterMode('flash')">📖 Flashcard</button>
+      <button class="btn" style="background:var(--l8c);color:var(--l8a);" onclick="ssEnterMode('quiz')">📝 Trắc nghiệm</button>
+      <button class="btn" style="background:var(--l9c);color:var(--l9a);" onclick="ssEnterMode('listen')">🎧 Nghe chọn</button>
+      <button class="btn" style="background:var(--l10c);color:var(--l10a);" onclick="ssEnterMode('type')">⌨️ Gõ chữ</button>
     </div>
   </div>`;
 }
@@ -79,8 +79,8 @@ async function loadStudyDashboard() {
         <div class="study-stat lesson"><div class="study-stat-num">📖 Bài ${data.currentLesson}</div><div class="study-stat-label">Bài hiện tại</div></div>
         <div class="study-stat weak"><div class="study-stat-num">🔥 ${data.weakCount}</div><div class="study-stat-label">Từ hay quên</div></div>
       </div>
-      <button class="btn btn-primary" style="width:100%;font-size:1.05rem;padding:15px;" onclick="startStudySession()">▶️ Bắt đầu học</button>
-      ${data.weakCount > 0 ? `<button class="btn" style="width:100%;margin-top:8px;background:var(--l10c);color:var(--l10a);" onclick="startStudySession(true)">⚠️ Luyện từ hay quên (${data.weakCount})</button>` : ''}
+      <button class="btn btn-primary" style="width:100%;font-size:1.05rem;padding:15px;" onclick="ssEnterMode('review')">▶️ Bắt đầu học</button>
+      ${data.weakCount > 0 ? `<button class="btn" style="width:100%;margin-top:8px;background:var(--l10c);color:var(--l10a);" onclick="ssEnterMode('review-weak')">⚠️ Luyện từ hay quên (${data.weakCount})</button>` : ''}
     `;
   } catch (e) {
     area.innerHTML = `<div class="study-empty">Lỗi kết nối: ${e.message}</div>`;

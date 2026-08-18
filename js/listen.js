@@ -65,7 +65,11 @@ function lsRenderQ() {
     area.innerHTML = `<div class="panel center" style="padding:24px">${msg}</div>`; return;
   }
   if (lsQueue.items.length === 0) {
-    area.innerHTML=`<div class="panel exam-result"><div class="exam-score">${lsScore}/${lsQueue.answeredCount}</div><div class="exam-rank">${qzRank(lsScore/lsQueue.answeredCount)}</div><button class="btn btn-primary" onclick="bindListen()">Làm lại</button></div>`;
+    area.innerHTML=`<div class="panel exam-result"><div class="exam-score">${lsScore}/${lsQueue.answeredCount}</div><div class="exam-rank">${qzRank(lsScore/lsQueue.answeredCount)}</div>
+      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+        <button class="btn btn-primary" onclick="lsContinueSession()">▶️ Học tiếp</button>
+        <button class="btn" onclick="lsRelearnFromStart()">🔁 Học lại từ đầu</button>
+      </div></div>`;
     if (isLoggedIn()) refreshServerMeta(); // hết phiên — làm mới streak/known thật
     return;
   }
@@ -120,5 +124,21 @@ async function lsPickWord(btn, chosen, correct) {
   }
   if (currentTab !== 'listen' || lsQueue.items[0] !== w) return; // user đã rời tab hoặc hàng đợi đã đổi trong lúc chờ
   sqAdvance(lsQueue, isCorrectLocally); lsRenderQ();
+}
+
+// V77 (Yêu cầu 2/8): "Học tiếp" = nạp Study Session MỚI tiếp theo (Yêu cầu 4: tự lấy đúng từ CHƯA
+// học kế tiếp, không quay lại đầu danh sách). "Học lại từ đầu" = hành động TƯỜNG MINH riêng (Yêu
+// cầu 8), chỉ chạy khi bấm đúng nút này; không đụng tới FSRS thật trên server.
+async function lsContinueSession() {
+  const { error } = await sqStartNewSession('listen', lsQueue, questionCount);
+  if (currentTab !== 'listen') return;
+  if (error) { const a = document.getElementById('ls-area'); if (a) a.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
+  lsRenderQ();
+}
+async function lsRelearnFromStart() {
+  const { error } = await sqRelearnFromStart('listen', lsQueue, questionCount);
+  if (currentTab !== 'listen') return;
+  if (error) { const a = document.getElementById('ls-area'); if (a) a.innerHTML = `<div class="panel center" style="padding:24px">⚠️ ${error}</div>`; return; }
+  lsRenderQ();
 }
 
