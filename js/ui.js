@@ -150,6 +150,11 @@ function saveSelectionState() {
   progressState.ui.lessonsAllMode = lessonsAllMode;
   cacheProgressLocally();
   scheduleSync();
+  // FIX (chọn bài học không lọc đúng): Quyển/bài đang chọn vừa đổi — mọi hàng đợi luyện tập đã nạp
+  // trước đó (kể cả bản đã lưu localStorage) được nạp theo lựa chọn CŨ nên không còn hợp lệ. Huỷ
+  // ngay để lần vào tab Review/Flashcard/Trắc nghiệm/Gõ chữ/Nghe-chọn kế tiếp bắt buộc nạp lại đúng
+  // theo lựa chọn MỚI (xem sqInvalidateQueuesForSelectionChange ở js/study-queue.js).
+  sqInvalidateQueuesForSelectionChange();
 }
 
 // Bấm 1 thẻ Quyển/level: bật/tắt trong danh sách đang chọn (giữ lại ít nhất 1 mục luôn được chọn)

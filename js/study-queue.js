@@ -431,6 +431,37 @@ function sqResetAllQueuesAndSessionState() {
   ['review', 'review-weak', 'flash', 'quiz', 'type', 'listen'].forEach(sqClearPersisted);
 }
 
+// FIX (chọn bài học không lọc đúng — "Sau khi refresh hoặc quay lại học, bài đã chọn bị mất" /
+// "Review, Quiz, Flashcard, Typing hoặc Listening không dùng đúng bài đã chọn"): mỗi tab luyện tập
+// chỉ sqLoad() lại nếu hàng đợi ĐANG RỖNG (xem bindFlash/bindQuiz/bindType/bindListen — cố tình giữ
+// nguyên hàng đợi khi rời/quay lại tab để không mất tiến trình đang học dở, V74). Hệ quả PHỤ chưa
+// được xử lý trước đây: đổi Quyển/bài đang chọn ở Trang chủ KHÔNG hề đụng tới các hàng đợi này —
+// hàng đợi cũ (và bản đã lưu localStorage, sống tới 45 phút — xem SQ_SESSION_MAX_AGE_MS) vẫn còn
+// nguyên, nạp theo đúng lựa chọn CŨ, nên quay lại/refresh vào các tab luyện tập vẫn thấy y hệt từ
+// của lựa chọn trước đó — như thể bài vừa chọn không có tác dụng. Gọi hàm này ngay khi lựa chọn
+// Quyển/bài THAY ĐỔI (xem saveSelectionState ở js/ui.js) để buộc lần vào tab kế tiếp phải nạp mới
+// hoàn toàn theo đúng lựa chọn hiện tại.
+// Khác sqResetAllQueuesAndSessionState (dùng cho Reset FSRS/Xoá dữ liệu): hàm này CHỈ đổi lựa chọn
+// bài học, không phải sự kiện xoá dữ liệu, nên KHÔNG đụng tới sessionKnownHz (chống lặp trong phiên
+// đăng nhập hiện tại) hay outbox (review chưa gửi kịp lên server) — cả 2 thứ đó không liên quan gì
+// tới việc đang chọn bài nào.
+function sqInvalidateQueuesForSelectionChange() {
+  const queues = [
+    typeof fcQueue !== 'undefined' ? fcQueue : null,
+    typeof qzQueue !== 'undefined' ? qzQueue : null,
+    typeof tyQueue !== 'undefined' ? tyQueue : null,
+    typeof lsQueue !== 'undefined' ? lsQueue : null,
+  ];
+  for (const sq of queues) {
+    if (!sq) continue;
+    sq.items = []; sq.totalPlanned = 0; sq.answeredCount = 0; sq.doneHz = new Set();
+  }
+  if (typeof rvSession !== 'undefined') rvSession = [];
+  if (typeof rvTotalPlanned !== 'undefined') rvTotalPlanned = 0;
+  if (typeof rvAnsweredCount !== 'undefined') rvAnsweredCount = 0;
+  ['review', 'review-weak', 'flash', 'quiz', 'type', 'listen'].forEach(sqClearPersisted);
+}
+
 // Nạp hàng đợi 1 LẦN cho 1 lượt "vào tab" — dùng chung bởi mọi tab luyện tập (đăng nhập: FSRS
 // thật qua loadFsrsPracticePool; khách: pool cục bộ theo bài đang chọn). V74: lọc thêm
 // sessionKnownHz để không nạp lại từ vừa trả lời ĐÚNG ở 1 tab KHÁC trong cùng phiên.
