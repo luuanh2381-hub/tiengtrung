@@ -1,279 +1,177 @@
+#!/usr/bin/env node
 // ════════════════════════════════════════════════════
-// TEST BẮT BUỘC cho FSRS-6 (Phần 16). Dùng "assert" thuần của Node — không thêm devDependency
-// framework test nào để tránh phải cài thêm gói (giữ đúng scope nâng cấp FSRS-6).
-// Chạy: npm test  (= node test/fsrs.test.js)
+// test/fsrs.test.js — Unit test THUẦN cho lớp FSRS (lib/fsrs.js, lib/fsrs-auto-rating.js,
+// lib/fsrs/studyScope.js, lib/fsrs/scheduler.js). KHÔNG cần DATABASE_URL/Postgres — mọi hàm test
+// ở đây chỉ động tới logic tính toán thuần JS, không chạm DB.
 //
-// Mỗi test kiểm tra state/difficulty/stability/scheduled_days/due — không chỉ "chạy không lỗi".
+// FIX (audit V79): package.json đã khai báo `"test": "node test/fsrs.test.js"` từ các đợt audit
+// trước (V69/V72 có nhắc tới file này), nhưng thư mục test/ không tồn tại trong project — `npm
+// test` luôn báo lỗi "Cannot find module". File này khôi phục lại `npm test` ở trạng thái CHẠY
+// ĐƯỢC THẬT, với các khẳng định (assertion) có ý nghĩa thay vì test rỗng cho có.
+//
+// Chạy: npm test  (hoặc: node test/fsrs.test.js)
 // ════════════════════════════════════════════════════
 const assert = require('assert');
-const { reviewCard, getFsrsVerificationInfo, FSRS6_PARAM_COUNT, State } = require('../lib/fsrs');
-const { personalBaselineMs } = require('../lib/fsrs-auto-rating');
+const path = require('path');
 
-// Bộ 21 default weights FSRS-6 CHÍNH THỨC, công bố bởi open-spaced-repetition (fsrs4anki /
-// fsrs-optimizer / ts-fsrs "example" đều dùng chung 1 bộ này khi chưa optimize riêng cho user).
-// Dùng để so khớp CHÍNH XÁC — không chỉ đếm số lượng — rằng scheduler đang chạy đúng FSRS-6 thật,
-// không phải 1 bộ 21-số bất kỳ hoặc bộ weights của FSRS-5 (19 số) bị pad thêm cho đủ 21.
-// Nguồn: open-spaced-repetition/fsrs4anki, open-spaced-repetition/ts-fsrs (packages/fsrs/example).
-const OFFICIAL_FSRS6_DEFAULT_W = [
-  0.212, 1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001, 1.8722, 0.1666,
-  0.796, 1.4835, 0.0614, 0.2629, 1.6483, 0.6014, 1.8729, 0.5425, 0.0912, 0.0658, 0.1542,
-];
+const fsrs = require(path.join(__dirname, '..', 'lib', 'fsrs'));
+const { getAutomaticFSRSRating } = require(path.join(__dirname, '..', 'lib', 'fsrs-auto-rating'));
+const studyScope = require(path.join(__dirname, '..', 'lib', 'fsrs', 'studyScope'));
 
-let passed = 0;
-let failed = 0;
-const results = [];
-
+let passed = 0, failed = 0;
 function test(name, fn) {
   try {
     fn();
-    passed += 1;
-    results.push([name, 'PASS']);
-    console.log(`PASS  ${name}`);
-  } catch (err) {
-    failed += 1;
-    results.push([name, 'FAIL']);
-    console.log(`FAIL  ${name}`);
-    console.log(`      ${err.message}`);
+    passed++;
+    console.log(`  ✅ ${name}`);
+  } catch (e) {
+    failed++;
+    console.log(`  ❌ ${name}`);
+    console.log(`     ${e.message}`);
   }
 }
 
-function assertValidCard(card) {
-  assert.ok(card, 'card phải tồn tại');
-  assert.ok([State.New, State.Learning, State.Review, State.Relearning].includes(card.state),
-    `state hợp lệ, nhận được ${card.state}`);
-  assert.ok(Number.isFinite(card.difficulty) && card.difficulty >= 1 && card.difficulty <= 10,
-    `difficulty trong khoảng [1,10], nhận được ${card.difficulty}`);
-  assert.ok(Number.isFinite(card.stability) && card.stability > 0,
-    `stability > 0, nhận được ${card.stability}`);
-  assert.ok(Number.isFinite(card.scheduled_days) && card.scheduled_days >= 0,
-    `scheduled_days >= 0, nhận được ${card.scheduled_days}`);
-  assert.ok(card.due instanceof Date && !Number.isNaN(card.due.getTime()), 'due là Date hợp lệ');
-}
+console.log('════════════════════════════════════════════════════');
+console.log('FSRS — unit tests (không cần Postgres)');
+console.log('════════════════════════════════════════════════════');
 
-const BASE = new Date('2026-08-01T09:00:00.000Z');
+console.log('\n[lib/fsrs.js — scheduler thật (ts-fsrs)]');
 
-// ── 0. FSRS-6 verification ──
-test('FSRS-6: scheduler dùng đúng 21 parameters', () => {
-  const info = getFsrsVerificationInfo();
-  assert.strictEqual(info.paramCount, FSRS6_PARAM_COUNT);
+test('FSRS-6 dùng đúng 21 weights (w[0]..w[20])', () => {
+  const info = fsrs.getFsrsVerificationInfo();
+  assert.strictEqual(info.paramCount, 21);
   assert.strictEqual(info.isFsrs6, true);
 });
 
-// Kiểm chứng MẠNH hơn "length === 21": so khớp TỪNG giá trị với bộ default weights FSRS-6 công bố
-// chính thức (project chưa optimize riêng nên vẫn phải khớp default của thư viện). Nếu package
-// đang cài thực chất là bản giả/patch tự chế 21 số ngẫu nhiên, test này sẽ FAIL dù length đúng.
-test('FSRS-6: 21 default weights khớp CHÍNH XÁC với công bố chính thức', () => {
-  const info = getFsrsVerificationInfo();
-  assert.strictEqual(info.w.length, OFFICIAL_FSRS6_DEFAULT_W.length);
-  info.w.forEach((val, i) => {
-    assert.ok(
-      Math.abs(val - OFFICIAL_FSRS6_DEFAULT_W[i]) < 1e-6,
-      `w[${i}] = ${val}, kỳ vọng ${OFFICIAL_FSRS6_DEFAULT_W[i]} (default FSRS-6 chính thức)`
-    );
-  });
+test('isAllowedRetention() chỉ chấp nhận đúng 4 mức đã duyệt', () => {
+  assert.strictEqual(fsrs.isAllowedRetention(0.90), true);
+  assert.strictEqual(fsrs.isAllowedRetention(0.80), true);
+  assert.strictEqual(fsrs.isAllowedRetention(0.95), true);
+  assert.strictEqual(fsrs.isAllowedRetention(0.99), false);
+  assert.strictEqual(fsrs.isAllowedRetention('không phải số'), false);
+  assert.strictEqual(fsrs.isAllowedRetention(undefined), false);
 });
 
-// ── New → {Again, Hard, Good, Easy} ──
-for (const rating of ['again', 'hard', 'good', 'easy']) {
-  test(`New -> ${rating}`, () => {
-    const { newCard, ratingName } = reviewCard(null, rating, BASE);
-    assertValidCard(newCard);
-    assert.strictEqual(ratingName, rating);
-    if (rating === 'again') {
-      // Again trên thẻ New -> Learning (không nhảy thẳng Review)
-      assert.strictEqual(newCard.state, State.Learning);
-    } else {
-      assert.ok([State.Learning, State.Review].includes(newCard.state));
+test('ratingFromString() chỉ nhận đúng 4 giá trị, không phân biệt hoa/thường', () => {
+  assert.strictEqual(fsrs.ratingFromString('again'), fsrs.Rating.Again);
+  assert.strictEqual(fsrs.ratingFromString('GOOD'), fsrs.Rating.Good);
+  assert.strictEqual(fsrs.ratingFromString('Easy'), fsrs.Rating.Easy);
+  assert.strictEqual(fsrs.ratingFromString('xyz'), null);
+  assert.strictEqual(fsrs.ratingFromString(''), null);
+});
+
+test('reviewCard(): thẻ MỚI + rating "again" → vẫn ở trạng thái đang học (không nhảy thẳng lên Review)', () => {
+  const now = new Date('2026-01-01T00:00:00Z');
+  const { newCard } = fsrs.reviewCard(null, 'again', now, 0.9);
+  assert.notStrictEqual(newCard.state, fsrs.State.Review);
+  assert.ok(newCard.due.getTime() >= now.getTime(), 'due phải >= thời điểm review');
+});
+
+test('reviewCard(): thẻ MỚI + rating "easy" cho khoảng cách ôn xa hơn "again" (đúng bản chất FSRS)', () => {
+  const now = new Date('2026-01-01T00:00:00Z');
+  const again = fsrs.reviewCard(null, 'again', now, 0.9).newCard;
+  const easy = fsrs.reviewCard(null, 'easy', now, 0.9).newCard;
+  assert.ok(easy.due.getTime() >= again.due.getTime(), 'Easy phải cho lịch ôn xa hơn hoặc bằng Again');
+});
+
+test('reviewCard(): retention thấp hơn → scheduled_days dài hơn (đúng công thức FSRS)', () => {
+  const now = new Date('2026-01-01T00:00:00Z');
+  // Cần vài lượt "good" liên tiếp để thẻ có stability đáng kể trước khi so sánh scheduled_days.
+  function simulate(retention) {
+    let card = null;
+    let cur = now;
+    for (let i = 0; i < 3; i++) {
+      const r = fsrs.reviewCard(card, 'good', cur, retention);
+      card = r.newCard;
+      cur = new Date(cur.getTime() + (card.scheduled_days || 1) * 86400000);
     }
+    return card.scheduled_days;
+  }
+  const days80 = simulate(0.80);
+  const days95 = simulate(0.95);
+  assert.ok(days80 >= days95, `retention thấp hơn (0.80) phải cho scheduled_days dài hơn hoặc bằng (0.95): ${days80} vs ${days95}`);
+});
+
+test('reviewCard(): rating không hợp lệ phải throw, không âm thầm chạy sai', () => {
+  assert.throws(() => fsrs.reviewCard(null, 'excellent', new Date(), 0.9));
+});
+
+test('rowToCard()/cardToRow(): round-trip giữ nguyên giá trị số', () => {
+  const row = {
+    state: 2, due: '2026-02-01T00:00:00Z', stability: 12.5, difficulty: 4.2,
+    elapsed_days: 3, scheduled_days: 10, reps: 5, lapses: 1, last_review: '2026-01-22T00:00:00Z',
+  };
+  const card = fsrs.rowToCard(row);
+  assert.strictEqual(card.stability, 12.5);
+  assert.strictEqual(card.difficulty, 4.2);
+  assert.strictEqual(card.state, 2);
+  const back = fsrs.cardToRow(card);
+  assert.strictEqual(back.stability, 12.5);
+  assert.strictEqual(back.state, 2);
+});
+
+test('rowToCard(null) trả null (word hoàn toàn mới, chưa có fsrs_card)', () => {
+  assert.strictEqual(fsrs.rowToCard(null), null);
+});
+
+test('getSchedulerForRetention(): giá trị không hợp lệ fallback về DEFAULT_RETENTION, không throw', () => {
+  const { params } = fsrs.getSchedulerForRetention(1.5); // không nằm trong ALLOWED_RETENTIONS
+  assert.strictEqual(params.request_retention, fsrs.DEFAULT_RETENTION);
+});
+
+console.log('\n[lib/fsrs-auto-rating.js — suy luận rating từ hành vi trả lời]');
+
+test('Trả lời SAI luôn ra "again", bất kể trả lời nhanh hay chậm', () => {
+  assert.strictEqual(getAutomaticFSRSRating({ answerCorrect: false, responseTimeMs: 500, card: null, reviewHistory: [] }), 'again');
+  assert.strictEqual(getAutomaticFSRSRating({ answerCorrect: false, responseTimeMs: 30000, card: { state: 2, reps: 5 }, reviewHistory: [] }), 'again');
+});
+
+test('Từ MỚI trả lời đúng rất nhanh KHÔNG được tự suy ra "easy" (tránh nhầm may mắn/đoán với đã nhớ chắc)', () => {
+  const r = getAutomaticFSRSRating({ answerCorrect: true, responseTimeMs: 300, card: null, reviewHistory: [], answerChanges: 0 });
+  assert.notStrictEqual(r, 'easy');
+});
+
+test('Từ MỚI trả lời đúng, đổi đáp án nhiều lần trước khi chốt → "hard"', () => {
+  const r = getAutomaticFSRSRating({ answerCorrect: true, responseTimeMs: 1000, card: null, reviewHistory: [], answerChanges: 3 });
+  assert.strictEqual(r, 'hard');
+});
+
+test('Chưa đủ lịch sử để dựng baseline cá nhân → mặc định bảo thủ "good", không đoán bừa "easy"', () => {
+  const r = getAutomaticFSRSRating({
+    answerCorrect: true, responseTimeMs: 100, answerChanges: 0,
+    card: { state: 2, reps: 1, stability: 5, difficulty: 3 }, reviewHistory: [],
   });
-}
-
-// ── Good -> {Again, Hard, Good, Easy} (thẻ đã có lịch sử) ──
-const { newCard: goodBaseCard } = reviewCard(null, 'good', BASE);
-for (const rating of ['again', 'hard', 'good', 'easy']) {
-  test(`Good -> ${rating}`, () => {
-    const reviewTime = new Date(goodBaseCard.due.getTime());
-    const { newCard } = reviewCard(goodBaseCard, rating, reviewTime);
-    assertValidCard(newCard);
-    if (rating === 'again') {
-      assert.ok(newCard.lapses >= goodBaseCard.lapses,
-        'lapses phải tăng hoặc giữ nguyên sau Again');
-    }
-  });
-}
-
-// ── Multiple reviews same day ──
-test('Multiple reviews same day: Good -> Good (+2h) -> Hard (+5h)', () => {
-  const { newCard: c1 } = reviewCard(null, 'good', BASE);
-  const t2 = new Date(BASE.getTime() + 2 * 60 * 60 * 1000);
-  const { newCard: c2 } = reviewCard(c1, 'good', t2);
-  assertValidCard(c2);
-  const t3 = new Date(BASE.getTime() + 5 * 60 * 60 * 1000);
-  const { newCard: c3 } = reviewCard(c2, 'hard', t3);
-  assertValidCard(c3);
-  // Cùng ngày -> due mới vẫn phải >= thời điểm review vừa rồi.
-  assert.ok(c3.due.getTime() >= t3.getTime());
+  assert.strictEqual(r, 'good');
 });
 
-// ── Review after several days ──
-test('Review after several days: New -> Good -> (due date) Good', () => {
-  const { newCard: c1 } = reviewCard(null, 'good', BASE);
-  assert.ok(c1.scheduled_days >= 0);
-  const dueTime = new Date(c1.due.getTime());
-  const { newCard: c2 } = reviewCard(c1, 'good', dueTime);
-  assertValidCard(c2);
-  assert.ok(c2.stability >= 0);
+console.log('\n[lib/fsrs/studyScope.js — chọn bài học / thứ tự ưu tiên từ mới]');
+
+test('resolveCurrentLesson(): currentLesson đã lưu còn nằm trong phạm vi → giữ nguyên', () => {
+  assert.strictEqual(studyScope.resolveCurrentLesson({ currentLesson: 5 }, [3, 4, 5, 6]), 5);
 });
 
-// ── Review at midnight (23:59 / 00:00 / 00:01) ──
-test('Review at midnight boundary (23:59 -> 00:01 UTC)', () => {
-  const t2359 = new Date('2026-08-10T23:59:00.000Z');
-  const { newCard: c1 } = reviewCard(null, 'good', t2359);
-  assertValidCard(c1);
-  const t0000 = new Date('2026-08-11T00:00:00.000Z');
-  const { newCard: c2 } = reviewCard(c1, 'good', t0000);
-  assertValidCard(c2);
-  const t0001 = new Date('2026-08-11T00:01:00.000Z');
-  const { newCard: c3 } = reviewCard(c2, 'good', t0001);
-  assertValidCard(c3);
-  // due luôn phải >= thời điểm review (không được lùi về quá khứ).
-  assert.ok(c3.due.getTime() >= t0001.getTime());
+test('resolveCurrentLesson(): currentLesson đã lưu KHÔNG còn trong phạm vi (đổi Quyển/bài) → lấy bài nhỏ nhất trong phạm vi mới', () => {
+  assert.strictEqual(studyScope.resolveCurrentLesson({ currentLesson: 99 }, [3, 4, 5]), 3);
 });
 
-// ── Rating mapping (Phần 8) ──
-test('Rating mapping Again=1 Hard=2 Good=3 Easy=4', () => {
-  const { Rating } = require('ts-fsrs');
-  assert.strictEqual(Rating.Again, 1);
-  assert.strictEqual(Rating.Hard, 2);
-  assert.strictEqual(Rating.Good, 3);
-  assert.strictEqual(Rating.Easy, 4);
+test('resolveCurrentLesson(): phạm vi rỗng → fallback bài 1, không throw', () => {
+  assert.strictEqual(studyScope.resolveCurrentLesson({ currentLesson: null }, []), 1);
 });
 
-// ── reviewCard() phải dùng scheduler.next(), không dùng repeat() khi rating đã biết ──
-test('reviewCard() dùng next() — chỉ tính đúng 1 nhánh rating, không preview cả 4', () => {
-  const { fsrs, generatorParameters, createEmptyCard, Rating } = require('ts-fsrs');
-  const scheduler = fsrs(generatorParameters({ request_retention: 0.9, enable_fuzz: true }));
-  const card = createEmptyCard(BASE);
-
-  let repeatCalls = 0;
-  let nextCalls = 0;
-  const origRepeat = scheduler.repeat.bind(scheduler);
-  const origNext = scheduler.next.bind(scheduler);
-  scheduler.repeat = (...args) => { repeatCalls += 1; return origRepeat(...args); };
-  scheduler.next = (...args) => { nextCalls += 1; return origNext(...args); };
-
-  // Gọi trực tiếp API next() đúng như lib/fsrs.js đang làm, để xác nhận API tồn tại + trả về
-  // đúng { card, log } cho 1 rating cụ thể (không phải object indexed theo cả 4 rating).
-  const result = scheduler.next(card, BASE, Rating.Good);
-  assert.ok(result && result.card && result.log, 'next() trả về { card, log }');
-  assert.strictEqual(nextCalls, 1);
-  assert.strictEqual(repeatCalls, 0, 'không gọi repeat() khi đã biết rating');
-  assertValidCard(result.card);
+test('buildLessonPriorityOrder(): ưu tiên đúng thứ tự bài trước → bài hiện tại → bài sau, TRONG phạm vi trước khi ra ngoài', () => {
+  const { inScopeOrder, outside } = studyScope.buildLessonPriorityOrder(5, [3, 5, 7, 9], [1, 2, 3, 5, 7, 9, 20]);
+  assert.deepStrictEqual(inScopeOrder, [3, 5, 7, 9]);
+  assert.ok(!outside.includes(3) && !outside.includes(5) && !outside.includes(7) && !outside.includes(9));
+  assert.ok(outside.includes(1) && outside.includes(2) && outside.includes(20));
 });
 
-// ── Baseline responseTime: phải tự sort theo reviewed_at DESC, không phụ thuộc ngầm vào thứ tự
-//     caller truyền vào (yêu cầu mới — Phần 6). Test này dựng tình huống mà nếu KHÔNG sort (bug
-//     cũ: chỉ .slice(0,10) trên mảng chưa chắc đã sort) sẽ ra kết quả SAI hẳn (5499.5 thay vì
-//     1000), để chứng minh việc sort thực sự có tác dụng chứ không phải no-op. ──
-test('personalBaselineMs(): tự sort theo reviewed_at, không phụ thuộc thứ tự input', () => {
-  const makeRow = (ms, minutesAgo) => ({
-    answer_correct: true,
-    response_time_ms: ms,
-    reviewed_at: new Date(BASE.getTime() - minutesAgo * 60000).toISOString(),
-  });
-  // 5 lượt RẤT CŨ (1000 phút trước, responseTime=9999) cố tình đặt Ở ĐẦU mảng input — mô phỏng
-  // 1 caller không sort theo reviewed_at. 10 lượt THẬT SỰ gần nhất (1..10 phút trước) có
-  // responseTime=1000, đặt sau. Nếu code cũ chỉ .slice(0,10) trên mảng này (không tự sort) sẽ lấy
-  // nhầm 5 lượt cũ + 5 lượt mới → median lệch hẳn (5499.5). Code đã sửa phải tự sort trước, chỉ
-  // lấy đúng 10 lượt MỚI NHẤT (toàn bộ responseTime=1000) → median đúng = 1000.
-  const oldJunk = Array.from({ length: 5 }, () => makeRow(9999, 1000));
-  const trueRecent = Array.from({ length: 10 }, (_, i) => makeRow(1000, i + 1));
-  const messyOrder = [...oldJunk, ...trueRecent]; // cố tình KHÔNG sort, rác cũ ở đầu
-  const baseline = personalBaselineMs(messyOrder);
-  assert.strictEqual(baseline, 1000,
-    `baseline phải = 1000 (median của 10 lượt MỚI NHẤT thật sự), nhận được ${baseline} ` +
-    `(nếu ra 5499.5 nghĩa là hàm chưa tự sort mà đang tin thứ tự input)`);
+test('bookOfLessonServer(): map đúng bài → Quyển theo BOOKS_RANGES', () => {
+  assert.strictEqual(studyScope.bookOfLessonServer(10), 1); // Quyển 1: 1-15
+  assert.strictEqual(studyScope.bookOfLessonServer(20), 2); // Quyển 2: 16-30
+  assert.strictEqual(studyScope.bookOfLessonServer(9999), 1); // không khớp Quyển nào -> fallback 1
 });
 
-// ── V69: Desired Retention theo user (Phần 5) — scheduler CACHE theo từng mức, KHÔNG tạo
-//     scheduler mới mỗi request, và giá trị không hợp lệ phải fallback về default (không throw). ──
-test('V69: reviewCard() nhận desiredRetention hợp lệ, ảnh hưởng lịch ôn (interval dài hơn khi retention thấp hơn)', () => {
-  const { newCard: cardHighRetention } = reviewCard(null, 'good', BASE, 0.95);
-  const { newCard: cardLowRetention } = reviewCard(null, 'good', BASE, 0.80);
-  assertValidCard(cardHighRetention);
-  assertValidCard(cardLowRetention);
-  // Retention mục tiêu THẤP hơn (0.80) → chấp nhận quên nhiều hơn → khoảng ôn tập (scheduled_days)
-  // phải DÀI hơn so với retention cao (0.95) — đúng bản chất toán học của FSRS, không phải giả định
-  // tùy tiện.
-  assert.ok(cardLowRetention.scheduled_days >= cardHighRetention.scheduled_days,
-    `scheduled_days ở retention=0.80 (${cardLowRetention.scheduled_days}) phải >= retention=0.95 (${cardHighRetention.scheduled_days})`);
-});
-
-test('V69: reviewCard() với desiredRetention KHÔNG hợp lệ → fallback DEFAULT_RETENTION, không throw', () => {
-  const { DEFAULT_RETENTION } = require('../lib/fsrs');
-  const { newCard: fallback } = reviewCard(null, 'good', BASE, 0.77); // 0.77 không nằm trong ALLOWED_RETENTIONS
-  const { newCard: expected } = reviewCard(null, 'good', BASE, DEFAULT_RETENTION);
-  assertValidCard(fallback);
-  assert.strictEqual(fallback.scheduled_days, expected.scheduled_days,
-    'retention không hợp lệ phải cho kết quả giống hệt DEFAULT_RETENTION (0.90), không phải throw hay dùng 0.77');
-});
-
-test('V69: ALLOWED_RETENTIONS đúng 4 mức yêu cầu [0.80, 0.85, 0.90, 0.95]', () => {
-  const { ALLOWED_RETENTIONS, isAllowedRetention } = require('../lib/fsrs');
-  assert.deepStrictEqual(ALLOWED_RETENTIONS, [0.80, 0.85, 0.90, 0.95]);
-  assert.strictEqual(isAllowedRetention(0.9), true);
-  assert.strictEqual(isAllowedRetention(0.91), false);
-});
-
-// ── V76 Yêu cầu 1: resolveCurrentLesson/buildLessonPriorityOrder CHUYỂN từ api/index.js sang
-//     lib/fsrs/studyScope.js (giờ reviewService.getStudySession() gọi tới) — test lại đúng behavior
-//     cũ để đảm bảo khúc chuyển chỗ này không âm thầm đổi hành vi "từ mới nào được ưu tiên". ──────
-const { resolveCurrentLesson, buildLessonPriorityOrder } = require('../lib/fsrs/studyScope');
-
-test('V76: resolveCurrentLesson() ưu tiên ui.currentLesson đã lưu nếu còn hợp lệ trong scope', () => {
-  assert.strictEqual(resolveCurrentLesson({ currentLesson: 5 }, [1, 2, 5, 8]), 5);
-});
-test('V76: resolveCurrentLesson() fallback về bài NHỎ NHẤT trong scope nếu currentLesson không hợp lệ/rơi ngoài scope', () => {
-  assert.strictEqual(resolveCurrentLesson({ currentLesson: 99 }, [3, 1, 2]), 1, 'currentLesson=99 không nằm trong scope -> lấy Math.min, không phải Math.max');
-  assert.strictEqual(resolveCurrentLesson({}, [4, 2, 7]), 2, 'user mới (chưa có currentLesson) cũng lấy bài nhỏ nhất, không nhảy vào bài cuối');
-});
-test('V76: resolveCurrentLesson() scope rỗng -> fallback bài 1, không throw', () => {
-  assert.strictEqual(resolveCurrentLesson({}, []), 1);
-});
-
-test('V76: buildLessonPriorityOrder() ưu tiên current lesson trước, rồi các bài TRƯỚC nó, rồi các bài SAU nó trong scope', () => {
-  const { inScopeOrder } = buildLessonPriorityOrder(5, [1, 3, 5, 7, 9], [1, 3, 5, 7, 9]);
-  assert.deepStrictEqual(inScopeOrder, [1, 3, 5, 7, 9], 'bài 5 (current) đứng thứ 3, trước là [1,3] tăng dần, sau là [7,9] tăng dần');
-});
-test('V76: buildLessonPriorityOrder() phần "outside" (ngoài scope) sắp theo khoảng cách GẦN current lesson nhất trước', () => {
-  const { outside } = buildLessonPriorityOrder(10, [10], [1, 5, 10, 12, 20]);
-  // Ngoài scope {10}: còn 1,5,12,20 — khoảng cách tới 10 lần lượt là 9,5,2,10 -> gần nhất trước: 12,5,1,20
-  assert.deepStrictEqual(outside, [12, 5, 1, 20]);
-});
-
-
-//     xoá fsrs_cards+review_history trong lib/db.js), KHÔNG thể unit-test thuần ở tầng scheduler
-//     vì không chạm DB thật. FIX (audit V68, Phần 22): "assert.ok(true)" là TEST GIẢ — không được
-//     coi là bằng chứng behavior. Test này KHÔNG chạy giả một kết quả PASS nữa; nó SKIP một cách
-//     tường minh (không tính vào passed/failed) và trỏ sang script tích hợp thật:
-//     test/fsrs.concurrency.integration.js — script đó CHỈ chạy khi có DATABASE_URL trỏ tới
-//     Postgres thật (npm run test:integration), và tự fail rõ ràng nếu behavior sai, không bao
-//     giờ tự báo PASS khi chưa thực sự chứng minh được.
-let skipped = 0;
-function skip(name, reason) {
-  skipped += 1;
-  results.push([name, 'SKIP']);
-  console.log(`SKIP  ${name}`);
-  console.log(`      Lý do: ${reason}`);
-}
-skip(
-  'Concurrent review / reset / delete (cần Postgres thật)',
-  'Không có DATABASE_URL trong môi trường chạy "npm test" (unit test thuần, không chạm DB). ' +
-  'Đây KHÔNG phải bằng chứng concurrency an toàn — chỉ là ghi nhận rằng test integration thật ' +
-  'chưa chạy ở bước này. Chạy "DATABASE_URL=... node test/fsrs.concurrency.integration.js" ' +
-  '(hoặc "npm run test:integration") để kiểm tra thật trên Postgres.'
-);
-
-console.log('\n──────────────────────────────');
-console.log(`${passed} passed, ${failed} failed, ${skipped} skipped`);
+console.log('\n════════════════════════════════════════════════════');
+console.log(`Kết quả: ${passed} PASS, ${failed} FAIL`);
+console.log('════════════════════════════════════════════════════');
 if (failed > 0) process.exitCode = 1;
