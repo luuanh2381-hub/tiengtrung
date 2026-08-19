@@ -111,7 +111,10 @@ async function tyCheck() {
   const responseTimeMs = performance.now() - tyStartedAt;
   const fb = document.getElementById('ty-fb');
   fb.className='type-feedback '+(okLocally?'ok':'bad');
-  fb.textContent = okLocally ? `✅ Đúng! ${w.hz}` : `❌ Sai. Đáp án: ${w.hz} (${w.py})`;
+  // FIX (audit — "phần kết quả" luôn hiện Pinyin dù đã ẩn): trước đây (${w.py}) bị gắn cứng vào
+  // đáp án hiện ra sau khi trả lời sai, không tôn trọng nút "Ẩn Pinyin" như mọi nơi hiện đáp án
+  // khác (flashcard/quiz/review/listen). Giờ chỉ thêm phần pinyin khi showPinyin đang bật.
+  fb.textContent = okLocally ? `✅ Đúng! ${w.hz}` : `❌ Sai. Đáp án: ${w.hz}${showPinyin ? ` (${w.py})` : ''}`;
   if (okLocally) playDing(); else playBuzz();
   speak(w.hz);
   inp.disabled=true;

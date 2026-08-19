@@ -25,7 +25,7 @@ function cpRenderList() {
       ${i>0?'<span class="confuse-vs">vs</span>':''}
       <div class="confuse-item${appHz.has(c.hz)?' in-vocab':''}">
         <div class="confuse-hz" onclick="speak('${c.hz}')">${c.hz}</div>
-        <div class="confuse-py">${c.py}</div>
+        ${showPinyin ? `<div class="confuse-py">${c.py}</div>` : ''}
         ${showHanViet && hvMap[c.hz] ? `<div class="confuse-hv">${hvMap[c.hz]}</div>` : ''}
         <div class="confuse-vi">${c.vi}</div>
         ${appHz.has(c.hz)?'<div class="confuse-badge">✓ trong vốn từ</div>':''}
@@ -61,7 +61,7 @@ function cpRenderTestQ() {
   area.innerHTML = `<div class="panel">
     <div style="font-size:.75rem;color:var(--muted);margin-bottom:10px">${cpTestIdx+1}/${cpTestQueue.length} · Chọn đúng chữ Hán</div>
     <div style="text-align:center;font-size:1.05rem;font-weight:700;margin-bottom:6px">${target.vi}</div>
-    <div style="text-align:center;font-size:.85rem;color:var(--muted);font-style:italic;margin-bottom:14px">${target.py}</div>
+    ${showPinyin ? `<div style="text-align:center;font-size:.85rem;color:var(--muted);font-style:italic;margin-bottom:14px">${target.py}</div>` : ''}
     <div style="display:flex;justify-content:center;gap:12px;flex-wrap:wrap">${optHtml}</div>
     <div style="margin-top:14px;text-align:center"><button class="btn" onclick="cpExitTest()">✕ Thoát kiểm tra</button></div>
   </div>`;

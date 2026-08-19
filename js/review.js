@@ -264,15 +264,20 @@ function renderReview() {
     // (Phần 2/18) — chỉ hiện khi bật chế độ debug/advanced dành cho admin (Phần 19/22).
     const r = rvLastAnswer;
     const ex = rvFindExample(w.hz);
+    // YÊU CẦU (theo yêu cầu người dùng): riêng ở màn "kết quả" (đã trả lời) của "Hôm nay học",
+    // Pinyin và Hán Việt LUÔN hiện để củng cố trí nhớ ngay sau khi biết đáp án — không theo nút
+    // "Ẩn Pinyin"/"Ẩn Hán Việt" ở thanh công cụ (2 nút đó vẫn áp dụng bình thường cho MỌI chỗ
+    // khác: màn câu hỏi ở trên, Flashcard, Trắc nghiệm, Gõ chữ, Nghe chọn). showMeaning (nghĩa
+    // tiếng Việt) không đổi — vẫn theo đúng nút "Ẩn nghĩa" như trước.
     body = `
       <div class="rv-tag">${tagLabel} · Bài ${w.l}</div>
       <div class="rv-hz">${w.hz}</div>
       <div class="rv-feedback" style="color:${r && r.correct ? 'var(--l8a)' : 'var(--l10a)'};">
         ${r && r.correct ? '✅ Chính xác' : '❌ Chưa đúng'}
       </div>
-      ${showPinyin ? `<div class="rv-py">${w.py || ''}</div>` : ''}
+      <div class="rv-py">${w.py || ''}</div>
       ${showMeaning ? `<div class="rv-vi">${w.vi || ''}</div>` : ''}
-      ${showHanViet && w.hanviet ? `<div class="rv-hv">Hán Việt: ${w.hanviet}</div>` : ''}
+      ${w.hanviet ? `<div class="rv-hv">Hán Việt: ${w.hanviet}</div>` : ''}
       ${renderHanziParts(w.hz)}
       ${ex ? `<div class="rv-ex">${ex.zh}<br><span style="color:var(--muted);font-size:.85rem;">${ex.vi}</span></div>` : ''}
       <div class="rv-saved-line">${rvSavedLine(r)}</div>
