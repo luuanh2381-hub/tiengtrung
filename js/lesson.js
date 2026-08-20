@@ -40,17 +40,22 @@ function renderToday() {
   <div class="panel">
     <div class="panel-title">Cài đặt hằng ngày</div>
     <div class="study-settings-row">
+      <span>♾️ Học không giới hạn mỗi ngày</span>
+      <input type="checkbox" ${ui.unlimitedStudy ? 'checked' : ''} onchange="updateStudySetting('unlimitedStudy', this.checked)">
+    </div>
+    <div class="study-settings-row" style="${ui.unlimitedStudy ? 'opacity:.4;' : ''}">
       <span>🔁 Giới hạn ôn tập / ngày</span>
-      <input type="number" min="1" value="${ui.dailyReviewLimit}" onchange="updateStudySetting('dailyReviewLimit', this.value)">
+      <input type="number" min="1" value="${ui.dailyReviewLimit}" ${ui.unlimitedStudy ? 'disabled' : ''} onchange="updateStudySetting('dailyReviewLimit', this.value)">
     </div>
-    <div class="study-settings-row">
+    <div class="study-settings-row" style="${ui.unlimitedStudy ? 'opacity:.4;' : ''}">
       <span>🆕 Giới hạn từ mới / ngày</span>
-      <input type="number" min="0" value="${ui.dailyNewLimit}" onchange="updateStudySetting('dailyNewLimit', this.value)">
+      <input type="number" min="0" value="${ui.dailyNewLimit}" ${ui.unlimitedStudy ? 'disabled' : ''} onchange="updateStudySetting('dailyNewLimit', this.value)">
     </div>
-    <div class="study-settings-row">
+    <div class="study-settings-row" style="${ui.unlimitedStudy ? 'opacity:.4;' : ''}">
       <span>Chỉ học từ mới sau khi hết backlog ôn tập</span>
-      <input type="checkbox" ${ui.newOnlyAfterDue ? 'checked' : ''} onchange="updateStudySetting('newOnlyAfterDue', this.checked)">
+      <input type="checkbox" ${ui.newOnlyAfterDue ? 'checked' : ''} ${ui.unlimitedStudy ? 'disabled' : ''} onchange="updateStudySetting('newOnlyAfterDue', this.checked)">
     </div>
+    ${ui.unlimitedStudy ? '<div style="font-size:.85rem;opacity:.7;margin-top:4px;">Áp dụng cho mọi tab luyện tập (Flashcard/Trắc nghiệm/Gõ chữ/Nghe-chọn) — không còn bị chặn lại trong ngày.</div>' : ''}
   </div>`;
 }
 function bindToday() {
@@ -87,12 +92,14 @@ async function loadStudyDashboard() {
   }
 }
 function updateStudySetting(key, value) {
-  if (key === 'newOnlyAfterDue') progressState.ui[key] = !!value;
+  if (key === 'newOnlyAfterDue' || key === 'unlimitedStudy') progressState.ui[key] = !!value;
   else {
     const n = parseInt(value, 10);
     if (Number.isFinite(n) && n >= 0) progressState.ui[key] = n;
   }
   cacheProgressLocally();
   scheduleSync();
+  // Bật/tắt "Học không giới hạn" cần vẽ lại panel ngay để làm mờ/khoá 3 dòng cài đặt bên dưới.
+  if (key === 'unlimitedStudy' && typeof render === 'function') render();
 }
 

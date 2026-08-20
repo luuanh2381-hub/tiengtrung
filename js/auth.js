@@ -14,6 +14,9 @@ function defaultProgress() {
     qzType: '漢→Việt', qzQuestionCount: 30, questionCount: 10,
     // Cài đặt hệ thống học FSRS (Phần 22): daily limit + current lesson tự động cập nhật.
     dailyReviewLimit: 50, dailyNewLimit: 10, newOnlyAfterDue: true, currentLesson: null,
+    // unlimitedStudy: bật thì bỏ hẳn 2 giới hạn trên (áp dụng CHUNG cho mọi tab luyện tập, vì tất
+    // cả cùng gọi /api/study/session) — học bao nhiêu lượt/ngày tuỳ ý, không bị chặn lại.
+    unlimitedStudy: false,
   } };
 }
 function normalizeProgress(p) {
@@ -37,6 +40,7 @@ function normalizeProgress(p) {
   if (!Number.isFinite(p.ui.dailyReviewLimit) || p.ui.dailyReviewLimit < 1) p.ui.dailyReviewLimit = 50;
   if (!Number.isFinite(p.ui.dailyNewLimit) || p.ui.dailyNewLimit < 0) p.ui.dailyNewLimit = 10;
   if (typeof p.ui.newOnlyAfterDue !== 'boolean') p.ui.newOnlyAfterDue = true;
+  if (typeof p.ui.unlimitedStudy !== 'boolean') p.ui.unlimitedStudy = false;
   if (!Number.isFinite(p.ui.currentLesson)) p.ui.currentLesson = null;
   return p;
 }
