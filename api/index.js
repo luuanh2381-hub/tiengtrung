@@ -306,6 +306,10 @@ app.post('/api/progress', async (req, res) => {
           : (Number.isFinite(existingUi.dailyNewLimit) ? existingUi.dailyNewLimit : 10),
         newOnlyAfterDue: typeof src.newOnlyAfterDue === 'boolean' ? src.newOnlyAfterDue
           : (typeof existingUi.newOnlyAfterDue === 'boolean' ? existingUi.newOnlyAfterDue : true),
+        // unlimitedStudy: bật thì reviewService.getStudySession() bỏ qua dailyReviewLimit/
+        // dailyNewLimit hoàn toàn — CHUNG cho mọi tab luyện tập vì cùng đọc 1 field này.
+        unlimitedStudy: typeof src.unlimitedStudy === 'boolean' ? src.unlimitedStudy
+          : (typeof existingUi.unlimitedStudy === 'boolean' ? existingUi.unlimitedStudy : false),
       };
       u.progress.ui = safeUi;
     });
