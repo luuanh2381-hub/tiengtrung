@@ -19,10 +19,8 @@ function render() {
   else if (currentTab === 'stats') { el.innerHTML = renderStats(); bindStats(); }
   else if (currentTab === 'difficult'){ el.innerHTML = renderDifficult(); bindDifficult(); }
   else if (currentTab === 'compare'){ el.innerHTML = renderCompare(); bindCompare(); }
-  else if (currentTab === 'hsk')   { el.innerHTML = renderHSK(); bindHSK(); }
   else if (currentTab === 'admin') { el.innerHTML = renderAdmin(); bindAdmin(); }
   else if (currentTab === 'vocab') { el.innerHTML = renderVocabAdmin(); bindVocabAdmin(); }
-  else if (currentTab === 'logs')  { el.innerHTML = renderLogs(); bindLogs(); }
 }
 
 // Lesson filter html — 2 ô droplist đa lựa chọn: chọn Quyển/level, rồi (nếu cần) chọn bài cụ thể
