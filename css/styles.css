@@ -332,19 +332,56 @@
   .exam-miss{margin-top:16px;text-align:left;}
   .exam-miss-item{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:var(--radius-sm);background:var(--l10b);margin-bottom:6px;font-size:.9rem;}
 
-  /* ── STATS ─────────────────────────────────────────────── */
-  .stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px;}
-  .stat-box{background:var(--paper);border-radius:var(--radius-sm);padding:14px;text-align:center;}
-  .stat-num{font-size:1.6rem;font-weight:900;color:var(--active-dark);}
-  .stat-lbl{font-size:.7rem;color:var(--muted);font-weight:600;}
+  /* ── STATS (từ đây trở xuống dùng chung với tab Từ khó) ──── */
   .weak-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--radius-sm);background:var(--paper);margin-bottom:6px;}
   .weak-hz{font-size:1.3rem;font-weight:900;min-width:40px;}
   .weak-info{flex:1;font-size:.82rem;color:var(--muted);}
-  .bar-chart{display:flex;align-items:flex-end;gap:8px;height:80px;margin-top:12px;}
-  .bar-col{display:flex;flex-direction:column;align-items:center;flex:1;gap:4px;}
-  .bar-fill{width:100%;border-radius:4px 4px 0 0;transition:height .4s cubic-bezier(.2,.8,.3,1);}
-  .bar-lbl{font-size:.65rem;font-weight:700;color:var(--muted);}
-  .bar-pct{font-size:.65rem;font-weight:700;}
+
+  /* ── DASHBOARD THỐNG KÊ (V80) ─────────────────────────────
+     KPI grid + line chart (SVG nhẹ, không cần thư viện) + heatmap kiểu GitHub (CSS grid) +
+     bar chart tiến độ theo bài + donut trạng thái FSRS (conic-gradient CSS thuần). */
+  .dash-kpi-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;}
+  .dash-kpi{background:var(--paper);border-radius:var(--radius-sm);padding:12px 8px;text-align:center;}
+  .dash-kpi-num{font-size:1.32rem;font-weight:900;color:var(--active-dark);line-height:1.15;}
+  .dash-kpi-lbl{font-size:.65rem;color:var(--muted);font-weight:700;margin-top:3px;}
+  .dash-kpi-sub{font-size:.6rem;color:var(--muted);margin-top:2px;}
+
+  .dash-filter-row{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;}
+  .dash-chip{padding:6px 14px;border-radius:16px;border:2px solid var(--border);background:var(--paper);color:var(--muted);font-size:.76rem;font-weight:800;cursor:pointer;}
+  .dash-chip.sel{border-color:var(--active);background:var(--active);color:#fff;}
+
+  .line-chart-svg{width:100%;height:120px;display:block;}
+  .line-chart-area{fill:var(--active-bg);stroke:none;}
+  .line-chart-line{fill:none;stroke:var(--active);stroke-width:2.2;stroke-linejoin:round;stroke-linecap:round;}
+  .dash-line-labels{display:flex;justify-content:space-between;font-size:.62rem;color:var(--muted);margin-top:2px;}
+
+  .dash-heatmap-wrap{overflow-x:auto;padding-bottom:4px;margin-top:16px;}
+  .dash-heatmap-grid{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,11px);gap:3px;width:max-content;}
+  .dash-heat-cell{width:11px;height:11px;border-radius:3px;background:var(--active);}
+  .dash-heat-cell.heat-0{background:var(--border);}
+  .dash-heatmap-lbl{font-size:.66rem;color:var(--muted);font-weight:700;margin-bottom:6px;}
+
+  .dash-bar-chart{display:flex;align-items:flex-end;gap:8px;height:110px;margin-top:12px;overflow-x:auto;padding-bottom:2px;}
+  .dash-bar-col{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;flex:0 0 auto;min-width:34px;gap:4px;height:100%;}
+  .dash-bar-track{flex:1;width:22px;display:flex;align-items:flex-end;}
+  .dash-bar-fill{width:100%;border-radius:5px 5px 0 0;transition:height .4s cubic-bezier(.2,.8,.3,1);min-height:2px;}
+  .dash-bar-pct{font-size:.62rem;font-weight:800;}
+  .dash-bar-lbl{font-size:.62rem;font-weight:700;color:var(--muted);}
+
+  .dash-donut-row{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-top:10px;}
+  .dash-donut-outer{position:relative;width:112px;height:112px;flex-shrink:0;}
+  .dash-donut{width:100%;height:100%;border-radius:50%;}
+  .dash-donut-hole{position:absolute;inset:17px;border-radius:50%;background:var(--card);display:flex;align-items:center;justify-content:center;text-align:center;}
+  .dash-donut-hole b{display:block;font-size:1.05rem;font-weight:900;color:var(--ink);}
+  .dash-donut-hole span{font-size:.58rem;color:var(--muted);font-weight:700;}
+  .dash-legend{flex:1;min-width:150px;display:flex;flex-direction:column;gap:8px;}
+  .dash-legend-item{display:flex;align-items:center;gap:7px;font-size:.78rem;color:var(--ink);}
+  .dash-legend-dot{width:10px;height:10px;border-radius:3px;flex-shrink:0;}
+  .dash-legend-val{margin-left:auto;font-weight:800;color:var(--muted);}
+
+  @media (min-width:520px){
+    .dash-kpi-grid{grid-template-columns:repeat(4,1fr);}
+  }
 
   /* ── DICTIONARY ────────────────────────────────────────── */
   .dict-search{width:100%;padding:11px 15px;border:2px solid var(--border);border-radius:var(--radius-sm);font-size:.95rem;outline:none;font-family:inherit;margin-bottom:14px;background:var(--card);color:var(--ink);}
@@ -354,18 +391,6 @@
   .dict-py{font-size:.82rem;color:var(--muted);font-style:italic;}
   .dict-vi{font-size:.9rem;font-weight:600;flex:1;}
   .dict-tag{font-size:.66rem;font-weight:800;padding:2px 7px;border-radius:8px;margin-left:4px;}
-
-  /* ── HSK4 PROGRESS ─────────────────────────────────────── */
-  .hsk-hero{text-align:center;padding:8px 0 16px;}
-  .hsk-hero-num{font-size:2.6rem;font-weight:900;color:var(--active-dark);line-height:1;}
-  .hsk-hero-sub{font-size:.85rem;color:var(--muted);font-weight:600;margin-top:4px;}
-  .hsk-bigbar{height:14px;background:var(--paper);border-radius:8px;overflow:hidden;margin-top:14px;}
-  .hsk-bigbar-fill{height:100%;background:linear-gradient(90deg,var(--active),#8b5cf6);border-radius:8px;transition:width .5s cubic-bezier(.2,.8,.3,1);}
-  .hsk-level-row{margin-bottom:16px;}
-  .hsk-level-label{display:flex;justify-content:space-between;align-items:baseline;font-size:.85rem;font-weight:700;margin-bottom:5px;}
-  .hsk-level-label .lv{color:var(--ink);}
-  .hsk-level-label .ct{color:var(--muted);font-weight:600;font-size:.78rem;}
-  .hsk-note{font-size:.78rem;color:var(--muted);line-height:1.5;margin-top:4px;}
 
   /* ── GENERIC BUTTONS ───────────────────────────────────── */
   .btn{padding:12px 24px;border:none;border-radius:14px;font-size:.9rem;font-weight:800;cursor:pointer;}
