@@ -194,7 +194,11 @@ function submitFsrsReview(args) {
 // trang bị đóng/điều hướng giữa chừng. Gỡ khỏi outbox theo idempotencyKey khi có kết quả xác định
 // (thành công HOẶC lỗi vĩnh viễn) — lỗi tạm thời/mất mạng thì GIỮ nguyên trong outbox (đã nằm sẵn
 // từ write-ahead, không cần xử lý gì thêm ở nhánh đó).
-async function _submitFsrsReviewImpl({ word, quizType, selectedAnswer, responseTimeMs, answerChanges }) {
+// `rating` (bổ sung "Highlight System Rating", TUỲ CHỌN — chỉ tab Review truyền vào): 1 trong
+// 'again'|'hard'|'good'|'easy' do NGƯỜI DÙNG bấm tay hoặc do countdown ở FE tự chọn khi hết giờ —
+// xem js/review.js:rvCommitRating(). Các tab khác (Flashcard/Trắc nghiệm/Gõ chữ/Nghe-chọn) không
+// truyền field này, server tự rơi về đúng hành vi V67 cũ (100% tự động, không override).
+async function _submitFsrsReviewImpl({ word, quizType, selectedAnswer, responseTimeMs, answerChanges, rating }) {
   // FIX (Vấn đề 1 — đúng thứ tự lên Neon): nếu outbox đang kẹt sẵn các lượt CŨ hơn (chưa gửi được
   // do mất mạng/lỗi tạm thời trước đó), tranh thủ thử gửi NỀN (không await, không chặn lượt hiện
   // tại) TRƯỚC KHI thêm lượt mới vào outbox — giảm tối đa khoảng thời gian các lượt cũ hơn bị "đứng
@@ -209,6 +213,7 @@ async function _submitFsrsReviewImpl({ word, quizType, selectedAnswer, responseT
     answerChanges: Number.isFinite(answerChanges) ? answerChanges : 0,
     idempotencyKey: genIdempotencyKey(),
   };
+  if (typeof rating === 'string' && rating) payload.rating = rating;
   addToOutbox(payload);
   let res, data;
   try {

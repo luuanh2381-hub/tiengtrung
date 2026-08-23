@@ -1,9 +1,16 @@
-// js/review.js — Tab "Hôm nay học" → phiên ôn tập thật, auto-rating FSRS, không còn nút Again/Hard/Good/Easy
+// js/review.js — Tab "Hôm nay học" → phiên ôn tập thật, khôi phục nút Again/Hard/Good/Easy có
+// highlight "System Rating" (bổ sung — revert lại phần UI thủ công của V66, ĐÈ LÊN kiến trúc V67).
 // ════════════════════════════════════════════════════
-// REVIEW SESSION — V67: AUTO FSRS RATING, không còn nút Again/Hard/Good/Easy.
-// Flow (Phần 1/2/17): hiện chữ Hán → user chọn 1 trong 4 đáp án trắc nghiệm → hệ thống tự xác định
-// đúng/sai + đo responseTime → gửi lên server → server tự suy ra FSRS rating, gọi ts-fsrs, lưu
-// lịch → lộ đáp án đầy đủ (pinyin/nghĩa/Hán Việt/chiết tự/ví dụ) → tự chuyển câu kế.
+// REVIEW SESSION — bổ sung "Highlight System Rating" (revert V67's auto-only flow):
+// Flow (Phần 1/17 cũ + yêu cầu bổ sung): hiện chữ Hán → user chọn 1 trong 4 đáp án trắc nghiệm →
+// hệ thống tự xác định đúng/sai + đo responseTime → gọi /api/study/review/preview (CHỈ ĐỌC, không
+// ghi) để lấy "System Rating" mà server sẽ tự suy ra → hiện 4 nút Again/Hard/Good/Easy, HIGHLIGHT
+// rõ ràng (bold + glow + border, class riêng `.system-rating`) đúng nút hệ thống đề xuất, kèm
+// countdown vài giây → user có thể bấm ĐỔI sang nút khác bất kỳ lúc nào trong lúc chờ (User Rating
+// luôn thắng System Rating) hoặc để hết giờ (dùng luôn System Rating) → gửi rating CUỐI CÙNG lên
+// /api/study/review (server vẫn tự xác định lại đúng/sai — KHÔNG tin answerCorrect từ client; chỉ
+// riêng RATING gửi vào FSRS mới có thể bị override bởi lựa chọn của user) → lộ đáp án đầy đủ
+// (pinyin/nghĩa/Hán Việt/chiết tự/ví dụ) → tự chuyển câu kế.
 //
 // V78 (Vấn đề 7 — "Session phải là nguồn dữ liệu duy nhất"): TRƯỚC ĐÂY Review giữ 1 bộ biến RỜI
 // RẠC (rvSession/rvSessionId/rvTotalPlanned/rvAnsweredCount/rvStartTime/rvEndTime/
@@ -32,6 +39,25 @@ let rvLastAnswer = null; // { correct, card, autoRating } — kết quả lượ
 let rvBlockedByBacklog = false; // server chặn từ mới vì còn backlog due (có thể ở Quyển/bài KHÁC phạm vi đang chọn) và cài đặt "Chỉ học từ mới sau khi hết backlog" đang bật
 let rvTotalDue = 0; // tổng số thẻ due TOÀN TÀI KHOẢN (không riêng phạm vi đang chọn) — dùng để giải thích lý do bị chặn ở trên
 const RV_QUIZ_TYPE = 'hz2vi'; // Phần 1: mặc định hỏi "chữ Hán → nghĩa", khớp đúng ví dụ trong yêu cầu V67
+
+// ── Bổ sung "Highlight System Rating" (revert V67's auto-only flow) ─────────────────────────────
+let rvRatingPhase = null;   // null (chưa tới lúc) | 'loading' (đang hỏi server gợi ý) | 'pending'
+                             // (đang hiện 4 nút + đếm ngược, chờ user) | 'committing' (đã chốt rating,
+                             // đang gửi lên FSRS) | 'done' (đã lưu xong)
+let rvSystemRating = null;  // 'again'|'hard'|'good'|'easy' — gợi ý CỦA HỆ THỐNG cho câu hiện tại
+let rvUserRating = null;    // rating do CHÍNH USER bấm tay — null nếu để countdown tự chọn hộ
+let rvFinalRating = null;   // rating THỰC SỰ đã/sẽ gửi lên FSRS: userRating nếu có, không thì systemRating
+let rvPendingReview = null; // { selectedAnswer, responseTimeMs, answerChanges } cố định từ lúc chọn đáp án trắc nghiệm
+let rvCountdownEndAt = 0;   // Date.now() timestamp lúc countdown kết thúc (tự chọn System Rating)
+let rvCountdownTimer = null;
+const RV_AUTO_COMMIT_MS = 2000; // "Tự động chọn sau 2s" — khớp ví dụ trong yêu cầu bổ sung
+const RV_RATING_ORDER = ['again', 'hard', 'good', 'easy'];
+const RV_RATING_META = {
+  again: { label: 'Again', cls: 'rv-rate-again' },
+  hard:  { label: 'Hard',  cls: 'rv-rate-hard'  },
+  good:  { label: 'Good',  cls: 'rv-rate-good'  },
+  easy:  { label: 'Easy',  cls: 'rv-rate-easy'  },
+};
 
 function rvStorageMode() { return 'review' + (rvWeakMode ? '-weak' : ''); }
 // Tất cả việc lưu/khôi phục phiên giờ đi thẳng qua sqPersist/sqReadPersisted (study-queue.js) trên
@@ -201,7 +227,15 @@ function rvPrepareCurrentCard() {
   rvAnswerChanges = 0;
   rvPhase = 'question';
   rvLastAnswer = null;
+  // Bổ sung "Highlight System Rating": dọn sạch trạng thái rating của câu TRƯỚC ĐÓ trước khi hiện
+  // câu mới — tránh còn sót highlight/countdown của câu cũ.
+  rvClearCountdown();
+  rvRatingPhase = null; rvSystemRating = null; rvUserRating = null; rvFinalRating = null; rvPendingReview = null;
   rvStartedAt = performance.now();
+}
+
+function rvClearCountdown() {
+  if (rvCountdownTimer) { clearInterval(rvCountdownTimer); rvCountdownTimer = null; }
 }
 
 // Ước lượng còn bao lâu tới lần ôn tiếp theo, chỉ để hiển thị thông tin cho user (Phần 18) —
@@ -214,6 +248,127 @@ function rvSavedLine(r) {
   if (diffDays <= 0) return '📌 Đã lưu lịch ôn — sẽ xuất hiện lại rất sớm';
   if (diffDays === 1) return '📌 Đã lưu lịch ôn — ôn lại sau 1 ngày';
   return `📌 Đã lưu lịch ôn — ôn lại sau ${diffDays} ngày`;
+}
+
+// ── Bổ sung "Highlight System Rating": vẽ 4 nút Again/Hard/Good/Easy theo đúng rvRatingPhase.
+//     Luôn vẽ đủ 4 nút (kể cả lúc 'loading') để không gây layout shift (yêu cầu Phần "Mobile UX").
+function rvRenderRatingBar() {
+  if (!rvRatingPhase) return '';
+  const finalRating = (rvRatingPhase === 'committing' || rvRatingPhase === 'done') ? rvFinalRating : null;
+  const showSystemGlow = rvRatingPhase === 'pending' && !finalRating;
+  const clickable = rvRatingPhase === 'pending';
+  const btns = RV_RATING_ORDER.map(r => {
+    const meta = RV_RATING_META[r];
+    let cls = 'rv-rate-btn ' + meta.cls;
+    let extra = '';
+    let extraAttrs = '';
+    if (finalRating) {
+      // «Đây là lựa chọn mà người dùng đã chọn» (hoặc hệ thống tự chọn khi hết giờ) — trạng thái
+      // CUỐI CÙNG, mạnh hơn hẳn, KHÔNG dùng chung class với .system-rating (Phần 3/9).
+      if (r === finalRating) { cls += ' rv-rate-final'; extra = ' ✓'; extraAttrs = ' aria-pressed="true"'; }
+    } else if (showSystemGlow && r === rvSystemRating) {
+      // «Đây là lựa chọn do hệ thống đề xuất» — class riêng .system-rating (Phần 1), không được
+      // hiểu nhầm là bắt buộc (Phần 9) — accessibility: aria-label mô tả rõ đây chỉ là gợi ý (Phần 8).
+      cls += ' system-rating';
+      extra = ' ★';
+      extraAttrs = ` aria-label="System suggested rating: ${meta.label}"`;
+    }
+    return `<button class="${cls}" ${clickable ? '' : 'disabled'} onclick="rvChooseRating('${r}')"${extraAttrs}>${meta.label}${extra}</button>`;
+  }).join('');
+  let hint = '&nbsp;';
+  if (rvRatingPhase === 'loading') hint = '⏳ Đang tính gợi ý hệ thống...';
+  else if (rvRatingPhase === 'pending' && rvSystemRating) {
+    hint = `Hệ thống đề xuất: <b>${RV_RATING_META[rvSystemRating].label}</b> · Tự động chọn sau <span id="rv-countdown-num">${Math.ceil(RV_AUTO_COMMIT_MS / 1000)}</span>s`;
+  } else if (finalRating) {
+    hint = `Đã chọn: <b>${RV_RATING_META[finalRating].label}</b>${rvUserRating ? '' : ' (hệ thống tự chọn)'}`;
+  }
+  return `<div class="rv-rating-wrap"><div class="rv-rating-hint">${hint}</div><div class="rv-rating-row">${btns}</div></div>`;
+}
+
+// Gọi /api/study/review/preview (CHỈ ĐỌC — không ghi gì lên FSRS) để lấy gợi ý System Rating của
+// server cho ĐÚNG lượt trả lời này, dùng lại chung 1 logic getAutomaticFSRSRating với lúc commit
+// thật (lib/fsrs-auto-rating.js) — không đoán mò riêng ở client rồi lệch với server.
+async function rvFetchSystemRating({ word, selectedAnswer, responseTimeMs, answerChanges }) {
+  try {
+    const res = await fetch('/api/study/review/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        wordId: { hz: word.hz, l: word.l },
+        quizType: RV_QUIZ_TYPE,
+        selectedAnswer,
+        responseTimeMs: Number.isFinite(responseTimeMs) ? Math.round(responseTimeMs) : null,
+        answerChanges: Number.isFinite(answerChanges) ? answerChanges : 0,
+      }),
+    });
+    const data = await res.json().catch(() => null);
+    if (data && data.ok && RV_RATING_ORDER.includes(data.systemRating)) return data.systemRating;
+  } catch {}
+  // Mất mạng/lỗi tạm thời — vẫn cần 1 mặc định để countdown chạy được (không chặn UI): lưới an
+  // toàn bảo thủ y hệt fallback của getAutomaticFSRSRating (sai → Again; đúng chưa đủ dữ liệu → Good).
+  return (rvLastAnswer && rvLastAnswer.correct) ? 'good' : 'again';
+}
+
+function rvUpdateCountdownDisplay() {
+  const el = document.getElementById('rv-countdown-num');
+  if (!el) return;
+  el.textContent = String(Math.max(0, Math.ceil((rvCountdownEndAt - Date.now()) / 1000)));
+}
+
+// Đếm ngược AUTO_COMMIT_MS — hết giờ mà user chưa bấm nút nào thì tự dùng System Rating làm Final
+// Rating (Phần 6/9 của yêu cầu bổ sung). Chỉ cập nhật số giây qua DOM trực tiếp (không gọi render()
+// mỗi tick) để tránh vẽ lại cả thẻ mỗi giây (Phần "Mobile UX" — không được gây layout shift/giật).
+function rvStartCountdown(attemptId) {
+  rvClearCountdown();
+  rvCountdownEndAt = Date.now() + RV_AUTO_COMMIT_MS;
+  rvUpdateCountdownDisplay();
+  rvCountdownTimer = setInterval(() => {
+    if (attemptId !== rvAttemptId || currentTab !== 'review' || rvRatingPhase !== 'pending') { rvClearCountdown(); return; }
+    if (Date.now() >= rvCountdownEndAt) { rvClearCountdown(); rvCommitRating(attemptId, null); return; }
+    rvUpdateCountdownDisplay();
+  }, 200);
+}
+
+// User bấm tay 1 trong 4 nút trong lúc đang đếm ngược — "User Rating luôn thắng System Rating"
+// (Phần 9, quy tắc bắt buộc). Gọi từ onclick trong rvRenderRatingBar().
+function rvChooseRating(rating) {
+  if (rvRatingPhase !== 'pending' || !RV_RATING_ORDER.includes(rating)) return;
+  rvCommitRating(rvAttemptId, rating);
+}
+
+// Chốt Final Rating (chosenRating do user bấm, hoặc null nếu do countdown hết giờ) rồi gửi lên
+// /api/study/review thật. Đặt rvRatingPhase='committing' NGAY (đồng bộ, trước await đầu tiên) để
+// chặn commit lần 2 nếu click và hết giờ xảy ra gần như đồng thời (Phần 7 — "không cho timeout
+// tiếp tục commit lần thứ hai").
+async function rvCommitRating(attemptId, chosenRating) {
+  if (attemptId !== rvAttemptId || currentTab !== 'review' || rvRatingPhase !== 'pending') return;
+  rvClearCountdown();
+  const pending = rvPendingReview;
+  if (!pending) return;
+  rvUserRating = chosenRating;
+  rvFinalRating = chosenRating || rvSystemRating; // Quy tắc bắt buộc (Phần 9)
+  rvRatingPhase = 'committing';
+  render();
+
+  const item = rvQueue.items[0];
+  const w = item.word;
+  const reviewPromise = submitFsrsReviewAwaited({
+    word: w, quizType: RV_QUIZ_TYPE, selectedAnswer: pending.selectedAnswer,
+    responseTimeMs: pending.responseTimeMs, answerChanges: pending.answerChanges,
+    rating: rvFinalRating,
+  }).then(data => {
+    if (attemptId !== rvAttemptId || currentTab !== 'review') return;
+    if (data && data.ok) {
+      rvLastAnswer = { correct: data.answerCorrect, card: data.card, autoRating: data.debug ? data.debug.autoRating : null };
+      if (data.rating) rvFinalRating = data.rating; // server luôn là nguồn sự thật cuối (Phần 20)
+    }
+    rvRatingPhase = 'done';
+    render();
+  });
+  await Promise.all([reviewPromise, new Promise(r => setTimeout(r, 1000))]);
+  if (attemptId !== rvAttemptId || currentTab !== 'review') return;
+  rvRatingPhase = 'done';
+  rvAdvanceQueue();
 }
 
 function renderReview() {
@@ -260,8 +415,9 @@ function renderReview() {
       <div class="rv-prompt">${w.hz} là gì?</div>
       <div class="quiz-opts" id="rv-opts">${optHtml}</div>`;
   } else {
-    // Đã có kết quả: lộ đáp án đầy đủ + trạng thái lưu FSRS. KHÔNG hiện Again/Hard/Good/Easy
-    // (Phần 2/18) — chỉ hiện khi bật chế độ debug/advanced dành cho admin (Phần 19/22).
+    // Đã có kết quả trắc nghiệm: lộ đáp án đầy đủ + bổ sung "Highlight System Rating" — hiện lại 4
+    // nút Again/Hard/Good/Easy, highlight nút hệ thống đề xuất, cho user xác nhận/đổi trước khi
+    // commit thật lên FSRS (thay cho hành vi 100% tự động của V67).
     const r = rvLastAnswer;
     const ex = rvFindExample(w.hz);
     // YÊU CẦU (theo yêu cầu người dùng): riêng ở màn "kết quả" (đã trả lời) của "Hôm nay học",
@@ -269,6 +425,9 @@ function renderReview() {
     // "Ẩn Pinyin"/"Ẩn Hán Việt" ở thanh công cụ (2 nút đó vẫn áp dụng bình thường cho MỌI chỗ
     // khác: màn câu hỏi ở trên, Flashcard, Trắc nghiệm, Gõ chữ, Nghe chọn). showMeaning (nghĩa
     // tiếng Việt) không đổi — vẫn theo đúng nút "Ẩn nghĩa" như trước.
+    let savedLine = '';
+    if (rvRatingPhase === 'committing') savedLine = `<div class="rv-saved-line">⏳ Đang lưu...</div>`;
+    else if (rvRatingPhase === 'done') savedLine = `<div class="rv-saved-line">${rvSavedLine(r)}</div>`;
     body = `
       <div class="rv-tag">${tagLabel} · Bài ${w.l}</div>
       <div class="rv-hz">${w.hz}</div>
@@ -280,7 +439,8 @@ function renderReview() {
       ${w.hanviet ? `<div class="rv-hv">Hán Việt: ${w.hanviet}</div>` : ''}
       ${renderHanziParts(w.hz)}
       ${ex ? `<div class="rv-ex">${ex.zh}<br><span style="color:var(--muted);font-size:.85rem;">${ex.vi}</span></div>` : ''}
-      <div class="rv-saved-line">${rvSavedLine(r)}</div>
+      ${rvRenderRatingBar()}
+      ${savedLine}
       ${(!isGuest && isAdminRole() && r && r.autoRating) ? `<div class="rv-saved-line">🐞 debug: auto rating = ${r.autoRating}</div>` : ''}`;
   }
   return `
@@ -328,24 +488,20 @@ async function rvPick(btn, hz) {
   // Neon mới hiện đúng/sai, giữ UI phản hồi tức thời.
   rvLastAnswer = { correct: isCorrectLocally, card: null, autoRating: null };
   rvPhase = 'answered';
+  // Bổ sung "Highlight System Rating": KHÔNG commit thẳng lên FSRS nữa — trước tiên hỏi server gợi
+  // ý System Rating (chỉ đọc), rồi hiện 4 nút Again/Hard/Good/Easy + countdown cho user xác nhận.
+  rvRatingPhase = 'loading';
+  rvSystemRating = null; rvUserRating = null; rvFinalRating = null;
+  rvPendingReview = { selectedAnswer, responseTimeMs, answerChanges: rvAnswerChanges };
   rvSubmitting = false;
   render();
 
-  // FIX (Vấn đề 1 — "UI chuyển câu nhưng Neon chưa lưu"): ĐỢI submitFsrsReviewAwaited() (write-
-  // ahead vào outbox NGAY từ đầu — xem study-queue.js, có trần chờ, không treo UI vô hạn) SONG
-  // SONG với đúng khoảng nghỉ hiển thị đáp án 1600ms, KHÔNG advance câu trước khi có kết quả này.
-  const reviewPromise = submitFsrsReviewAwaited({ word: w, quizType: RV_QUIZ_TYPE, selectedAnswer, responseTimeMs, answerChanges: rvAnswerChanges })
-    .then(data => {
-      // Chỉ cập nhật lại màn hình nếu user VẪN đang xem đúng câu này (chưa bị rvAdvanceQueue chuyển đi).
-      if (attemptId !== rvAttemptId || rvPhase !== 'answered' || currentTab !== 'review') return;
-      if (data && data.ok) {
-        rvLastAnswer = { correct: data.answerCorrect, card: data.card, autoRating: data.debug ? data.debug.autoRating : null };
-        render(); // cập nhật dòng "đã lưu lịch ôn sau N ngày" cho chính xác (nếu kịp trước khi advance)
-      }
-    });
-  await Promise.all([reviewPromise, new Promise(r => setTimeout(r, 1600))]);
+  const systemRating = await rvFetchSystemRating({ word: w, selectedAnswer, responseTimeMs, answerChanges: rvAnswerChanges });
   if (attemptId !== rvAttemptId || currentTab !== 'review') return; // user đã sang câu khác/rời tab trong lúc chờ
-  rvAdvanceQueue();
+  rvSystemRating = systemRating;
+  rvRatingPhase = 'pending';
+  render();
+  rvStartCountdown(attemptId);
 }
 
 // V71/V78: thẻ Ở ĐẦU hàng đợi (rvQueue.items[0] = currentIndex) bị loại NGAY LẬP TỨC sau khi có kết
