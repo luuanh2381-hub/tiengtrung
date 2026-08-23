@@ -276,11 +276,47 @@
   .rv-vi{font-size:1.5rem;font-weight:800;}
   .rv-hv{font-size:.95rem;color:var(--active-dark);font-weight:700;}
   .rv-ex{font-size:.95rem;color:var(--ink);background:var(--paper);border-radius:var(--radius-sm);padding:10px 14px;margin-top:4px;}
-  /* V67: KHÔNG còn nút Again/Hard/Good/Easy hay nút "Nhớ/Quên" tự báo cáo — FSRS rating được suy
-     ra tự động ở server (Phần 2/6). Màn review dùng lại đúng style trắc nghiệm .quiz-opts/.quiz-opt
-     (định nghĩa ở phần Trắc nghiệm) để giữ giao diện nhất quán, không tạo thêm bộ nút mới. */
+  /* Màn câu hỏi dùng lại đúng style trắc nghiệm .quiz-opts/.quiz-opt (định nghĩa ở phần Trắc
+     nghiệm) để giữ giao diện nhất quán. */
   .rv-feedback{font-size:1.1rem;font-weight:800;}
   .rv-saved-line{font-size:.78rem;color:var(--muted);margin-top:6px;}
+
+  /* ── BỔ SUNG "HIGHLIGHT SYSTEM RATING" (khôi phục Again/Hard/Good/Easy, revert V67) ─────────
+     .system-rating = «Đây là lựa chọn do hệ thống đề xuất» — CHỈ dùng trong lúc đang chờ (pending),
+     KHÔNG dùng chung class với .rv-rate-final = «Đây là lựa chọn user/hệ thống ĐÃ CHỐT» (Phần 1/3). */
+  .rv-rating-wrap{width:100%;margin-top:10px;}
+  .rv-rating-hint{font-size:.8rem;color:var(--muted);font-weight:700;text-align:center;margin-bottom:8px;min-height:1.2em;}
+  .rv-rating-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
+  .rv-rate-btn{padding:12px 4px;min-height:46px;border-radius:var(--radius-sm);border:2px solid var(--border);background:var(--paper);font-size:.82rem;font-weight:800;cursor:pointer;color:var(--ink);font-family:inherit;}
+  .rv-rate-btn:disabled{cursor:default;opacity:.55;}
+  .rv-rate-again{color:var(--wrong);}
+  .rv-rate-hard{color:#b45309;}
+  .rv-rate-good{color:var(--correct);}
+  .rv-rate-easy{color:var(--l9a);}
+  /* Yêu cầu bắt buộc: chữ in đậm + glow + border nổi bật, KHÔNG chỉ đổi màu chữ đơn thuần. */
+  .rv-rate-btn.system-rating{
+    font-weight:800;
+    border-color:currentColor;
+    box-shadow:0 0 6px currentColor,0 0 14px currentColor;
+    animation:rvSystemRatingGlow 1.4s ease-in-out infinite alternate;
+  }
+  @keyframes rvSystemRatingGlow{
+    from{filter:brightness(1);box-shadow:0 0 5px currentColor,0 0 10px currentColor;}
+    to{filter:brightness(1.15);box-shadow:0 0 9px currentColor,0 0 20px currentColor;}
+  }
+  @media (prefers-reduced-motion: reduce){
+    .rv-rate-btn.system-rating{animation:none;}
+  }
+  /* Final Rating (user đã chọn HOẶC countdown hết giờ) — trạng thái mạnh hơn hẳn system-rating,
+     không nhấp nháy (không gây rối khi đang đọc kết quả), nền đặc theo màu ngữ nghĩa của rating đó. */
+  .rv-rate-btn.rv-rate-final{color:#fff;border-color:transparent;animation:none;box-shadow:none;}
+  .rv-rate-final.rv-rate-again{background:var(--wrong);}
+  .rv-rate-final.rv-rate-hard{background:#b45309;}
+  .rv-rate-final.rv-rate-good{background:var(--correct);}
+  .rv-rate-final.rv-rate-easy{background:var(--l9a);}
+  @media (max-width:480px){
+    .rv-rate-btn{font-size:.72rem;padding:10px 2px;min-height:42px;}
+  }
   .rv-done{text-align:center;padding:40px 16px;}
   .rv-done-num{font-size:3rem;}
   @media (max-width:480px){
