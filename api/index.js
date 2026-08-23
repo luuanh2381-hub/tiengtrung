@@ -578,16 +578,54 @@ function correctAnswerForQuizType(word, quizType) {
 // (+ answerChanges nếu có) — KHÔNG gửi rating/answerCorrect/due/stability/difficulty/state.
 // Server tự tra DB để xác định đáp án đúng, tự suy ra FSRS rating (lib/fsrs-auto-rating.js), rồi
 // mới gọi ts-fsrs thật (lib/fsrs.js) để tính lịch ôn tiếp theo (Phần 20/23).
-app.post('/api/study/review', async (req, res) => {
+// ── Bổ sung "Highlight System Rating": xem TRƯỚC gợi ý rating hệ thống — CHỈ ĐỌC, không ghi gì lên
+//     FSRS/review_history. Dùng để FE (Review tab) hiện 4 nút Again/Hard/Good/Easy, highlight đúng
+//     nút hệ thống đề xuất bằng glow, kèm countdown cho user xác nhận/đổi trước khi commit thật qua
+//     /api/study/review bên dưới (Yêu cầu bổ sung). Xác định đáp án đúng/sai theo ĐÚNG cách làm của
+//     /api/study/review (Phần 3/20: server luôn tự xác định, không tin client). ──
+app.post('/api/study/review/preview', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
-  const { wordId, quizType, selectedAnswer, responseTimeMs, answerChanges, idempotencyKey } = req.body || {};
+  const { wordId, quizType, selectedAnswer, responseTimeMs, answerChanges } = req.body || {};
   const hz = wordId && wordId.hz;
   const l = wordId && Number(wordId.l);
   if (!hz || !Number.isFinite(l)) return res.json({ ok: false, error: 'Thiếu wordId {hz, l} hợp lệ' });
   if (typeof selectedAnswer !== 'string' || !selectedAnswer.trim()) {
     return res.json({ ok: false, error: 'Thiếu selectedAnswer' });
   }
+  const rtRaw = Number(responseTimeMs);
+  const rt = Number.isFinite(rtRaw) && rtRaw >= 0 ? Math.min(rtRaw, 10 * 60 * 1000) : null;
+  const chRaw = Number(answerChanges);
+  const changes = Number.isFinite(chRaw) && chRaw >= 0 ? Math.min(Math.round(chRaw), 50) : 0;
+  try {
+    const word = await getWordForAnswerCheck(hz, l);
+    if (!word) return res.json({ ok: false, error: 'Không tìm thấy từ vựng' });
+    const correctAnswer = correctAnswerForQuizType(word, quizType);
+    const answerCorrect = String(selectedAnswer).trim() === String(correctAnswer).trim();
+    const systemRating = await reviewService.previewRating({
+      userId: authed.username, hz, l, answerCorrect, responseTimeMs: rt, answerChanges: changes,
+    });
+    res.json({ ok: true, answerCorrect, correctAnswer, systemRating });
+  } catch (e) { fail(res, e); }
+});
+
+app.post('/api/study/review', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const { wordId, quizType, selectedAnswer, responseTimeMs, answerChanges, idempotencyKey, rating } = req.body || {};
+  const hz = wordId && wordId.hz;
+  const l = wordId && Number(wordId.l);
+  if (!hz || !Number.isFinite(l)) return res.json({ ok: false, error: 'Thiếu wordId {hz, l} hợp lệ' });
+  if (typeof selectedAnswer !== 'string' || !selectedAnswer.trim()) {
+    return res.json({ ok: false, error: 'Thiếu selectedAnswer' });
+  }
+  // Bổ sung "Highlight System Rating": `rating` do FE gửi lên khi NGƯỜI DÙNG bấm tay 1 trong 4 nút
+  // Again/Hard/Good/Easy, hoặc do countdown ở FE tự chọn khi hết giờ chờ. Chỉ chấp nhận đúng 1
+  // trong 4 chuỗi hợp lệ — không tin mù quáng giá trị lạ từ client; giá trị không hợp lệ/không gửi
+  // thì coi như không có override, rơi về đúng hành vi V67 cũ (100% tự động).
+  const VALID_RATINGS = new Set(['again', 'hard', 'good', 'easy']);
+  const ratingOverride = (typeof rating === 'string' && VALID_RATINGS.has(rating.toLowerCase()))
+    ? rating.toLowerCase() : null;
   // FIX (Ưu tiên 6 — chống spam review): idempotencyKey do client sinh 1 LẦN cho mỗi lượt trả lời
   // thật (xem js/study-queue.js submitFsrsReview) — dùng để reviewFsrsCard() nhận diện double-click
   // / gửi trùng từ outbox mà không tạo thêm dòng review_history hay chạy FSRS 2 lần. Không bắt
@@ -611,7 +649,7 @@ app.post('/api/study/review', async (req, res) => {
     // đây cũng là nơi desired_retention riêng của user (Phần 5) được áp dụng + study_sessions
     // (Phần 9) được cập nhật.
     const result = await reviewService.reviewCard({
-      userId: authed.username, hz, l, answerCorrect, responseTimeMs: rt, answerChanges: changes, idempotencyKey: idemKey,
+      userId: authed.username, hz, l, answerCorrect, responseTimeMs: rt, answerChanges: changes, idempotencyKey: idemKey, ratingOverride,
     });
     // Cập nhật "current lesson" CHỈ khi đây là 1 NEW word vừa được học lần đầu — tự động lùi/tiến
     // theo đúng bài user vừa thực sự học, không cần thao tác thủ công (Phần 6). Review của các từ
@@ -641,7 +679,14 @@ app.post('/api/study/review', async (req, res) => {
       answerCorrect,
       correctAnswer, // để UI hiện đáp án đúng khi user chọn sai, không cần đoán lại ở client
       card: result.card,
-      // Debug data (Phần 22) — CHỈ trả về cho admin, không hiện ở production cho user thường.
+      // Bổ sung "Highlight System Rating": khác V67 (trước đây CHỈ admin thấy autoRating qua
+      // `debug`) — giờ MỌI user đều cần thấy `rating` (rating THẬT SỰ đã gửi vào FSRS, có thể là
+      // override do chính user chọn tay) và `systemRating` (gợi ý ban đầu của hệ thống) để UI hiện
+      // đúng nút nào đã được highlight/chọn. Đây là dữ liệu về CHÍNH lượt trả lời của user đó, không
+      // phải nội bộ nhạy cảm cần giấu.
+      rating: result.rating,
+      systemRating: result.systemRating,
+      // Debug data chi tiết hơn (Phần 22) — vẫn CHỈ trả về cho admin.
       debug: isAdmin ? result.debug : undefined,
     });
   } catch (e) { fail(res, e); }
