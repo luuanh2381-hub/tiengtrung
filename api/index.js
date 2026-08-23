@@ -9,6 +9,7 @@ const compression = require('compression');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { readDB, updateDB, updateDBWithFsrsCleanup, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson,
+  getVocabWordsByLesson, updateVocabWord, deleteVocabWord,
   getAllVocabWords, updateVocabHanviet, getWordExampleCounts, insertWordExamples, getWordExamplesForLessons,
   getAllHanziParts, getHanziPartsKeys, insertHanziParts,
   insertActivityLog, getActivityLogs, reserveGeminiSlot, bumpGeminiRateLimit,
@@ -928,6 +929,67 @@ app.post('/api/admin/vocab/delete-lesson', async (req, res) => {
     const actingUser = authed.db.users[authed.username];
     logActivity(authed.username, actingUser.role, 'vocab', `Xoá bài số ${l} (${removed} từ)`);
     res.json({ ok: true, removed });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Lấy danh sách từng từ (kèm id) của MỘT bài cụ thể — để hiện danh sách sửa/xoá từng từ ──
+app.get('/api/admin/vocab/lesson-words', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const l = parseInt(req.query.l, 10);
+  if (!Number.isFinite(l) || l < 1) {
+    return res.json({ ok: false, error: 'Số bài không hợp lệ' });
+  }
+  try {
+    const words = await getVocabWordsByLesson(l);
+    res.json({ ok: true, words });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Sửa 1 từ theo id ──
+app.post('/api/admin/vocab/update', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const id = parseInt((req.body || {}).id, 10);
+  const hz = String((req.body || {}).hz || '').trim();
+  const py = String((req.body || {}).py || '').trim();
+  const vi = String((req.body || {}).vi || '').trim();
+  const l = parseInt((req.body || {}).l, 10);
+  const tag = (req.body || {}).tag || null;
+  if (!Number.isFinite(id)) return res.json({ ok: false, error: 'Thiếu id của từ cần sửa' });
+  if (!hz || !vi || !Number.isFinite(l) || l < 1) {
+    return res.json({ ok: false, error: 'Vui lòng nhập đủ Chữ Hán, Nghĩa và Số bài (số nguyên ≥ 1)' });
+  }
+  try {
+    const updated = await updateVocabWord(id, { hz, py, vi, l, tag });
+    if (!updated) return res.json({ ok: false, error: 'Không tìm thấy từ này (có thể đã bị xoá)' });
+    const actingUser = authed.db.users[authed.username];
+    logActivity(authed.username, actingUser.role, 'vocab', `Sửa từ #${id}: ${hz} (${py}) — ${vi}, bài ${l}`);
+    res.json({ ok: true, word: updated });
+  } catch (e) {
+    // Vi phạm ràng buộc UNIQUE (hz, l) — chữ Hán này đã tồn tại sẵn ở đúng bài đó rồi
+    if (e && e.code === '23505') {
+      return res.json({ ok: false, error: `Từ "${hz}" đã tồn tại sẵn ở bài ${l} rồi.` });
+    }
+    fail(res, e);
+  }
+});
+
+// ── [ADMIN] Xoá 1 từ theo id ──
+app.post('/api/admin/vocab/delete-word', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const id = parseInt((req.body || {}).id, 10);
+  if (!Number.isFinite(id)) return res.json({ ok: false, error: 'Thiếu id của từ cần xoá' });
+  try {
+    const removed = await deleteVocabWord(id);
+    if (!removed) return res.json({ ok: false, error: 'Không tìm thấy từ này (có thể đã bị xoá)' });
+    const actingUser = authed.db.users[authed.username];
+    logActivity(authed.username, actingUser.role, 'vocab', `Xoá từ #${id}`);
+    res.json({ ok: true });
   } catch (e) { fail(res, e); }
 });
 
