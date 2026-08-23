@@ -83,7 +83,7 @@ function renderVocabAdmin() {
     <div id="hanzi-progress-area" style="color:var(--muted);padding:14px 0;text-align:center;">Đang tải...</div>
   </div>
   <div class="panel">
-    <div class="panel-title">📋 Danh sách bài đã có (xoá từng bài)</div>
+    <div class="panel-title">📋 Danh sách bài đã có (sửa/xoá từng từ, hoặc xoá cả bài)</div>
     <div id="vocab-list-area" style="color:var(--muted);padding:14px 0;text-align:center;">Đang tải...</div>
   </div>
   <div class="panel">
@@ -268,13 +268,184 @@ async function loadVocabAdminList() {
       return;
     }
     area.innerHTML = entries.map(([l, c]) => `
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 2px;border-bottom:1px solid var(--border);">
-        <span style="font-weight:700;">Bài ${l} <span style="color:var(--muted);font-weight:600;font-size:.82rem;">(${c} từ)</span></span>
-        <button class="btn btn-sm" style="background:#fdecea;color:#c0392b;" onclick="deleteLessonVocab(${l})">🗑️ Xoá</button>
+      <div style="border-bottom:1px solid var(--border);">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 2px;gap:8px;">
+          <span style="font-weight:700;">Bài ${l} <span style="color:var(--muted);font-weight:600;font-size:.82rem;">(${c} từ)</span></span>
+          <div style="display:flex;gap:6px;flex-shrink:0;">
+            <button class="btn btn-sm" style="background:var(--l9c);color:var(--l9a);" onclick="toggleLessonWords(${l})" id="toggle-words-btn-${l}">📝 Xem/Sửa từ</button>
+            <button class="btn btn-sm" style="background:#fdecea;color:#c0392b;" onclick="deleteLessonVocab(${l})">🗑️ Xoá bài</button>
+          </div>
+        </div>
+        <div id="lesson-words-${l}" style="display:none;padding:4px 0 10px;"></div>
       </div>`).join('');
+    // Bài nào đang mở dở (VD vừa sửa/xoá 1 từ xong) thì tự mở lại đúng bài đó, khỏi phải bấm lại
+    for (const l of openLessonWords) {
+      const box = document.getElementById(`lesson-words-${l}`);
+      const btn = document.getElementById(`toggle-words-btn-${l}`);
+      if (box) { box.style.display = 'block'; loadLessonWords(l); }
+      if (btn) btn.textContent = '📝 Ẩn danh sách từ';
+    }
   } catch (e) {
     area.textContent = 'Không kết nối được máy chủ: ' + e.message;
   }
+}
+
+// ── Mở/đóng danh sách từng từ của 1 bài, để sửa/xoá riêng từng từ ──
+const openLessonWords = new Set();
+async function toggleLessonWords(l) {
+  const box = document.getElementById(`lesson-words-${l}`);
+  const btn = document.getElementById(`toggle-words-btn-${l}`);
+  if (!box) return;
+  const isOpen = box.style.display !== 'none';
+  if (isOpen) { box.style.display = 'none'; btn.textContent = '📝 Xem/Sửa từ'; openLessonWords.delete(l); return; }
+  btn.textContent = '📝 Đang tải...';
+  box.style.display = 'block';
+  openLessonWords.add(l);
+  await loadLessonWords(l);
+  btn.textContent = '📝 Ẩn danh sách từ';
+}
+
+const lessonWordsListCache = {}; // { [lessonNumber]: [{id,hz,py,vi,l,tag,hanviet}, ...] } — để "Sửa" khỏi phải gọi lại API
+async function loadLessonWords(l) {
+  const box = document.getElementById(`lesson-words-${l}`);
+  if (!box) return;
+  box.innerHTML = `<div style="color:var(--muted);padding:10px 0;text-align:center;font-size:.85rem;">Đang tải...</div>`;
+  try {
+    const res = await fetch('/api/admin/vocab/lesson-words?l=' + l, { headers: authHeaders() });
+    const data = await res.json();
+    if (!data.ok) { box.innerHTML = `<div style="color:#c0392b;font-size:.82rem;">${data.error || 'Không tải được'}</div>`; return; }
+    lessonWordsListCache[l] = data.words;
+    renderLessonWordsList(l, data.words);
+  } catch (e) {
+    box.innerHTML = `<div style="color:#c0392b;font-size:.82rem;">Không kết nối được máy chủ: ${e.message}</div>`;
+  }
+}
+
+function renderLessonWordsList(l, words) {
+  const box = document.getElementById(`lesson-words-${l}`);
+  if (!box) return;
+  if (!words.length) {
+    box.innerHTML = `<div style="color:var(--muted);text-align:center;padding:8px 0;font-size:.82rem;">Bài này không còn từ nào.</div>`;
+    return;
+  }
+  box.innerHTML = words.map(w => renderWordRow(l, w)).join('');
+}
+
+function renderWordRow(l, w) {
+  const tagBadge = w.tag === 'ly_hop' ? ' <span style="font-size:.68rem;background:var(--l15c);color:var(--l15a);padding:1px 6px;border-radius:6px;">离合</span>' : '';
+  return `
+    <div class="word-row" id="word-row-${w.id}" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 8px;background:var(--panel-2, rgba(0,0,0,.02));border-radius:8px;margin-bottom:6px;">
+      <div style="min-width:0;">
+        <div style="font-weight:700;">${escapeHtml(w.hz)}${tagBadge} <span style="color:var(--muted);font-weight:500;font-size:.82rem;">${escapeHtml(w.py || '')}</span></div>
+        <div style="font-size:.82rem;color:var(--muted);">${escapeHtml(w.vi)}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0;">
+        <button class="btn btn-sm" style="background:var(--l11c);color:var(--l11a);" onclick="startEditWord(${l}, ${w.id})">✏️ Sửa</button>
+        <button class="btn btn-sm" style="background:#fdecea;color:#c0392b;" onclick="deleteWord(${l}, ${w.id}, '${escapeHtml(w.hz).replace(/'/g, "\\'")}')">🗑️</button>
+      </div>
+    </div>`;
+}
+
+// Lưu lại data gốc của các từ đang hiện, để "Sửa" có sẵn giá trị điền vào form + "Huỷ" khôi phục lại đúng dòng cũ
+let lessonWordsCache = {}; // { [id]: word } — dòng gốc của từ đang sửa, dùng khi bấm "Huỷ" để khôi phục lại đúng dòng
+function startEditWord(l, id) {
+  const row = document.getElementById(`word-row-${id}`);
+  if (!row) return;
+  const renderForm = (w) => {
+    lessonWordsCache[id] = w;
+    row.outerHTML = `
+      <div class="word-row" id="word-row-${id}" style="padding:8px;background:var(--panel-2, rgba(0,0,0,.03));border-radius:8px;margin-bottom:6px;border:1.5px solid var(--l11c);">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">
+          <input type="text" id="edit-hz-${id}" value="${escapeAttr(w.hz)}" placeholder="Chữ Hán" style="padding:7px;border-radius:8px;border:1.5px solid #ddd;font-size:.88rem;">
+          <input type="text" id="edit-py-${id}" value="${escapeAttr(w.py || '')}" placeholder="Pinyin" style="padding:7px;border-radius:8px;border:1.5px solid #ddd;font-size:.88rem;">
+          <input type="text" id="edit-vi-${id}" value="${escapeAttr(w.vi)}" placeholder="Nghĩa tiếng Việt" style="padding:7px;border-radius:8px;border:1.5px solid #ddd;font-size:.88rem;grid-column:1 / -1;">
+          <input type="number" id="edit-l-${id}" value="${w.l}" min="1" placeholder="Số bài" style="padding:7px;border-radius:8px;border:1.5px solid #ddd;font-size:.88rem;">
+          <label style="display:flex;align-items:center;gap:6px;font-size:.78rem;color:var(--muted);">
+            <input type="checkbox" id="edit-lyhop-${id}" ${w.tag === 'ly_hop' ? 'checked' : ''}> 🧩 Ly hợp từ
+          </label>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <button class="btn btn-sm" style="background:var(--l11c);color:var(--l11a);" onclick="saveEditWord(${id})">💾 Lưu</button>
+          <button class="btn btn-sm" style="background:var(--border);" onclick="cancelEditWord(${l}, ${id})">Huỷ</button>
+          <span id="edit-word-result-${id}" style="font-size:.78rem;color:#c0392b;"></span>
+        </div>
+      </div>`;
+  };
+  // Ưu tiên dùng lại dữ liệu vừa tải khi mở danh sách (khỏi gọi lại API); chỉ fetch lại nếu vì lý do
+  // gì đó cache không còn (VD người dùng bấm quá nhanh trước khi danh sách kịp tải xong).
+  const cached = (lessonWordsListCache[l] || []).find(x => x.id === id);
+  if (cached) { renderForm(cached); return; }
+  fetch('/api/admin/vocab/lesson-words?l=' + l, { headers: authHeaders() })
+    .then(r => r.json())
+    .then(data => {
+      if (!data.ok) return;
+      const w = data.words.find(x => x.id === id);
+      if (w) renderForm(w);
+    })
+    .catch(() => alert('Không tải được dữ liệu từ để sửa.'));
+}
+
+function cancelEditWord(l, id) {
+  const w = lessonWordsCache[id];
+  const row = document.getElementById(`word-row-${id}`);
+  if (!row) return;
+  if (w) row.outerHTML = renderWordRow(l, w);
+  else loadLessonWords(l);
+}
+
+async function saveEditWord(id) {
+  const resultEl = document.getElementById(`edit-word-result-${id}`);
+  const hz = document.getElementById(`edit-hz-${id}`).value.trim();
+  const py = document.getElementById(`edit-py-${id}`).value.trim();
+  const vi = document.getElementById(`edit-vi-${id}`).value.trim();
+  const l = parseInt(document.getElementById(`edit-l-${id}`).value, 10);
+  const tag = document.getElementById(`edit-lyhop-${id}`).checked ? 'ly_hop' : null;
+  const oldLesson = lessonWordsCache[id] ? lessonWordsCache[id].l : l;
+  if (!hz || !vi || !Number.isFinite(l) || l < 1) {
+    resultEl.textContent = 'Vui lòng nhập đủ Chữ Hán, Nghĩa và Số bài.';
+    return;
+  }
+  resultEl.style.color = 'var(--muted)';
+  resultEl.textContent = 'Đang lưu...';
+  try {
+    const res = await fetch('/api/admin/vocab/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ id, hz, py, vi, l, tag }),
+    });
+    const data = await res.json();
+    if (!data.ok) { resultEl.style.color = '#c0392b'; resultEl.textContent = '❌ ' + (data.error || 'Có lỗi xảy ra'); return; }
+    // Nếu đổi số bài, từ này chuyển sang bài khác — mở sẵn bài mới để thấy ngay kết quả
+    if (oldLesson !== l) openLessonWords.add(l);
+    loadVocabAdminList(); // nạp lại toàn bộ danh sách bài + tự mở lại các bài đang xem dở
+    alert(`Đã lưu từ "${hz}". Tải lại trang để cập nhật dữ liệu học.`);
+  } catch (e) {
+    resultEl.style.color = '#c0392b';
+    resultEl.textContent = '❌ Không kết nối được máy chủ: ' + e.message;
+  }
+}
+
+async function deleteWord(l, id, hz) {
+  if (!confirm(`Xoá từ "${hz}"? Không thể hoàn tác.`)) return;
+  try {
+    const res = await fetch('/api/admin/vocab/delete-word', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ id }),
+    });
+    const data = await res.json();
+    if (!data.ok) { alert(data.error || 'Có lỗi xảy ra'); return; }
+    loadVocabAdminList(); // nạp lại số đếm theo bài + tự mở lại đúng bài đang xem, cập nhật danh sách từ
+  } catch (e) {
+    alert('Không kết nối được máy chủ: ' + e.message);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+function escapeAttr(s) {
+  return escapeHtml(s);
 }
 async function deleteLessonVocab(l) {
   if (!confirm(`Xoá toàn bộ từ vựng của Bài ${l}? Không thể hoàn tác.`)) return;
@@ -287,6 +458,7 @@ async function deleteLessonVocab(l) {
     const data = await res.json();
     if (!data.ok) { alert(data.error || 'Có lỗi xảy ra'); return; }
     alert(`Đã xoá ${data.removed} từ của Bài ${l}. Tải lại trang để cập nhật màn hình chọn bài.`);
+    openLessonWords.delete(l);
     loadVocabAdminList();
   } catch (e) {
     alert('Không kết nối được máy chủ: ' + e.message);
