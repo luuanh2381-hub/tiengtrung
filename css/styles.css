@@ -97,6 +97,18 @@
     transform:scale(.96);
   }
 
+  /* AUDIT V82 (Phần 2/12 — phản hồi tức thời trong lúc chờ mạng): khoá + làm mờ nhẹ nhóm nút ngay
+     khi user vừa bấm trả lời (Flashcard/Gõ chữ) — KHÔNG phải spinner to, chỉ đủ để thấy thao tác đã
+     được ghi nhận, tránh cảm giác app "đứng hình" khi mạng chậm. */
+  .is-busy button{opacity:.5;cursor:default;}
+
+  /* AUDIT V82 (Phần 5 — keyboard shortcuts): hint nhỏ, CHỈ hiện trên thiết bị có bàn phím/con trỏ
+     thật (desktop) — ẩn hẳn trên cảm ứng để không gây nhiễu mobile (Phần 6 — giảm nhiễu). */
+  .kbd-hint{display:none;font-size:.72rem;color:var(--muted);font-weight:600;opacity:.8;}
+  @media (hover:hover) and (pointer:fine){
+    .kbd-hint{display:inline;}
+  }
+
   /* ── APP HEADER (topbar + nav gộp chung 1 khối dính cố định) ─────────────
      Trước đây chỉ #topbar có position:sticky, còn #nav nằm ngoài nên khi cuộn
      trang, #nav bị trôi/lẫn dưới #topbar gây cảm giác thanh công cụ "di chuyển".
@@ -104,7 +116,11 @@
   #app-header{position:sticky;top:0;z-index:100;}
 
   /* ── TOPBAR ────────────────────────────────────────────── */
-  #topbar{background:var(--card);border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:6px 12px;box-shadow:0 1px 8px rgba(0,0,0,.05);}
+  /* AUDIT V82 (Phần 6 — safe-area trên điện thoại): topbar dính trên cùng (position:sticky) có thể
+     bị notch/tai thỏ che 1 phần nếu không chừa safe-area-inset-top — max() giữ nguyên padding cũ
+     6px trên các máy không có notch, chỉ tăng thêm khi thật sự cần (env() cần viewport-fit=cover ở
+     index.html, đã bổ sung). */
+  #topbar{background:var(--card);border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:max(6px, env(safe-area-inset-top)) 12px 6px;box-shadow:0 1px 8px rgba(0,0,0,.05);}
   #topbar h1{font-size:.88rem;font-weight:900;letter-spacing:-.5px;margin-right:2px;}
   #streak-badge{background:var(--l7c);padding:3px 9px;border-radius:16px;font-size:.7rem;font-weight:800;color:var(--l7a);animation:popIn .4s cubic-bezier(.2,.8,.3,1);}
   .pinyin-toggle{background:var(--active-bg);color:var(--active-dark);border:none;padding:4px 10px;border-radius:16px;font-size:.7rem;font-weight:800;cursor:pointer;}
@@ -121,7 +137,9 @@
   #nav button.active{color:var(--active-dark);background:var(--active-bg);}
 
   /* ── MAIN CONTENT ──────────────────────────────────────── */
-  #content{padding:16px;max-width:720px;margin:0 auto;}
+  /* AUDIT V82 (Phần 6 — safe-area): chừa thêm safe-area-inset ở đáy để nội dung/nút cuối trang (vd
+     rating bar, "Xong phiên học") không dính sát mép màn hình cong/home-indicator trên iPhone. */
+  #content{padding:16px 16px max(16px, env(safe-area-inset-bottom)) 16px;max-width:720px;margin:0 auto;}
 
   /* ── CARDS / PANELS ────────────────────────────────────── */
   .panel{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px;margin-bottom:16px;border:1px solid rgba(255,255,255,.6);transition:transform .2s cubic-bezier(.2,.8,.3,1), box-shadow .2s ease;}
@@ -236,6 +254,11 @@
   .fc-hint{font-size:.75rem;color:var(--muted);position:absolute;bottom:12px;}
   .fc-controls{display:flex;gap:10px;justify-content:center;}
   .fc-btn{padding:11px 26px;border:none;border-radius:14px;font-size:.9rem;font-weight:800;cursor:pointer;}
+  /* AUDIT V82 (Phần 4/6 — 2 nút quan trọng nhất app, phải dễ bấm bằng ngón cái): riêng bên trong
+     .fc-controls (không đụng .fc-btn dùng lại ở tab "Dịch câu" — layout 3 nút khác, không nên ép
+     flex:1 ở đó), tăng min-height lên chuẩn khuyến nghị 48px + flex:1 để mỗi nút chiếm nửa hàng thay
+     vì co theo chữ, giảm bấm nhầm khi thao tác nhanh liên tục nhiều thẻ. */
+  .fc-controls .fc-btn{flex:1;min-height:48px;padding:11px 16px;}
   .btn-ok{background:var(--l8c);color:var(--l8a);box-shadow:0 3px 0 var(--l8a);}
   .btn-ok:active{transform:translateY(2px);box-shadow:0 1px 0 var(--l8a);}
   .btn-fail{background:var(--l10c);color:var(--l10a);box-shadow:0 3px 0 var(--l10a);}
@@ -287,7 +310,7 @@
   .rv-rating-wrap{width:100%;margin-top:10px;}
   .rv-rating-hint{font-size:.8rem;color:var(--muted);font-weight:700;text-align:center;margin-bottom:8px;min-height:1.2em;}
   .rv-rating-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
-  .rv-rate-btn{padding:12px 4px;min-height:46px;border-radius:var(--radius-sm);border:2px solid var(--border);background:var(--paper);font-size:.82rem;font-weight:800;cursor:pointer;color:var(--ink);font-family:inherit;}
+  .rv-rate-btn{padding:12px 4px;min-height:48px;border-radius:var(--radius-sm);border:2px solid var(--border);background:var(--paper);font-size:.82rem;font-weight:800;cursor:pointer;color:var(--ink);font-family:inherit;}
   .rv-rate-btn:disabled{cursor:default;opacity:.55;}
   .rv-rate-again{color:var(--wrong);}
   .rv-rate-hard{color:#b45309;}
@@ -315,7 +338,9 @@
   .rv-rate-final.rv-rate-good{background:var(--correct);}
   .rv-rate-final.rv-rate-easy{background:var(--l9a);}
   @media (max-width:480px){
-    .rv-rate-btn{font-size:.72rem;padding:10px 2px;min-height:42px;}
+    /* AUDIT V82 (Phần 6 — mobile touch target): 42px hơi dưới chuẩn khuyến nghị (44-48px) cho 1 trong
+       những vùng bấm quan trọng nhất của app; nâng lên 46px, vẫn đủ chỗ cho 4 cột trên màn 360px. */
+    .rv-rate-btn{font-size:.72rem;padding:10px 2px;min-height:46px;}
   }
   .rv-done{text-align:center;padding:40px 16px;}
   .rv-done-num{font-size:3rem;}
