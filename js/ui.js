@@ -261,3 +261,58 @@ function lessonSelectHtml() {
     <div id="lesson-filter">${allBtn}${chips}</div>`;
 }
 
+// ════════════════════════════════════════════════════
+// AUDIT V82 (Phần 5 — KEYBOARD SHORTCUTS): tối ưu học bằng bàn phím trên desktop, không đụng tới
+// kiến trúc/luồng dữ liệu — mọi phím tắt chỉ GỌI LẠI đúng hàm mà nút bấm tương ứng đã gọi (fcFlip,
+// fcAnswer, rvChooseRating, .click() lên đúng nút option), không có đường đi dữ liệu riêng nào khác
+// nút bấm chuột, nên không có rủi ro mới về mất review/lệch FSRS.
+//   Space → lật thẻ (Flashcard)      1 → Again / Chưa nhớ      A → phát âm lại
+//   1-4   → chọn đáp án trắc nghiệm  2 → Hard / Đã nhớ
+//           (theo ĐÚNG thứ tự đang hiển thị, đã xáo trộn)  3 → Good      4 → Easy
+// Bỏ qua hoàn toàn khi: đang gõ vào input/textarea/select/contenteditable (không phá tab "Gõ chữ",
+// ô mật khẩu, admin...), có modifier (Ctrl/Alt/Cmd — nhường phím tắt trình duyệt/OS), hoặc đang có
+// 1 trong các modal toàn màn hình (đăng nhập/đổi mật khẩu/menu tài khoản/xác nhận nguy hiểm) mở.
+// ════════════════════════════════════════════════════
+function kbdIsTypingTarget(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+}
+function kbdAnyModalOpen() {
+  return ['auth-gate', 'account-menu', 'danger-confirm-modal', 'pw-modal'].some(id => {
+    const el = document.getElementById(id);
+    return el && getComputedStyle(el).display !== 'none';
+  });
+}
+// Chọn lựa chọn trắc nghiệm thứ `index` (0-based) đang HIỂN THỊ trên màn hình theo đúng vị trí mắt
+// nhìn thấy — vì các lựa chọn đã bị xáo ngẫu nhiên phía JS, "phím 1" luôn là nút Ở VỊ TRÍ ĐẦU TIÊN
+// hiện tại, không gắn cố định với 1 đáp án/nghĩa nào. Bỏ qua nếu nút đã disabled (đã trả lời rồi).
+function kbdPickOption(selector, index) {
+  const btn = document.querySelectorAll(selector)[index];
+  if (btn && !btn.disabled) btn.click();
+}
+document.addEventListener('keydown', (e) => {
+  if (e.altKey || e.ctrlKey || e.metaKey) return;
+  if (kbdIsTypingTarget(e.target) || kbdAnyModalOpen()) return;
+  const key = e.key;
+  const isDigit1to4 = key === '1' || key === '2' || key === '3' || key === '4';
+
+  if (currentTab === 'flash') {
+    if (key === ' ' || key === 'Spacebar') { e.preventDefault(); fcFlip(); return; }
+    if (fcFlipped && (key === '1' || key === '2') && fcQueue.items.length) {
+      e.preventDefault(); fcAnswer(key === '2'); return; // 1=Chưa nhớ(false), 2=Đã nhớ(true)
+    }
+    if (key.toLowerCase() === 'a' && fcQueue.items[0]) { e.preventDefault(); speak(fcQueue.items[0].hz); }
+  } else if (currentTab === 'quiz') {
+    if (isDigit1to4) { e.preventDefault(); kbdPickOption('#qz-opts .quiz-opt', +key - 1); }
+  } else if (currentTab === 'listen') {
+    if (isDigit1to4) { e.preventDefault(); kbdPickOption('#ls-area .listen-opt', +key - 1); }
+    else if (key.toLowerCase() === 'a') { e.preventDefault(); const b = document.getElementById('ls-play'); if (b) b.click(); }
+  } else if (currentTab === 'review') {
+    if (rvPhase === 'question' && isDigit1to4) { e.preventDefault(); kbdPickOption('#rv-opts .quiz-opt', +key - 1); }
+    else if (rvPhase === 'answered' && (rvRatingPhase === 'pending' || rvRatingPhase === 'loading') && isDigit1to4) {
+      e.preventDefault(); rvChooseRating(RV_RATING_ORDER[+key - 1]);
+    } else if (key.toLowerCase() === 'a' && rvQueue.items[0]) { e.preventDefault(); speak(rvQueue.items[0].word.hz); }
+  }
+});
+

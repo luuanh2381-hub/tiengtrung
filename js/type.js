@@ -81,7 +81,7 @@ function tyRenderQ() {
     </div>
     <input class="type-input" id="ty-input" placeholder="Gõ chữ Hán..." onkeydown="if(event.key==='Enter')tyCheck()">
     <div id="ty-fb"></div>
-    <div style="display:flex;gap:8px;margin-top:10px;justify-content:center">
+    <div style="display:flex;gap:8px;margin-top:10px;justify-content:center" id="ty-btns">
       <button class="btn btn-primary" onclick="tyCheck()">Kiểm tra</button>
       <button class="btn" style="background:var(--border)" onclick="tySkip()">Bỏ qua</button>
     </div>
@@ -118,6 +118,11 @@ async function tyCheck() {
   if (okLocally) playDing(); else playBuzz();
   speak(w.hz);
   inp.disabled=true;
+  // AUDIT V82 (Phần 2/12): trước đây chỉ khoá Ô NHẬP, 2 nút "Kiểm tra"/"Bỏ qua" vẫn trông như bấm
+  // được (dù tySubmitting đã chặn logic) trong suốt lúc chờ — không có tín hiệu thị giác nào cho
+  // biết app đã ghi nhận thao tác. Làm mờ + khoá luôn cả 2 nút cho khớp trạng thái thật.
+  const btnsEl = document.getElementById('ty-btns');
+  if (btnsEl) { btnsEl.classList.add('is-busy'); btnsEl.querySelectorAll('button').forEach(b => b.disabled = true); }
   if (okLocally) tyScore++;
   if (isLoggedIn()) {
     await Promise.all([
@@ -135,6 +140,12 @@ async function tyCheck() {
 async function tySkip() {
   if (tySubmitting) return;
   tySubmitting = true;
+  // AUDIT V82: "Bỏ qua" trước đây không có bất kỳ khoảng nghỉ/hiệu ứng nào che lúc đợi mạng (khác
+  // Kiểm tra có 1600ms hiển thị đáp án) — cùng vấn đề "tap → đứng hình" như fcAnswer, thêm phản hồi
+  // bấm-là-thấy-ngay bằng cách khoá + làm mờ 2 nút ngay lập tức.
+  const inp0 = document.getElementById('ty-input'); if (inp0) inp0.disabled = true;
+  const btnsEl0 = document.getElementById('ty-btns');
+  if (btnsEl0) { btnsEl0.classList.add('is-busy'); btnsEl0.querySelectorAll('button').forEach(b => b.disabled = true); }
   const w = tyQueue.items[0];
   const responseTimeMs = performance.now() - tyStartedAt;
   if (isLoggedIn()) {

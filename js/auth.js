@@ -412,6 +412,10 @@ function guestMarkActivity() {
 let _refreshMetaTimer = null;
 function refreshServerMeta() {
   if (isGuest || !authToken) return;
+  // AUDIT V82: xoá cache /api/study/today (lesson.js:fetchTodayDashboard) NGAY khi có phiên vừa
+  // hoàn thành — nếu không, khối "at a glance" ở Trang chủ/tab "Hôm nay học" có thể hiện due/mới
+  // CŨ tới 10s sau khi vừa học xong (TODAY_DASH_CACHE_TTL_MS), gây cảm giác số liệu "đứng hình".
+  if (typeof _todayDashCache !== 'undefined') { _todayDashCache = null; _todayDashCacheAt = 0; }
   clearTimeout(_refreshMetaTimer);
   _refreshMetaTimer = setTimeout(async () => {
     try {

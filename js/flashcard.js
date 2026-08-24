@@ -20,6 +20,7 @@ function renderFlash() {
     </div>
   </div>
   <div class="fc-controls" id="fc-btns"></div>
+  <div class="kbd-hint" style="text-align:center;margin-top:6px;">⌨️ Space lật thẻ · 1 Chưa nhớ · 2 Đã nhớ · A phát âm</div>
   <div id="fc-pron-area" style="margin-top:10px;"></div>`;
 }
 
@@ -289,15 +290,25 @@ async function pronounceTest() {
 // NGAY, submitFsrsReview() chạy nền không chờ — thẻ kế tiếp có thể hiện ra (và user có thể
 // refresh/đóng tab) trước khi Neon xác nhận đã lưu. Giờ ĐỢI submitFsrsReviewAwaited() (có trần chờ)
 // trước khi sang thẻ tiếp theo.
+let fcSubmitting = false; // AUDIT V82 (chống double-tap trong lúc đang chờ lưu — cùng lớp fix với tySubmitting ở type.js)
 async function fcAnswer(ok) {
   const w = fcQueue.items[0];
-  if (!w) return;
+  if (!w || fcSubmitting) return;
+  fcSubmitting = true;
+  // AUDIT V82 (Phần 2/12 — "tap → phản hồi ngay", tránh cảm giác app đứng hình): flashcard KHÔNG
+  // có khoảng nghỉ hiển thị đáp án cố định như Quiz/Gõ chữ/Nghe-chọn (Promise.all + setTimeout) —
+  // mạng nhanh thì gần như tức thì, nhưng mạng chậm (tới 6s trần chờ, xem SUBMIT_REVIEW_MAX_WAIT_MS)
+  // TRƯỚC ĐÂY không có bất kỳ phản hồi nào trong lúc đợi, giống hệt vấn đề audit mô tả. Khoá + làm mờ
+  // 2 nút NGAY khi bấm (đồng bộ, trước await) để user biết thao tác đã được ghi nhận.
+  const btnsEl = document.getElementById('fc-btns');
+  if (btnsEl) { btnsEl.classList.add('is-busy'); btnsEl.querySelectorAll('button').forEach(b => b.disabled = true); }
   if (isLoggedIn()) {
     const selectedAnswer = ok ? w.vi : '⨯ (tự chấm: chưa nhớ) ⨯';
     await submitFsrsReviewAwaited({ word: w, quizType: 'hz2vi', selectedAnswer, responseTimeMs: fcResponseTimeMs });
   } else {
     guestMarkActivity();
   }
+  fcSubmitting = false;
   if (currentTab !== 'flash' || fcQueue.items[0] !== w) return; // user đã rời tab hoặc hàng đợi đã đổi trong lúc chờ
   sqAdvance(fcQueue, ok);
   fcFlipped = false;

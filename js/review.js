@@ -256,7 +256,13 @@ function rvRenderRatingBar() {
   if (!rvRatingPhase) return '';
   const finalRating = (rvRatingPhase === 'committing' || rvRatingPhase === 'done') ? rvFinalRating : null;
   const showSystemGlow = rvRatingPhase === 'pending' && !finalRating;
-  const clickable = rvRatingPhase === 'pending';
+  // AUDIT V82 (UX/Performance — Phần 2/4/12): TRƯỚC ĐÂY 4 nút chỉ bấm được ở 'pending' (tức là phải
+  // đợi xong round-trip /api/study/review/preview mới bấm được) — đúng cảnh "tap → loading → chờ"
+  // mà yêu cầu audit muốn loại bỏ. User đã tự biết mình muốn chấm gì (không cần chờ gợi ý hệ thống)
+  // nên cho bấm được NGAY từ lúc 'loading' — không đổi quy tắc "User Rating luôn thắng System
+  // Rating" (rvCommitRating vẫn nhận chosenRating bình thường, không phụ thuộc rvSystemRating đã
+  // có hay chưa). Chỉ riêng phần HIGHLIGHT (ngôi sao/glow đề xuất) vẫn phải đợi có rvSystemRating.
+  const clickable = rvRatingPhase === 'pending' || rvRatingPhase === 'loading';
   const btns = RV_RATING_ORDER.map(r => {
     const meta = RV_RATING_META[r];
     let cls = 'rv-rate-btn ' + meta.cls;
@@ -276,9 +282,11 @@ function rvRenderRatingBar() {
     return `<button class="${cls}" ${clickable ? '' : 'disabled'} onclick="rvChooseRating('${r}')"${extraAttrs}>${meta.label}${extra}</button>`;
   }).join('');
   let hint = '&nbsp;';
-  if (rvRatingPhase === 'loading') hint = '⏳ Đang tính gợi ý hệ thống...';
+  // AUDIT V82: nút đã bấm được ngay ở 'loading' (xem `clickable` ở trên) nên gợi ý đổi thành mời
+  // bấm luôn, thay vì câu cũ khiến user tưởng phải đợi mới thao tác được.
+  if (rvRatingPhase === 'loading') hint = 'Chọn đánh giá của bạn <span class="kbd-hint">· ⌨️ 1-4</span> <span style="opacity:.7">(đang tải gợi ý hệ thống...)</span>';
   else if (rvRatingPhase === 'pending' && rvSystemRating) {
-    hint = `Hệ thống đề xuất: <b>${RV_RATING_META[rvSystemRating].label}</b> · Tự động chọn sau <span id="rv-countdown-num">${Math.ceil(RV_AUTO_COMMIT_MS / 1000)}</span>s`;
+    hint = `Hệ thống đề xuất: <b>${RV_RATING_META[rvSystemRating].label}</b> · Tự động chọn sau <span id="rv-countdown-num">${Math.ceil(RV_AUTO_COMMIT_MS / 1000)}</span>s <span class="kbd-hint">· ⌨️ 1-4</span>`;
   } else if (finalRating) {
     hint = `Đã chọn: <b>${RV_RATING_META[finalRating].label}</b>${rvUserRating ? '' : ' (hệ thống tự chọn)'}`;
   }
@@ -332,7 +340,9 @@ function rvStartCountdown(attemptId) {
 // User bấm tay 1 trong 4 nút trong lúc đang đếm ngược — "User Rating luôn thắng System Rating"
 // (Phần 9, quy tắc bắt buộc). Gọi từ onclick trong rvRenderRatingBar().
 function rvChooseRating(rating) {
-  if (rvRatingPhase !== 'pending' || !RV_RATING_ORDER.includes(rating)) return;
+  // AUDIT V82: cho phép chọn ngay cả khi còn đang 'loading' (chờ gợi ý hệ thống) — xem giải thích ở
+  // rvRenderRatingBar(). rvCommitRating() không cần rvSystemRating khi đã có chosenRating.
+  if ((rvRatingPhase !== 'pending' && rvRatingPhase !== 'loading') || !RV_RATING_ORDER.includes(rating)) return;
   rvCommitRating(rvAttemptId, rating);
 }
 
@@ -341,7 +351,11 @@ function rvChooseRating(rating) {
 // chặn commit lần 2 nếu click và hết giờ xảy ra gần như đồng thời (Phần 7 — "không cho timeout
 // tiếp tục commit lần thứ hai").
 async function rvCommitRating(attemptId, chosenRating) {
-  if (attemptId !== rvAttemptId || currentTab !== 'review' || rvRatingPhase !== 'pending') return;
+  // AUDIT V82: chấp nhận commit từ cả 'loading' lẫn 'pending' (bấm tay lúc đang loading — xem
+  // rvChooseRating). Vẫn giữ nguyên chặn commit lần 2 (Phần 7 cũ) vì ngay dòng dưới đổi phase sang
+  // 'committing' trước await đầu tiên — lần gọi thứ 2 (vd double-click/countdown trùng lúc) sẽ thấy
+  // rvRatingPhase đã khác 'pending'/'loading' và tự thoát.
+  if (attemptId !== rvAttemptId || currentTab !== 'review' || (rvRatingPhase !== 'pending' && rvRatingPhase !== 'loading')) return;
   rvClearCountdown();
   const pending = rvPendingReview;
   if (!pending) return;
@@ -365,7 +379,11 @@ async function rvCommitRating(attemptId, chosenRating) {
     rvRatingPhase = 'done';
     render();
   });
-  await Promise.all([reviewPromise, new Promise(r => setTimeout(r, 1000))]);
+  // AUDIT V82 (Phần 2/12 — "chuyển card nhanh", "không có animation thừa"): giảm khoảng nghỉ tối
+  // thiểu từ 1000ms xuống 450ms. Đây chỉ là thời gian TỐI THIỂU để user kịp thấy dòng "Đã lưu lịch
+  // ôn" trước khi sang thẻ kế — KHÔNG ảnh hưởng an toàn dữ liệu (reviewPromise vẫn luôn được đợi đủ
+  // qua Promise.all, có trần chờ riêng SUBMIT_REVIEW_MAX_WAIT_MS ở study-queue.js).
+  await Promise.all([reviewPromise, new Promise(r => setTimeout(r, 450))]);
   if (attemptId !== rvAttemptId || currentTab !== 'review') return;
   rvRatingPhase = 'done';
   rvAdvanceQueue();
@@ -413,7 +431,8 @@ function renderReview() {
       <div class="rv-hz">${w.hz}</div>
       ${showPinyin ? `<div class="rv-py">${w.py || ''}</div>` : ''}
       <div class="rv-prompt">${w.hz} là gì?</div>
-      <div class="quiz-opts" id="rv-opts">${optHtml}</div>`;
+      <div class="quiz-opts" id="rv-opts">${optHtml}</div>
+      <div class="kbd-hint" style="text-align:center;margin-top:2px;">⌨️ 1-4 để chọn</div>`;
   } else {
     // Đã có kết quả trắc nghiệm: lộ đáp án đầy đủ + bổ sung "Highlight System Rating" — hiện lại 4
     // nút Again/Hard/Good/Easy, highlight nút hệ thống đề xuất, cho user xác nhận/đổi trước khi
@@ -497,7 +516,11 @@ async function rvPick(btn, hz) {
   render();
 
   const systemRating = await rvFetchSystemRating({ word: w, selectedAnswer, responseTimeMs, answerChanges: rvAnswerChanges });
-  if (attemptId !== rvAttemptId || currentTab !== 'review') return; // user đã sang câu khác/rời tab trong lúc chờ
+  // AUDIT V82: thêm điều kiện rvRatingPhase === 'loading' — vì nút đã bấm được ngay từ lúc 'loading'
+  // (xem rvChooseRating), user có thể đã tự bấm 1 rating VÀ rvCommitRating đã chuyển phase sang
+  // 'committing'/'done' TRƯỚC KHI fetch gợi ý hệ thống này kịp trả lời. Không được ghi đè ngược lại
+  // 'pending' trong trường hợp đó (sẽ làm "sống lại" màn hình chờ countdown cho 1 lượt ĐÃ commit).
+  if (attemptId !== rvAttemptId || currentTab !== 'review' || rvRatingPhase !== 'loading') return;
   rvSystemRating = systemRating;
   rvRatingPhase = 'pending';
   render();
