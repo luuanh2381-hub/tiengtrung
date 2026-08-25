@@ -68,6 +68,16 @@ function renderOptimizerBody(s) {
   html += `<div style="text-align:center;font-weight:800;font-size:.82rem;margin-bottom:4px;color:${readinessInfo.color};">${readinessInfo.icon} ${readinessInfo.label}</div>`;
   html += `<div style="color:var(--muted);font-size:.74rem;text-align:center;margin-bottom:14px;line-height:1.5;">${(s.readiness && s.readiness.reason) || ''}</div>`;
 
+  // Diagnostic: optimizer engine (native "@open-spaced-repetition/binding") chưa load được trên
+  // server → báo rõ NGAY, không để user bấm Run rồi mới nhận lỗi mơ hồ.
+  const bindingUnavailable = s.bindingAvailable === false;
+  if (bindingUnavailable) {
+    html += `<div style="background:#fff3f0;border:1px solid var(--fail);border-radius:12px;padding:10px 12px;margin-bottom:12px;font-size:.74rem;line-height:1.5;color:var(--fail);">
+      ⚠️ Optimizer engine chưa sẵn sàng trên máy chủ (thiếu/không load được dependency native).
+      Đây là lỗi triển khai (deployment), không phải lỗi dữ liệu của bạn — vui lòng báo quản trị viên.
+    </div>`;
+  }
+
   // ── Đang dùng weights nào ──
   html += `<div style="background:var(--paper);border-radius:12px;padding:10px 12px;margin-bottom:12px;font-size:.8rem;">
     <div style="display:flex;justify-content:space-between;${s.personalWeightsEnabled ? 'margin-bottom:4px;' : ''}"><span style="color:var(--muted);">Đang dùng</span><b>${s.personalWeightsEnabled ? '🧠 Weights cá nhân' : '⚙️ Weights mặc định'}</b></div>
@@ -92,7 +102,7 @@ function renderOptimizerBody(s) {
   html += `<div id="optimizer-error" class="auth-error"></div>`;
 
   // ── Nút hành động (Phần 14/15) ──
-  html += `<button class="auth-submit" id="optimizer-run-btn" onclick="runOptimizerNow()" ${isRunning ? 'disabled' : ''}>${isRunning ? '⏳ Đang chạy...' : '🚀 Run Optimizer'}</button>`;
+  html += `<button class="auth-submit" id="optimizer-run-btn" onclick="runOptimizerNow()" ${(isRunning || bindingUnavailable) ? 'disabled' : ''}>${isRunning ? '⏳ Đang chạy...' : (bindingUnavailable ? '⚠️ Optimizer chưa sẵn sàng' : '🚀 Run Optimizer')}</button>`;
   if (s.hasCandidate && !isRunning) {
     html += `<button class="auth-submit" style="margin-top:8px;background:var(--ok);" onclick="applyOptimizerWeights()">✅ Apply Personal Weights</button>`;
   }
