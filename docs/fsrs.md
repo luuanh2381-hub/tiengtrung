@@ -232,3 +232,31 @@ giảm khả năng bắn 2 request cho cùng 1 câu.
 - Schema `fsrs_cards`, thuật toán FSRS thật (`lib/fsrs.js`), lesson-priority, daily limit, current
   lesson, weak-words, timezone: **giữ nguyên 100%** so với v66 — V67 chỉ thêm 1 layer suy luận
   rating phía trước bước gọi FSRS, không sửa bất kỳ công thức FSRS nào (Phần 28).
+
+## 11. FSRS Personal Optimizer (V82)
+
+Pipeline: `review_history` → **data quality check** → chia 80/20 train/validation theo THẺ (không
+theo dòng review riêng lẻ, tránh rò rỉ dữ liệu giữa 2 tập) → **train** bằng optimizer chính thức của
+`ts-fsrs` (package `@open-spaced-repetition/binding`, native NAPI/Rust — **không tự viết gradient
+descent thay thế**) → **evaluate** default vs personal weights trên tập validation bằng log-loss
+(binary cross-entropy giữa `get_retrievability()` dự đoán và `answer_correct` thật, dùng đúng
+scheduler thật qua `lib/fsrs.js`, không tự viết lại forgetting curve) → lưu kết quả làm **candidate**
+(CHƯA active).
+
+Toàn bộ logic ở `lib/fsrs/optimizer.js`. Bảng `user_fsrs_weights` (đã có từ V69) được mở rộng thêm
+cột `enabled`/`candidate_*`/`previous_*`/`status` — xem `migrations/V82_fsrs_personal_optimizer.sql`.
+`enabled = true` là điều kiện DUY NHẤT để scheduler dùng personal weights
+(`lib/fsrs/optimizer.js:getUserActiveWeights`, có cache TTL 30s, được `reviewService.reviewCard()`
+đọc song song với `desiredRetention`) — **Apply/Rollback/Reset chỉ đụng bảng này, không bao giờ đụng
+`fsrs_cards`/`review_history`** (không reset lịch ôn tập/stability/difficulty/reps/lapses của user).
+
+API tự phục vụ (user đăng nhập chạy trên dữ liệu của chính mình):
+`GET/POST /api/fsrs-optimizer/{status,run,apply,rollback,reset}` — xem `api/index.js`. UI: modal
+`#optimizer-modal` (mở từ account menu, nút "🧠 FSRS Optimizer") + `js/fsrs-optimizer.js`.
+
+**Cần cài `@open-spaced-repetition/binding`** (`npm install`, package public beta) trước khi Run
+Optimizer hoạt động thật — nếu thiếu/API khác tài liệu công khai lúc viết code, hàm
+`trainWithOfficialOptimizer()` throw lỗi rõ ràng thay vì âm thầm dùng thuật toán xấp xỉ khác.
+Test thuần JS (không cần Postgres): `npm run test:optimizer`. Test vòng đời apply/rollback/reset
+(cần `DATABASE_URL`): `npm run test:optimizer:integration`.
+
