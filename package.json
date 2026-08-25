@@ -11,6 +11,9 @@
     "dev": "node api/index.js",
     "test": "node test/fsrs.test.js",
     "test:integration": "node test/fsrs.concurrency.integration.js",
+    "test:optimizer": "node test/fsrs-optimizer.test.js",
+    "test:optimizer:integration": "node test/fsrs-optimizer.integration.test.js",
+    "test:optimizer:binding": "node test/fsrs-optimizer.binding.smoke.test.js",
     "verify:fsrs6": "node scripts/verify-fsrs6.js",
     "migrate:fsrs": "node scripts/migrate-to-pure-fsrs.js",
     "fix:current-lesson": "node scripts/fix-current-lesson-start.js"
@@ -21,6 +24,7 @@
     "pg": "^8.12.0",
     "compression": "^1.7.4",
     "ts-fsrs": "5.4.1",
-    "@vercel/functions": "^3.0.0"
+    "@vercel/functions": "^3.0.0",
+    "@open-spaced-repetition/binding": "0.5.0"
   }
 }
