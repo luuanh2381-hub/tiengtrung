@@ -850,6 +850,10 @@ app.post('/api/user/reset-learning-data', async (req, res) => {
     }, { alsoDeleteAnalytics: true });
     if (!result.ok) return res.json({ success: false, message: result.error || 'Learning data reset failed' });
     reviewService.invalidateUserSettingsCache(authed.username);
+    // V82 (FSRS Personal Optimizer): alsoDeleteAnalytics=true đã xoá luôn dòng user_fsrs_weights
+    // (xem lib/db.js:updateDBWithFsrsCleanup) — dọn cache active-weights CÙNG lúc, tránh lượt review
+    // tiếp theo (trong CÙNG instance) vẫn dùng nhầm weights cá nhân đã bị xoá.
+    fsrsOptimizer.invalidateActiveWeightsCache(authed.username);
     logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'settings',
       `Tự xoá toàn bộ dữ liệu học tập (fsrs_cards: ${result.fsrsCardsDeleted}, review_history: ${result.reviewHistoryDeleted})`);
     // V76 Yêu cầu 6 — response shape CỐ ĐỊNH đúng contract yêu cầu.
@@ -940,6 +944,72 @@ app.get('/api/admin/fsrs-optimizer/weights/:userId', async (req, res) => {
     const weights = await fsrsOptimizer.getUserWeights(req.params.userId.toLowerCase());
     res.json({ ok: true, ...weights });
   } catch (e) { fail(res, e); }
+});
+
+// ════════════════════════════════════════════════════
+// FSRS PERSONAL OPTIMIZER — tự phục vụ (V82). CHÍNH user đang đăng nhập chạy optimizer trên dữ
+// liệu review CỦA CHÍNH MÌNH (khác 2 endpoint admin phía trên — chỉ xem/xuất, không train).
+// Toàn bộ logic thật nằm ở lib/fsrs/optimizer.js — route ở đây chỉ auth + gọi + trả JSON.
+// ════════════════════════════════════════════════════
+
+// GET status: data quality report + readiness MỚI NHẤT + trạng thái weights hiện tại (Phần 14/20).
+app.get('/api/fsrs-optimizer/status', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const status = await fsrsOptimizer.getOptimizerStatus(authed.username);
+    res.json({ ok: true, ...status });
+  } catch (e) { fail(res, e); }
+});
+
+// POST run: audit dữ liệu → (nếu đủ điều kiện) train bằng optimizer chính thức → đánh giá trên tập
+// validation → lưu candidate (Phần 9: CHƯA active, cần Apply riêng). Có lock chống chạy song song
+// (Phần 15) — trả ok:false (không phải lỗi server) nếu đã có 1 lượt đang chạy.
+app.post('/api/fsrs-optimizer/run', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const { desiredRetention } = await reviewService.getUserSettings(authed.username);
+    const result = await fsrsOptimizer.runOptimizer(authed.username, { desiredRetention });
+    if (result.started === false) return res.json({ ok: false, error: result.message, reason: result.reason });
+    if (result.completed) {
+      logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'fsrs-optimizer',
+        `Chạy Optimizer xong — ${result.report.validReviews} review hợp lệ, cải thiện validation ${result.meta.improvement !== null ? (result.meta.improvement * 100).toFixed(2) + '%' : 'N/A'}, recommend=${result.meta.recommend}`);
+    }
+    res.json({ ok: true, ...result });
+  } catch (e) { fail(res, e); }
+});
+
+// POST apply / rollback / reset: lỗi ở đây là lỗi NGHIỆP VỤ (vd bấm Apply khi chưa Run) — trả
+// ok:false/200 thay vì 500, đúng convention của /api/settings/retention.
+app.post('/api/fsrs-optimizer/apply', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const result = await fsrsOptimizer.applyPersonalWeights(authed.username);
+    logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'fsrs-optimizer', 'Apply personal FSRS weights');
+    res.json({ ok: true, ...result });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
+app.post('/api/fsrs-optimizer/rollback', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const result = await fsrsOptimizer.rollbackPersonalWeights(authed.username);
+    logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'fsrs-optimizer', 'Rollback FSRS weights về trạng thái trước đó');
+    res.json({ ok: true, ...result });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
+app.post('/api/fsrs-optimizer/reset', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const result = await fsrsOptimizer.resetToDefaultWeights(authed.username);
+    logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'fsrs-optimizer', 'Reset FSRS weights về mặc định');
+    res.json({ ok: true, ...result });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
 // ── [ADMIN] Nhập từ vựng hàng loạt (từ file Excel đã được parse ở trình duyệt, hoặc nhập thủ công 1 từ) ──
