@@ -38,6 +38,7 @@
   <div class="auth-box" style="max-width:320px;">
     <div class="auth-title" id="account-menu-name">👤</div>
     <button class="auth-submit" style="margin-top:10px" onclick="closeAccountMenu(); openChangePassword();">🔑 Đổi mật khẩu</button>
+    <button class="auth-submit" style="margin-top:10px;background:var(--l9a);box-shadow:0 4px 0 #3d4bb0;" onclick="closeAccountMenu(); openOptimizerModal();">🧠 FSRS Optimizer</button>
     <button class="auth-submit" style="margin-top:10px;background:var(--l7a);box-shadow:0 4px 0 #b25f22;" onclick="openDangerConfirm('fsrs-reset')">🔄 Reset FSRS</button>
     <button class="auth-submit" style="margin-top:10px;background:var(--fail);box-shadow:0 4px 0 #c23a3a;" onclick="openDangerConfirm('wipe-data')">🗑️ Xoá toàn bộ dữ liệu học tập</button>
     <button class="auth-submit" style="margin-top:10px;background:var(--fail);" onclick="closeAccountMenu(); if(confirm('Đăng xuất khỏi tài khoản này?')) authLogout();">🚪 Đăng xuất</button>
@@ -60,6 +61,23 @@
     </div>
     <button class="auth-submit" id="danger-confirm-submit" onclick="submitDangerConfirm()">Xác nhận</button>
     <button class="auth-guest" onclick="closeDangerConfirm()">Huỷ</button>
+  </div>
+</div>
+
+<!-- V82 (FSRS Personal Optimizer) — modal tự phục vụ: audit dữ liệu → chạy optimizer → so sánh
+     default/personal → Apply/Rollback/Reset. Toàn bộ logic ở js/fsrs-optimizer.js. Rộng hơn các
+     modal khác (440px) vì cần hiện lưới KPI + bảng so sánh, nhưng vẫn dùng LẠI đúng các class sẵn
+     có (.dash-kpi*, .btn, .auth-*) — không cần dashboard riêng (đúng yêu cầu "không cần phức tạp"). -->
+<div id="optimizer-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:999;display:none;align-items:center;justify-content:center;padding:20px;">
+  <div class="auth-box" style="max-width:440px;max-height:88vh;overflow-y:auto;">
+    <div class="auth-title">🧠 FSRS Optimizer</div>
+    <div style="color:var(--muted);font-size:.78rem;text-align:center;margin-bottom:14px;line-height:1.5;">
+      Tìm bộ tham số ghi nhớ (weights) RIÊNG cho bạn, dựa trên lịch sử ôn tập thật — thay vì dùng bộ mặc định chung cho mọi người.
+    </div>
+    <div id="optimizer-body">
+      <div class="study-empty">⏳ Đang tải...</div>
+    </div>
+    <button class="auth-guest" onclick="closeOptimizerModal()">Đóng</button>
   </div>
 </div>
 
@@ -136,6 +154,7 @@
 <script src="/js/listen.js"></script>
 <script src="/js/translate.js"></script>
 <script src="/js/stats.js"></script>
+<script src="/js/fsrs-optimizer.js"></script>
 <script src="/js/compare.js"></script>
 <script src="/js/admin.js"></script>
 <script src="/js/settings.js"></script>
