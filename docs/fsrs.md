@@ -260,3 +260,29 @@ Optimizer hoạt động thật — nếu thiếu/API khác tài liệu công kh
 Test thuần JS (không cần Postgres): `npm run test:optimizer`. Test vòng đời apply/rollback/reset
 (cần `DATABASE_URL`): `npm run test:optimizer:integration`.
 
+### 11.1. Deploy trên Vercel — native binding + WASI fallback (V83-FIX-v3)
+
+`@open-spaced-repetition/binding` là native NAPI/Rust, chọn binary theo platform qua
+`optionalDependencies`. Package tự có cơ chế rơi xuống **WASI fallback CHÍNH THỨC** nếu native
+không load được — NHƯNG chỉ khi gói tài nguyên WASM `@open-spaced-repetition/binding-wasm32-wasi`
+thật sự có trong `node_modules` (đã thêm vào `optionalDependencies` của `package.json` — bản trước
+KHÔNG có gói này nên chưa từng có fallback thật). KHÔNG dùng
+`@open-spaced-repetition/binding/dynamic-wasi` — đó là API cho bundler trình duyệt (Vite
+`?url`/`?worker`), không áp dụng cho Node server thuần.
+
+3 lớp chẩn đoán (xem `TROUBLESHOOTING-FSRS-OPTIMIZER.md` để biết cách đọc):
+1. **Build time**: `scripts/verify-optimizer-binding.js` chạy tự động qua `postinstall` — in kết
+   quả vào Build Logs của Vercel. Mặc định không chặn deploy; đặt env `FSRS_OPTIMIZER_STRICT_BUILD=1`
+   để bắt build fail khi thiếu.
+2. **Runtime**: `lib/fsrs/optimizer.js:loadOfficialOptimizer()`/`getOptimizerEngineStatus()` — phản
+   ánh qua `GET /api/fsrs-optimizer/status` (field `engineStatus`/`optimizerEngineState`, 1 trong 4
+   giá trị `OPTIMIZER_NATIVE_READY`/`OPTIMIZER_WASI_READY`/`OPTIMIZER_READY`/`OPTIMIZER_UNAVAILABLE`).
+3. **UI**: `js/fsrs-optimizer.js` hiện badge engine cho mọi user, hiện thêm root cause kỹ thuật CHỈ
+   cho admin (`isAdminRole()`).
+
+`vercel.json` có `"framework": null` (ép Framework Preset = "Other" — Vercel âm thầm bỏ qua
+`functions.includeFiles` với 1 số framework khác, chỉ log 1 dòng cảnh báo) và
+`installCommand` tự chuyển sang `npm ci` nếu đã có `package-lock.json` (chưa có sẵn trong repo vì
+môi trường sửa code này không có mạng để tự sinh — xem README ở `TROUBLESHOOTING-FSRS-OPTIMIZER.md`).
+
+
