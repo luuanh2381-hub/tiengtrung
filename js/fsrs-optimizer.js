@@ -35,6 +35,16 @@ const OPTIMIZER_READINESS_LABEL = {
   OPTIMIZABLE: { icon: '🟢', label: 'Sẵn sàng tối ưu', color: 'var(--ok)' },
 };
 
+// V83-FIX-v3 (Phần 7) — 4 trạng thái engine tường minh, KHÔNG gộp chung 1 chữ "chưa sẵn sàng" mơ
+// hồ giữa native/WASI/unavailable — engineStatus đầy đủ nằm trong s.engineStatus (chỉ hiện chi tiết
+// kỹ thuật cho admin, xem renderOptimizerBody bên dưới).
+const OPTIMIZER_ENGINE_LABEL = {
+  OPTIMIZER_NATIVE_READY: { icon: '⚙️', label: 'Engine: Native (nhanh nhất)', color: 'var(--ok)' },
+  OPTIMIZER_WASI_READY: { icon: '🧩', label: 'Engine: WASI (fallback chính thức)', color: 'var(--l7a)' },
+  OPTIMIZER_READY: { icon: '✅', label: 'Engine: sẵn sàng', color: 'var(--ok)' },
+  OPTIMIZER_UNAVAILABLE: { icon: '⚠️', label: 'Engine: chưa sẵn sàng', color: 'var(--fail)' },
+};
+
 async function loadOptimizerStatus() {
   const body = document.getElementById('optimizer-body');
   if (!body) return;
@@ -68,14 +78,23 @@ function renderOptimizerBody(s) {
   html += `<div style="text-align:center;font-weight:800;font-size:.82rem;margin-bottom:4px;color:${readinessInfo.color};">${readinessInfo.icon} ${readinessInfo.label}</div>`;
   html += `<div style="color:var(--muted);font-size:.74rem;text-align:center;margin-bottom:14px;line-height:1.5;">${(s.readiness && s.readiness.reason) || ''}</div>`;
 
-  // Diagnostic: optimizer engine (native "@open-spaced-repetition/binding") chưa load được trên
-  // server → báo rõ NGAY, không để user bấm Run rồi mới nhận lỗi mơ hồ.
+  // Diagnostic (Phần 7/11): optimizer engine (native/WASI "@open-spaced-repetition/binding") chưa
+  // load được trên server → báo rõ NGAY, không để user bấm Run rồi mới nhận lỗi mơ hồ. Người dùng
+  // thường chỉ thấy thông báo chung; ADMIN thấy thêm root cause kỹ thuật ngắn gọn (Phần 7).
   const bindingUnavailable = s.bindingAvailable === false;
+  const engineInfo = OPTIMIZER_ENGINE_LABEL[s.optimizerEngineState] || null;
   if (bindingUnavailable) {
     html += `<div style="background:#fff3f0;border:1px solid var(--fail);border-radius:12px;padding:10px 12px;margin-bottom:12px;font-size:.74rem;line-height:1.5;color:var(--fail);">
-      ⚠️ Optimizer engine chưa sẵn sàng trên máy chủ (thiếu/không load được dependency native).
+      ⚠️ Optimizer engine chưa sẵn sàng trên máy chủ (thiếu/không load được dependency chính thức).
       Đây là lỗi triển khai (deployment), không phải lỗi dữ liệu của bạn — vui lòng báo quản trị viên.
+      ${(typeof isAdminRole === 'function' && isAdminRole() && s.engineStatus) ? `<div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--fail);font-family:monospace;font-size:.66rem;word-break:break-word;">
+        <b>[Chỉ admin thấy] Root cause:</b> ${(s.engineStatus.error || '').slice(0, 300)}<br>
+        node=${s.engineStatus.nodeVersion} platform=${s.engineStatus.platform} arch=${s.engineStatus.arch}${s.engineStatus.glibcVersion ? ' glibc=' + s.engineStatus.glibcVersion : ''}<br>
+        native gói kỳ vọng: ${s.engineStatus.nativeBinary || '—'}
+      </div>` : ''}
     </div>`;
+  } else if (engineInfo) {
+    html += `<div style="text-align:center;font-size:.66rem;color:${engineInfo.color};margin-bottom:10px;">${engineInfo.icon} ${engineInfo.label}</div>`;
   }
 
   // ── Đang dùng weights nào ──
