@@ -147,20 +147,45 @@ function showOptimizerError(msg) {
 
 // Phần 15: khoá nút ngay khi bấm, không cho double click / chạy song song từ CHÍNH tab này (server
 // vẫn có lock riêng ở lib/fsrs/optimizer.js:claimOptimizerRun cho trường hợp nhiều tab/thiết bị).
+//
+// V83-FIX-v4 — sửa 2 bug thật thấy được trên production:
+//   1) Nút kẹt mãi ở "⏳ Đang chạy..." sau 1 lỗi mạng/parse — vì nhánh catch cũ KHÔNG gọi lại
+//      loadOptimizerStatus() (chỉ có loadOptimizerStatus() mới render lại nút về trạng thái bình
+//      thường). Nay LUÔN gọi loadOptimizerStatus() ở finally, bất kể thành công/thất bại kiểu gì.
+//   2) Nếu gọi loadOptimizerStatus() TRƯỚC showOptimizerError(), lỗi vừa hiện sẽ bị XOÁ MẤT ngay lập
+//      tức — vì renderOptimizerBody() tạo lại <div id="optimizer-error"> RỖNG mỗi lần render (xem
+//      trên). Nay đổi thứ tự: load status XONG rồi mới hiện lỗi vào div MỚI vừa được tạo.
 async function runOptimizerNow() {
   if (_optimizerBusy) return;
   _optimizerBusy = true;
   const btn = document.getElementById('optimizer-run-btn');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Đang chạy... (vài giây, đừng đóng modal)'; }
+  let errorMsg = null;
   try {
     const res = await fetch('/api/fsrs-optimizer/run', { method: 'POST', headers: authHeaders() });
-    const data = await res.json();
-    if (!data.ok) { showOptimizerError(data.error || 'Có lỗi xảy ra'); await loadOptimizerStatus(); return; }
-    await loadOptimizerStatus();
+    // Đọc dạng text TRƯỚC: nếu server/hạ tầng (Vercel) trả về response KHÔNG PHẢI JSON — thường do
+    // function bị timeout hoặc crash ở tầng platform (SIGKILL giữa chừng, vượt ngoài try/catch của
+    // chính app — app LUÔN trả JSON cho mọi lỗi bắt được bình thường, xem api/index.js:fail()) —
+    // báo nguyên nhân khả dĩ dễ hiểu, không chỉ lộ ra "Unexpected token" khó hiểu.
+    const raw = await res.text();
+    let data = null;
+    try { data = JSON.parse(raw); } catch { /* xử lý bên dưới */ }
+    if (!data) {
+      errorMsg = (res.ok ? '' : `Server trả về lỗi HTTP ${res.status}, `) +
+        'phản hồi không đúng định dạng JSON — thường do function bị timeout hoặc crash ở tầng hạ ' +
+        'tầng (Vercel), không phải lỗi ứng dụng có thể xử lý bình thường. Vào Vercel Dashboard → ' +
+        'Deployments → (bản mới nhất) → Logs để xem nguyên nhân thật.' +
+        (raw ? ` [Đầu phản hồi: "${raw.slice(0, 100)}"]` : '');
+    } else if (!data.ok) {
+      errorMsg = data.error || 'Có lỗi xảy ra';
+    }
   } catch (e) {
-    showOptimizerError('Lỗi kết nối: ' + e.message);
+    // fetch() tự nó throw (mất mạng hoàn toàn...) — khác "có response nhưng không phải JSON" ở trên.
+    errorMsg = 'Lỗi kết nối: ' + e.message;
   } finally {
     _optimizerBusy = false;
+    await loadOptimizerStatus(); // LUÔN refresh — nút hết kẹt ở "Đang chạy...", số liệu luôn đúng thực tế server.
+    if (errorMsg) showOptimizerError(errorMsg); // gọi SAU loadOptimizerStatus() — xem giải thích (2) ở trên.
   }
 }
 
@@ -180,14 +205,24 @@ async function resetOptimizerWeights() {
 async function postOptimizerAction(url) {
   if (_optimizerBusy) return;
   _optimizerBusy = true;
+  let errorMsg = null;
   try {
     const res = await fetch(url, { method: 'POST', headers: authHeaders() });
-    const data = await res.json();
-    if (!data.ok) { showOptimizerError(data.error || 'Có lỗi xảy ra'); return; }
-    await loadOptimizerStatus();
+    const raw = await res.text();
+    let data = null;
+    try { data = JSON.parse(raw); } catch { /* xử lý bên dưới */ }
+    if (!data) {
+      errorMsg = (res.ok ? '' : `Server trả về lỗi HTTP ${res.status}, `) +
+        'phản hồi không đúng định dạng JSON (có thể do timeout/crash hạ tầng).' +
+        (raw ? ` [Đầu phản hồi: "${raw.slice(0, 100)}"]` : '');
+    } else if (!data.ok) {
+      errorMsg = data.error || 'Có lỗi xảy ra';
+    }
   } catch (e) {
-    showOptimizerError('Lỗi kết nối: ' + e.message);
+    errorMsg = 'Lỗi kết nối: ' + e.message;
   } finally {
     _optimizerBusy = false;
+    await loadOptimizerStatus(); // xem giải thích thứ tự ở runOptimizerNow() phía trên
+    if (errorMsg) showOptimizerError(errorMsg);
   }
 }
