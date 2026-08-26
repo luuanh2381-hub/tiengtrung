@@ -27,6 +27,7 @@ const { FSRS6_PARAM_COUNT, isValidWeightsArray } = require(path.join(__dirname, 
 const {
   trainWithOfficialOptimizer,
   getOptimizerBindingVersion,
+  getOptimizerEngineStatus,
   OptimizerDependencyError,
 } = require(path.join(__dirname, '..', 'lib', 'fsrs', 'optimizer'));
 
@@ -98,6 +99,16 @@ function stepValidateWeights(weights) {
   console.log(`✅ 21 WEIGHTS: PASS — [${weights.map((w) => w.toFixed(4)).join(', ')}]`);
 }
 
+// ── Bước 5 (V83-FIX-v3): getOptimizerEngineStatus() phải phản ánh ĐÚNG cùng 1 sự thật mà bước 1-4
+//    vừa xác nhận thật — đây chính là hàm GET /api/fsrs-optimizer/status dùng để báo cho user TRƯỚC
+//    khi bấm Run (Phần 11), nên nếu train ở trên PASS thì status ở đây BẮT BUỘC phải available=true. ──
+function stepEngineStatus() {
+  const status = getOptimizerEngineStatus();
+  assert.strictEqual(status.available, true, 'getOptimizerEngineStatus().available phải khớp với việc train vừa PASS ở trên');
+  assert.ok(['native', 'wasi', 'unknown'].includes(status.engine), `engine phải là native/wasi/unknown, nhận được ${status.engine}`);
+  console.log(`✅ ENGINE STATUS: PASS — available=true engine=${status.engine} (node=${status.nodeVersion} platform=${status.platform} arch=${status.arch}${status.glibcVersion ? ' glibc=' + status.glibcVersion : ''})`);
+}
+
 async function main() {
   console.log('════════════════════════════════════════════════════');
   console.log('Smoke test THẬT: @open-spaced-repetition/binding trên môi trường hiện tại');
@@ -105,6 +116,7 @@ async function main() {
   stepImportBinding();
   const weights = await stepTrain();
   stepValidateWeights(weights);
+  stepEngineStatus();
   console.log('\n════════════════════════════════════════════════════');
   console.log('TẤT CẢ PASS — optimizer chính thức load + train thật thành công trên môi trường này.');
   console.log('════════════════════════════════════════════════════');
