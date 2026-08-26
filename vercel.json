@@ -1,5 +1,6 @@
 {
-  "installCommand": "rm -rf node_modules && npm install",
+  "framework": null,
+  "installCommand": "rm -rf node_modules && ( [ -f package-lock.json ] && npm ci || npm install )",
   "rewrites": [
     {
       "source": "/api/(.*)",
