@@ -952,32 +952,82 @@ app.get('/api/admin/fsrs-optimizer/weights/:userId', async (req, res) => {
 // Toàn bộ logic thật nằm ở lib/fsrs/optimizer.js — route ở đây chỉ auth + gọi + trả JSON.
 // ════════════════════════════════════════════════════
 
-// GET status: data quality report + readiness MỚI NHẤT + trạng thái weights hiện tại (Phần 14/20).
+// GET status: nhẹ (Phần "STATUS API") — đọc job mới nhất + weights hiện tại theo khoá chính, KHÔNG
+// quét lại toàn bộ review_history mỗi lần poll (data quality lấy từ cache của job, hoặc ước tính rẻ
+// nếu chưa từng chạy — xem lib/fsrs/optimizer.js:getOptimizerStatus). isAdmin quyết định có được xem
+// chi tiết lỗi/chẩn đoán kỹ thuật đầy đủ hay không (Phần "ERROR SECURITY").
 app.get('/api/fsrs-optimizer/status', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
   try {
-    const status = await fsrsOptimizer.getOptimizerStatus(authed.username);
+    const role = authed.db.users[authed.username].role;
+    const isAdmin = role === 'admin' || role === 'superadmin';
+    const status = await fsrsOptimizer.getOptimizerStatus(authed.username, { isAdmin });
     res.json({ ok: true, ...status });
   } catch (e) { fail(res, e); }
 });
 
-// POST run: audit dữ liệu → (nếu đủ điều kiện) train bằng optimizer chính thức → đánh giá trên tập
-// validation → lưu candidate (Phần 9: CHƯA active, cần Apply riêng). Có lock chống chạy song song
-// (Phần 15) — trả ok:false (không phải lỗi server) nếu đã có 1 lượt đang chạy.
+// Địa chỉ TUYỆT ĐỐI để tự gọi ngược lại CHÍNH deployment đang chạy (Phần "YÊU CẦU KIẾN TRÚC" — POST
+// /run phải trả về NGAY, việc train THẬT chạy ở 1 request HTTP MỚI, TÁCH RỜI request mà trình duyệt
+// đang chờ). Dùng req.headers.host (đúng domain/rewrite đang phục vụ request gốc — kể cả custom
+// domain) thay vì VERCEL_URL (có thể trỏ tới hostname auto-generate khác domain đang dùng thật).
+function buildInternalUrl(req, path) {
+  const proto = req.headers['x-forwarded-proto'] || req.protocol || (process.env.VERCEL ? 'https' : 'http');
+  const host = req.headers['host'];
+  return `${proto}://${host}${path}`;
+}
+
+// POST run: TẠO JOB rồi trả về NGAY (202) — KHÔNG train trong chính request này (Phần "ĐỪNG CHỈ SỬA
+// SYMPTOM": đây là thay đổi kiến trúc thật, không phải tăng timeout). Idempotent với double-click/
+// nhiều tab (Phần "IDEMPOTENCY/CONCURRENCY") — createOptimizerJob() tự xử lý race condition ở DB,
+// route này chỉ cần gọi và trả lại đúng job (mới tạo hoặc đã có sẵn).
 app.post('/api/fsrs-optimizer/run', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
   try {
     const { desiredRetention } = await reviewService.getUserSettings(authed.username);
-    const result = await fsrsOptimizer.runOptimizer(authed.username, { desiredRetention });
-    if (result.started === false) return res.json({ ok: false, error: result.message, reason: result.reason });
-    if (result.completed) {
-      logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'fsrs-optimizer',
-        `Chạy Optimizer xong — ${result.report.validReviews} review hợp lệ, cải thiện validation ${result.meta.improvement !== null ? (result.meta.improvement * 100).toFixed(2) + '%' : 'N/A'}, recommend=${result.meta.recommend}`);
+    const { job, created } = await fsrsOptimizer.createOptimizerJob(authed.username, { desiredRetention });
+
+    if (created) {
+      // Kích hoạt worker qua 1 request HTTP TÁCH RỜI — KHÔNG await response đầy đủ của nó (worker tự
+      // trả 202 gần như ngay lập tức rồi mới chạy pipeline nặng ở nền qua waitUntil CỦA CHÍNH NÓ, xem
+      // route /worker bên dưới) — runInBackground() (lib/runInBackground.js) chỉ đảm bảo request KÍCH
+      // HOẠT này thật sự được gửi đi trước khi Vercel có thể đóng băng invocation hiện tại, KHÔNG giữ
+      // invocation hiện tại sống để chờ toàn bộ optimizer train xong (đó chính là điều bị cấm).
+      const workerUrl = buildInternalUrl(req, '/api/fsrs-optimizer/worker');
+      const authHeader = req.headers['authorization'];
+      runInBackground(() => fetch(workerUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
+        body: JSON.stringify({ jobId: job.id }),
+      }).then((r) => {
+        if (!r.ok) console.error(`[fsrs-optimizer] kích hoạt worker cho job #${job.id} trả HTTP ${r.status}`);
+      }));
+      logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'fsrs-optimizer', `Tạo optimizer job #${job.id} (queued)`);
     }
-    res.json({ ok: true, ...result });
+
+    res.status(202).json({ ok: true, job, alreadyRunning: !created });
   } catch (e) { fail(res, e); }
+});
+
+// POST worker: route NỘI BỘ — CHỈ được gọi bởi chính route /run ở trên (tự gọi ngược lại chính nó qua
+// HTTP, xem buildInternalUrl), KHÔNG phải endpoint dành cho trình duyệt gọi trực tiếp. Vẫn bắt buộc
+// requireAuth (forward NGUYÊN Authorization header của user từ /run) để: (1) không ai gọi được route
+// này mà không có 1 phiên đăng nhập hợp lệ, (2) claimQueuedJob() bên trong runOptimizerJob() chỉ khớp
+// ĐÚNG job thuộc VỀ user đó (jobId + user_id cùng khớp) — không thể vô tình/cố ý chạy job của người
+// khác dù có đoán được jobId. Trả 202 NGAY LẬP TỨC rồi mới chạy pipeline nặng ở nền qua waitUntil —
+// ĐÂY chính là "durable/background execution" thật sự (Phần "LỰA CHỌN IMPLEMENTATION — Phương án 2"):
+// invocation NÀY có đồng hồ maxDuration RIÊNG (xem vercel.json), hoàn toàn tách rời khỏi request mà
+// trình duyệt đang chờ (đã nhận response từ /run từ trước đó rồi).
+app.post('/api/fsrs-optimizer/worker', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const jobId = Number(req.body && req.body.jobId);
+  if (!Number.isFinite(jobId)) { res.status(400).json({ ok: false, error: 'Thiếu jobId hợp lệ' }); return; }
+  // Đăng ký việc chạy nền TRƯỚC khi trả response — đảm bảo waitUntil (bên trong runInBackground) giữ
+  // ĐÚNG invocation này sống tới khi runOptimizerJob() xong, không phụ thuộc thứ tự I/O của res.json().
+  runInBackground(() => fsrsOptimizer.runOptimizerJob(jobId, authed.username));
+  res.status(202).json({ ok: true, accepted: true, jobId });
 });
 
 // POST apply / rollback / reset: lỗi ở đây là lỗi NGHIỆP VỤ (vd bấm Apply khi chưa Run) — trả
