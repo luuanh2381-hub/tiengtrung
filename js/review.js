@@ -223,7 +223,9 @@ function rvFindExample(hz) {
 function rvPrepareCurrentCard() {
   if (!rvQueue.items.length) return;
   const w = rvQueue.items[0].word;
-  rvOptions = rvMakeOpts(w);
+  // V86: review LUÔN hỏi hz→nghĩa (RV_QUIZ_TYPE='hz2vi' — xem đầu file), nên field chấm đáp án
+  // luôn là 'vi'. Truyền THẲNG (không còn dựa ngầm vào biến qzType của quiz.js như trước V86).
+  rvOptions = rvMakeOpts(w, { answerField: 'vi', mode: 'text' });
   rvAnswerChanges = 0;
   rvPhase = 'question';
   rvLastAnswer = null;

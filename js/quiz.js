@@ -114,7 +114,12 @@ function qzRenderQ() {
     return;
   }
   const w = qzQueue.items[0];
-  const opts = rvMakeOpts(w); // V70: dùng chung bộ sinh nhiễu với "Hôm nay học" (pool = toàn bộ WORDS)
+  // V86: field chấm đáp án + mode Heavy Distractor phụ thuộc ĐÚNG hướng câu hỏi đang chọn (qzType)
+  // — 漢→Việt chấm theo nghĩa (vi), 2 hướng còn lại chấm theo Hán tự (hz); Âm→漢 coi như 'listening'
+  // vì đầu bài LÀ pinyin nên phải ưu tiên distractor gần âm đọc, không chỉ gần hình chữ.
+  const answerField = qzType === '漢→Việt' ? 'vi' : 'hz';
+  const mode = qzType === 'Âm→漢' ? 'listening' : 'text';
+  const opts = rvMakeOpts(w, { answerField, mode }); // dùng chung bộ sinh nhiễu Heavy Distractor với "Hôm nay học" (pool = toàn bộ WORDS) — xem js/distractor-engine.js
   let qHtml, optHtml;
   if (qzType === '漢→Việt') {
     qHtml = `<div class="fc-hz">${w.hz}</div>${showPinyin?`<div class="fc-py">${w.py}</div>`:''}${showHanViet && w.hanviet?`<div class="fc-hv">Hán Việt: ${w.hanviet}</div>`:''}`;
@@ -181,92 +186,9 @@ async function qzPick(btn, hz) {
   sqAdvance(qzQueue, isCorrectLocally); qzRenderQ();
 }
 
-// Nhóm từ theo chủ đề ngữ nghĩa (cùng phạm trù dễ gây nhầm lẫn khi học, dù chữ Hán không liên quan)
-const SEMANTIC_GROUPS = [
-  ['白','白色','黑','红','绿','蓝'],
-  ['东边','西边','南边','北边','里边','外边','上边','下边','前边','后边','左边','右边','中间','里'],
-  ['星期一','星期二','星期三','星期四','星期五','星期六','星期天','星期'],
-  ['爸爸','妈妈','哥哥','姐姐','弟弟','妹妹'],
-  ['一','二','三','四','五','六','七','八','九','十','百','千','万','零'],
-  ['人民币','美元','港币','日元','欧元'],
-  ['早上','上午','中午','下午','晚上','早','晚'],
-  ['今天','明天','昨天','今年','去年','明年','后年'],
-  ['中国','中文','英国','英文','美国','法国','法文','德国','德语','韩国','韩文','日本（国）','日文','俄国','俄文','西班牙语','西班牙文','阿拉伯语','日语','英语','法语','俄语','韩国语'],
-  ['个','位','本','张','支','辆','件','条','层','座','道','遍','片','斤','公斤','瓶','块'],
-];
-let _semanticMap = null;
-function getSemanticMap() {
-  if (_semanticMap) return _semanticMap;
-  _semanticMap = {};
-  SEMANTIC_GROUPS.forEach(g => {
-    g.forEach(h => {
-      if (!_semanticMap[h]) _semanticMap[h] = new Set();
-      g.forEach(h2 => { if (h2 !== h) _semanticMap[h].add(h2); });
-    });
-  });
-  return _semanticMap;
-}
-
-// Bản đồ tra nhanh: chữ Hán -> tập các chữ Hán "dễ nhầm" cùng nhóm (từ CONFUSE_GROUPS)
-let _confuseMap = null;
-function getConfuseMap() {
-  if (_confuseMap) return _confuseMap;
-  _confuseMap = {};
-  CONFUSE_GROUPS.forEach(g => {
-    const hzs = g.chars.map(c => c.hz);
-    hzs.forEach(h => {
-      if (!_confuseMap[h]) _confuseMap[h] = new Set();
-      hzs.forEach(h2 => { if (h2 !== h) _confuseMap[h].add(h2); });
-    });
-  });
-  return _confuseMap;
-}
-
-// Từ nối/hư từ tiếng Việt hay lặp lại trong bản dịch — bỏ qua để so khớp ngữ nghĩa chính xác hơn
-const VI_STOPWORDS = new Set(['và','là','có','của','một','rất','này','đó','với','hay','cũng','cần','cho','khi','ra','lên','xuống','trong','ngoài','trước','sau','gì','nào','thế','làm','đi','đến','ở','ạ','thì','còn','sẽ','đã','đang','bị','được','như','các','những','vì','nên','mà','nếu','nữa','chỉ','vẫn','phải','không','hoặc']);
-function viTokens(vi) {
-  return (vi || '').toLowerCase()
-    .replace(/[()]/g, '')
-    .split(/[,\/;]|\s+/)
-    .map(t => t.trim())
-    .filter(t => t.length > 1 && !VI_STOPWORDS.has(t));
-}
-
-// V67: dùng chung cho cả tab Trắc nghiệm (pool = getFilteredWords, theo đúng phạm vi bài user
-// đang chọn) và phiên Review/FSRS (pool = toàn bộ WORDS, vì 1 thẻ due có thể thuộc bài NGOÀI
-// phạm vi filter hiện tại — lesson-priority chỉ quyết định NEW word, không giới hạn distractors).
-function makeQuizOpts(w, pool) {
-  const all = pool;
-  const confuseSet = getConfuseMap()[w.hz];
-  const wTokens = viTokens(w.vi);
-  // Chấm điểm mức độ "dễ nhầm" của mỗi từ so với từ đang hỏi:
-  // 1) cùng nhóm dễ nhầm đã định nghĩa (hình dạng/âm giống nhau) > 2) trùng ký tự Hán
-  // > 3) trùng từ khoá trong nghĩa (ngữ nghĩa giống nhau) > 4) cùng phân loại/bài học > 5) độ dài giống nhau
-  const scored = all.filter(x => x.hz !== w.hz).map(x => {
-    let s = 0;
-    if (confuseSet && confuseSet.has(x.hz)) s += 12;
-    const semSet = getSemanticMap()[w.hz];
-    if (semSet && semSet.has(x.hz)) s += 8;
-    for (const c of w.hz) { if (x.hz.includes(c)) s += 3; }
-    const xTokens = viTokens(x.vi);
-    s += xTokens.filter(t => wTokens.includes(t)).length * 4;
-    if (w.cat && x.cat === w.cat) s += 3;
-    if (x.l === w.l) s += 1;
-    if (x.hz.length === w.hz.length) s += 0.5;
-    return {x, s};
-  });
-  scored.sort((a,b) => b.s - a.s);
-  // Các từ điểm rất cao (trùng nhóm dễ nhầm đã định nghĩa, hoặc trùng nhiều ký tự/nghĩa) luôn được ưu tiên chọn,
-  // phần còn lại mới xáo trộn ngẫu nhiên để câu hỏi không lặp lại y hệt mỗi lần
-  const mustInclude = scored.filter(p => p.s >= 8).slice(0, 3).map(p => p.x);
-  const restPool = scored.filter(p => p.s < 8).slice(0, 12).map(p => p.x);
-  let distractors = mustInclude.slice(0, 3);
-  if (distractors.length < 3) {
-    distractors = distractors.concat(shuffle(restPool).slice(0, 3 - distractors.length));
-  }
-  return shuffle([w, ...distractors]);
-}
-function rvMakeOpts(w) { return makeQuizOpts(w, WORDS.filter(x => isLoggedIn() || x.l <= GUEST_MAX_LESSON)); }
+// V86: bộ sinh nhiễu Heavy Distractor (SEMANTIC_GROUPS/getConfuseMap/viTokens/makeQuizOpts/
+// rvMakeOpts...) đã chuyển sang js/distractor-engine.js — dùng CHUNG cho Trắc nghiệm, Review
+// ("Hôm nay học") VÀ Nghe, thay vì chỉ Trắc nghiệm như trước.
 
 function qzRank(r) {
   if(r>=.9) return '🏆 Xuất sắc'; if(r>=.7) return '👍 Tốt'; if(r>=.5) return '📚 Cần ôn'; return '🔄 Học lại';

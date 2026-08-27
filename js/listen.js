@@ -84,7 +84,11 @@ function lsRenderQ() {
 function lsRenderWord(w) {
   const area = document.getElementById('ls-area');
   const pool = isLoggedIn() ? WORDS.filter(x=>x.hz!==w.hz) : getFilteredWords().filter(x=>x.hz!==w.hz);
-  const distractors = shuffle(pool).slice(0,3);
+  // V86: trước đây distractor Nghe hoàn toàn NGẪU NHIÊN (shuffle(pool).slice(0,3)) — giờ dùng
+  // Heavy Distractor Engine (js/distractor-engine.js), mode 'listening' ưu tiên NẶNG pinyin/thanh
+  // điệu gần nhau (đúng bản chất bài nghe: đầu bài là ÂM THANH, option hiển thị là Hán tự nên vẫn
+  // cần loại trừ trùng hz — answerField:'hz', không cần chặn trùng nghĩa).
+  const distractors = pickHeavyDistractors(w, pool, 3, { mode: 'listening', answerField: 'hz' });
   const opts = shuffle([w,...distractors]);
   const optHtml = opts.map(o=>`
     <button class="listen-opt" onclick="lsPickWord(this,'${o.hz}','${w.hz}')">${o.hz}${showPinyin?`<div style="font-size:.7rem;color:var(--muted)">${o.py}</div>`:''}${showHanViet && o.hanviet?`<div style="font-size:.68rem;color:var(--active-dark);font-weight:600">${o.hanviet}</div>`:''}</button>`).join('');
