@@ -285,4 +285,50 @@ KHÔNG có gói này nên chưa từng có fallback thật). KHÔNG dùng
 `installCommand` tự chuyển sang `npm ci` nếu đã có `package-lock.json` (chưa có sẵn trong repo vì
 môi trường sửa code này không có mạng để tự sinh — xem README ở `TROUBLESHOOTING-FSRS-OPTIMIZER.md`).
 
+### 11.2. Kiến trúc BẤT ĐỒNG BỘ (async job) cho "Run Optimizer" (V85)
+
+Trước V85, `POST /api/fsrs-optimizer/run` chạy HẾT pipeline (đọc `review_history` → validate → train
+→ evaluate → lưu candidate) trong 1 request HTTP duy nhất — nếu tổng thời gian vượt quá thời gian
+sống của request đó, Vercel SIGKILL cả process giữa chừng (ngoài khả năng try/catch của JS), DB kẹt
+ở `status=running`, UI đứng mãi ở "Đang chạy...".
+
+Từ V85, flow là:
+
+```
+POST /run  → tạo job (bảng fsrs_optimizer_jobs, status='queued') → trả 202 NGAY
+           → bắn 1 request HTTP TÁCH RỜI (self-fetch) tới POST /worker (KHÔNG đợi worker chạy xong)
+
+POST /worker → claim job (queued→running) → trả 202 NGAY cho CHÍNH request đó
+             → chạy runOptimizerJob() ở nền (waitUntil CỦA CHÍNH invocation này — KHÔNG kéo dài
+               invocation gốc mà trình duyệt gọi) → cập nhật stage/heartbeat/progress liên tục →
+               completed/failed
+
+GET /status → đọc job MỚI NHẤT (1 query theo index) + weights hiện tại — KHÔNG quét lại
+              review_history mỗi lần poll. Frontend (js/fsrs-optimizer.js) poll mỗi 2s trong lúc
+              modal mở và job queued/running, hiện đúng stage thật (Queued/Loading reviews/
+              Preparing data/Training/Evaluating/Saving/Completed/Failed).
+```
+
+Bảng mới `fsrs_optimizer_jobs` (xem `migrations/V85_fsrs_optimizer_async_jobs.sql` — tham khảo, schema
+thật tạo idempotent trong `ensureOptimizerTables()`): mỗi dòng là 1 lượt Run, có `status`/`stage`/
+`progress_current`/`progress_total`/`heartbeat_at`/`data_quality` (cache report+readiness)/
+`result_meta`/`error_message` (đầy đủ, chỉ admin)/`error_public` (an toàn cho user thường). Partial
+unique index `uq_fsrs_optimizer_jobs_active_per_user` (trên `user_id` where `status IN ('queued',
+'running')`) là khoá chống chạy song song THỰC THI Ở TẦNG DATABASE — không chỉ dựa vào app-layer.
+
+**Stale-job recovery**: `recoverStaleJobsForUser()` tự chuyển job `queued` quá 60s chưa được worker
+claim, hoặc `running` quá 180s không có heartbeat mới, thành `failed` (2 ngưỡng cấu hình được qua env
+`FSRS_OPTIMIZER_QUEUED_STALE_MS`/`FSRS_OPTIMIZER_RUNNING_STALE_MS`) — gọi ở đầu `createOptimizerJob()`
+và `getOptimizerStatus()`, nên user luôn thấy đúng trạng thái + nút "Thử lại" ngay lần poll kế tiếp,
+không cần biết job đã chết.
+
+**Giới hạn đã biết**: `computeParameters()` của binding chính thức là 1 lệnh gọi nguyên khối, không
+có API checkpoint giữa chừng — nếu 1 ngày nào đó dataset lớn tới mức pipeline vượt quá `maxDuration`
+của route `/worker` (đã nâng lên 300s trong `vercel.json`, mức mặc định của Vercel năm 2026), job sẽ
+tự chuyển `failed` (không kẹt UI) nhưng KHÔNG tự chia nhỏ thành nhiều invocation nối tiếp. Bước nâng
+cấp tự nhiên tiếp theo ở quy mô đó là Vercel Queues/Workflow (durable execution) — cần tự cấu hình
+trên Dashboard, ngoài phạm vi sửa lần này.
+
+`user_fsrs_weights.status`/`run_started_at`/`last_error` (V82) vẫn còn trong schema (backward-safe)
+nhưng KHÔNG còn được ghi nữa — `fsrs_optimizer_jobs` là nguồn sự thật duy nhất cho "đang chạy" từ V85.
 
