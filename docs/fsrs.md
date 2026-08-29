@@ -361,3 +361,15 @@ plan có thể clamp thấp hơn số khai trong `vercel.json`), `FSRS_OPTIMIZER
 `computeParameters()`, không tách nhỏ được CHÍNH lượt train — nếu riêng bước train tương lai vượt quá
 cả 1 ngân sách MỚI TINH, job vẫn kết thúc `failed` sau khi hết `max_attempts`. Ở quy mô đó, Vercel
 Queues/Workflow vẫn là bước nâng cấp tự nhiên tiếp theo.
+
+### 11.4. GET /status KHÔNG được đụng native optimizer (V87 — fix "Failed to fetch")
+
+`GET /api/fsrs-optimizer/status` từng gọi `loadOfficialOptimizer()` (require native binding) trên MỖI
+lần poll (mỗi ~2s) chỉ để hiển thị badge engine — nếu binary native crash process (ngoài khả năng
+try/catch của JS), browser nhận `Failed to fetch` thay vì response. V87 xoá hẳn lời gọi đó khỏi
+`getOptimizerStatus()` (trả cố định `optimizerEngineState:'UNKNOWN'`) và tách chẩn đoán engine THẬT
+sang `GET /api/fsrs-optimizer/diagnostics` (admin-only, `?probe=1` mới thật sự chạm native — KHÔNG được
+FE tự động gọi định kỳ). `GET /api/fsrs-optimizer/health` (không auth/DB/native) dùng để xác nhận
+routing/deployment sống độc lập với mọi lớp còn lại. Chi tiết root cause đầy đủ xem
+`AUDIT-REPORT-V87-FAILED-TO-FETCH.md`.
+
