@@ -77,6 +77,9 @@ const OPTIMIZER_STAGE_LABEL = {
   queued: '🕓 Trong hàng đợi...',
   loading_reviews: '📥 Đang tải lịch sử ôn tập...',
   preparing_data: '🧮 Đang kiểm tra chất lượng dữ liệu...',
+  // V86: checkpoint giữa 2 bước (Phần VI) — dữ liệu train đã chuẩn bị xong, đang chờ (hoặc vừa được
+  // kích hoạt lại) bước train — KHÔNG phải lỗi, chỉ là ranh giới giữa 2 invocation.
+  prepared: '🧮 Đã chuẩn bị xong dữ liệu, đang tiếp tục...',
   training: '🧠 Đang train (optimizer chính thức)...',
   evaluating: '📊 Đang đánh giá default vs cá nhân...',
   saving: '💾 Đang lưu kết quả...',
@@ -115,6 +118,13 @@ function renderOptimizerBody(s) {
   //     bất động cũ). Ẩn hẳn khối này khi job không active để không chiếm chỗ vô ích. ──
   if (isActive && s.job) {
     const stageLabel = OPTIMIZER_STAGE_LABEL[s.job.stage] || OPTIMIZER_STAGE_LABEL[isQueued ? 'queued' : 'loading_reviews'];
+    // V86 (Phần XV) — job đang được TỰ ĐỘNG THỬ LẠI (attempt>1, xem recoverStaleJobsForUser/
+    // failOrRequeue ở lib/fsrs/optimizer.js) vẫn ở status queued/running BÌNH THƯỜNG — KHÔNG BAO GIỜ
+    // hiện "thất bại"/"worker đã chết" trong lúc đang tự phục hồi. Chỉ thêm 1 dòng phụ cho biết.
+    const isRetrying = Number(s.job.attempt) > 1;
+    const retryNote = isRetrying
+      ? `<div style="color:var(--muted);font-size:.72rem;text-align:center;margin-top:2px;">🔁 Đang thử lại (lần ${s.job.attempt}/${s.job.maxAttempts || 3}) sau 1 sự cố hạ tầng tạm thời...</div>`
+      : '';
     const prog = s.job.progress;
     const progText = (prog && Number.isFinite(prog.current) && Number.isFinite(prog.total) && prog.total > 0)
       ? ` (${prog.current}/${prog.total})` : '';
@@ -125,6 +135,7 @@ function renderOptimizerBody(s) {
       <div style="height:8px;border-radius:6px;background:rgba(0,0,0,.08);overflow:hidden;">
         <div style="height:100%;border-radius:6px;background:var(--ok);transition:width .4s;width:${pct === null ? '35' : pct}%;${pct === null ? 'animation:optimizer-indeterminate 1.4s ease-in-out infinite;' : ''}"></div>
       </div>
+      ${retryNote}
       <div style="color:var(--muted);font-size:.68rem;text-align:center;margin-top:8px;">Bạn có thể đóng cửa sổ này — job vẫn tiếp tục chạy, mở lại để xem tiếp.</div>
     </div>
     <style>@keyframes optimizer-indeterminate{0%{margin-left:0%;}50%{margin-left:55%;}100%{margin-left:0%;}}</style>`;
