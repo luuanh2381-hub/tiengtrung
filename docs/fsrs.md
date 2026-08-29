@@ -332,3 +332,32 @@ trên Dashboard, ngoài phạm vi sửa lần này.
 `user_fsrs_weights.status`/`run_started_at`/`last_error` (V82) vẫn còn trong schema (backward-safe)
 nhưng KHÔNG còn được ghi nữa — `fsrs_optimizer_jobs` là nguồn sự thật duy nhất cho "đang chạy" từ V85.
 
+### 11.3. Checkpoint + retry có kiểm soát (V86) — hoàn thiện "Giới hạn đã biết" của mục 11.2
+
+V85 phát hiện ĐÚNG khi worker chết (heartbeat độc lập) nhưng không ngăn được việc nó chết nếu 1 lượt
+train cần nhiều wall-clock hơn `maxDuration` thật cho phép — đúng giới hạn đã tự nói thẳng ở cuối mục
+11.2. V86 hoàn thiện bước đó bằng 2 checkpoint (không cần Vercel Queues):
+
+```
+claim → load+validate+build items → CHECKPOINT stage='prepared' (lưu training_payload JSONB)
+      → còn đủ ngân sách AN TOÀN? có → train → evaluate → save → completed (dataset nhỏ/vừa: y hệt V85)
+                                  không → dừng sạch, báo continuation:true → api/index.js tự kích hoạt
+                                  NGAY 1 invocation /worker MỚI, claim lại thấy training_payload → nhảy
+                                  thẳng vào train với ngân sách MỚI TINH, không load/validate lại
+```
+
+Lỗi trong lúc train (kể cả timeout nội bộ của chính native call) được `classifyOptimizerError()` phân
+loại NGAY trong invocation (không đợi 180s poll mới phát hiện): RETRYABLE (hạ tầng/tạm thời, còn lượt
+`attempt < max_attempts`, mặc định 3) → requeue ngay, GIỮ `training_payload` để resume; NON_RETRYABLE
+(dữ liệu/deployment) hoặc hết lượt → `failed` hẳn, không lặp vô ích. Chi tiết đầy đủ + root cause xem
+`AUDIT-REPORT-V86-FSRS-OPTIMIZER-DURABILITY.md`.
+
+**Env var mới** (đều có mặc định an toàn, không bắt buộc set): `FSRS_OPTIMIZER_WORKER_BUDGET_MS`
+(mặc định 200000 — PHẢI nhỏ hơn `maxDuration` THẬT của deployment, tự kiểm tra Vercel Dashboard vì
+plan có thể clamp thấp hơn số khai trong `vercel.json`), `FSRS_OPTIMIZER_MIN_TRAIN_BUDGET_MS` (mặc
+định 60000 — ngân sách tối thiểu để DÁM bắt đầu train).
+
+**Giới hạn còn lại** (vẫn đúng tinh thần mục 11.2): checkpoint nằm NGOÀI lệnh gọi
+`computeParameters()`, không tách nhỏ được CHÍNH lượt train — nếu riêng bước train tương lai vượt quá
+cả 1 ngân sách MỚI TINH, job vẫn kết thúc `failed` sau khi hết `max_attempts`. Ở quy mô đó, Vercel
+Queues/Workflow vẫn là bước nâng cấp tự nhiên tiếp theo.
