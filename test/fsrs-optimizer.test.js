@@ -11,6 +11,7 @@
 // Chạy: npm run test:optimizer  (hoặc: node test/fsrs-optimizer.test.js)
 // ════════════════════════════════════════════════════
 const assert = require('assert');
+const fs = require('fs');
 const path = require('path');
 
 const fsrs = require(path.join(__dirname, '..', 'lib', 'fsrs'));
@@ -331,6 +332,123 @@ test('OPTIMIZER_MIN_TRAIN_BUDGET_MS có biên an toàn phía trên OPTIMIZER_COM
 test('OPTIMIZER_WORKER_BUDGET_MS < 300.000ms (maxDuration khai trong vercel.json) — để lại margin an toàn, không dùng sát nút', () => {
   assert.ok(optimizer.OPTIMIZER_WORKER_BUDGET_MS < 300_000);
   assert.ok(optimizer.OPTIMIZER_WORKER_BUDGET_MS > optimizer.OPTIMIZER_MIN_TRAIN_BUDGET_MS, 'ngân sách tổng phải lớn hơn mức tối thiểu cần riêng cho train, nếu không mọi lượt chạy đều fail ngay ở guard');
+});
+
+console.log('\n[V87 — "Failed to fetch" — GET /status/POST /run TUYỆT ĐỐI không được chạm native optimizer]');
+
+// Đọc thẳng SOURCE THẬT của lib/fsrs/optimizer.js + api/index.js (không phải copy/diễn giải lại) —
+// trích ĐÚNG thân 1 hàm bằng cách đếm độ sâu dấu ngoặc { } bắt đầu từ dòng khai báo, để chắc chắn
+// đang soát ĐÚNG phạm vi hàm đó (không lẫn hàm khác cùng tên một phần hay comment ở xa).
+const OPTIMIZER_SRC = fs.readFileSync(path.join(__dirname, '..', 'lib', 'fsrs', 'optimizer.js'), 'utf8');
+const API_SRC = fs.readFileSync(path.join(__dirname, '..', 'api', 'index.js'), 'utf8');
+function extractFunctionBody(src, declarationRegex) {
+  const m = declarationRegex.exec(src);
+  assert.ok(m, `Không tìm thấy khai báo khớp ${declarationRegex} trong source — có thể tên hàm đã đổi, cần cập nhật lại test này`);
+  // Tham số hàm có thể chứa destructuring ({ a, b } = {}) — PHẢI bỏ qua hết cặp ngoặc ĐƠN của danh
+  // sách tham số trước (đếm độ sâu dấu ngoặc đơn), rồi mới tìm dấu { đầu tiên SAU nó = thân hàm thật.
+  // (Bug đã tự bắt được: nếu tìm thẳng indexOf('{', ...) sẽ trúng dấu { của destructuring tham số,
+  // KHÔNG phải thân hàm — khiến test PASS giả vì "thân hàm" trích ra rỗng/sai, không kiểm tra gì cả.)
+  const parenStart = src.indexOf('(', m.index);
+  assert.ok(parenStart !== -1);
+  let pdepth = 0, j = parenStart;
+  for (; j < src.length; j++) {
+    if (src[j] === '(') pdepth++;
+    else if (src[j] === ')') { pdepth--; if (pdepth === 0) break; }
+  }
+  const startBrace = src.indexOf('{', j + 1);
+  assert.ok(startBrace !== -1);
+  let depth = 0, i = startBrace;
+  for (; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') { depth--; if (depth === 0) break; }
+  }
+  const body = src.slice(startBrace, i + 1);
+  assert.ok(body.length > 40, `Thân hàm trích ra quá ngắn (${body.length} ký tự) — extractFunctionBody() có thể vẫn đang bắt sai vị trí, cần soát lại`);
+  return body;
+}
+const DANGEROUS_PATTERN = /getOptimizerEngineStatus\s*\(|loadOfficialOptimizer\s*\(|require\(\s*['"]@open-spaced-repetition\/binding/;
+// Bỏ dòng comment // trước khi soát DANGEROUS_PATTERN — code THẬT ở các hàm dưới đây có nhiều comment
+// GIẢI THÍCH lý do KHÔNG còn gọi các hàm nguy hiểm này nữa (nhắc tên chúng trong lời văn), không phải
+// lời gọi thật — soát nguyên văn cả comment sẽ báo false positive (bug y hệt đã tự bắt được 1 lần ở
+// test khác trong dự án này — xem js/distractor-engine.js test "không tham chiếu FSRS").
+function stripLineComments(code) {
+  return code.split('\n').map((line) => line.replace(/\/\/.*$/, '')).join('\n');
+}
+
+test('getOptimizerStatus() — source KHÔNG chứa bất kỳ lời gọi nào tới getOptimizerEngineStatus()/loadOfficialOptimizer()/require(binding) (root cause "Failed to fetch" — Phần III)', () => {
+  const body = stripLineComments(extractFunctionBody(OPTIMIZER_SRC, /async function getOptimizerStatus\s*\(/));
+  assert.ok(!DANGEROUS_PATTERN.test(body), 'GET /status PHẢI hoàn toàn tách biệt khỏi native optimizer — 1 native crash không được phép làm chết cả status endpoint');
+});
+
+test('createOptimizerJob() (POST /run) — source KHÔNG chứa lời gọi native binding nào (Phần XI)', () => {
+  const body = stripLineComments(extractFunctionBody(OPTIMIZER_SRC, /async function createOptimizerJob\s*\(/));
+  assert.ok(!DANGEROUS_PATTERN.test(body), 'POST /run chỉ tạo job — không được load native optimizer trong request thread');
+});
+
+test('getOptimizerDiagnostics(): phần OUTSIDE khối "if (probe)" KHÔNG gọi loadOfficialOptimizer() — Tầng 1 (mặc định) phải an toàn tuyệt đối (Phần IV/V)', () => {
+  const body = stripLineComments(extractFunctionBody(OPTIMIZER_SRC, /function getOptimizerDiagnostics\s*\(/));
+  const probeIdx = body.indexOf('if (probe)');
+  assert.ok(probeIdx > 0, 'phải có nhánh if (probe) rõ ràng để tách Tầng 1/Tầng 2');
+  const beforeProbe = body.slice(0, probeIdx);
+  assert.ok(!/loadOfficialOptimizer\s*\(/.test(beforeProbe), 'Tầng 1 (probe=false, mặc định) không được đụng loadOfficialOptimizer() — chỉ require.resolve()/package.json thuần');
+  const probeBlock = body.slice(probeIdx);
+  assert.ok(/loadOfficialOptimizer\s*\(/.test(probeBlock), 'Tầng 2 (probe=true) PHẢI thật sự dùng loadOfficialOptimizer() — nếu không endpoint chẩn đoán này vô nghĩa');
+});
+
+test('api/index.js: route GET /health đăng ký TRƯỚC route /status, KHÔNG gọi requireAuth (Phần VI — health luôn phải sống, kể cả khi auth/DB/native đều chết)', () => {
+  const healthIdx = API_SRC.indexOf("app.get('/api/fsrs-optimizer/health'");
+  const statusIdx = API_SRC.indexOf("app.get('/api/fsrs-optimizer/status'");
+  assert.ok(healthIdx !== -1, 'route /health phải tồn tại');
+  assert.ok(healthIdx < statusIdx, '/health nên đăng ký trước /status (không bắt buộc về mặt Express routing, nhưng đúng thứ tự tường minh cho người đọc code)');
+  // Trích ĐÚNG thân callback của route /health bằng đếm độ sâu ngoặc { } (KHÔNG lấy nguyên văn bản tới
+  // route kế tiếp — đoạn đó còn dính cả comment giải thích của route /status ở NGAY SAU, sẽ báo sai).
+  const handlerArrowIdx = API_SRC.indexOf('=>', healthIdx);
+  const bodyOnly = (() => {
+    const braceStart = API_SRC.indexOf('{', handlerArrowIdx);
+    let depth = 0, i = braceStart;
+    for (; i < API_SRC.length; i++) {
+      if (API_SRC[i] === '{') depth++;
+      else if (API_SRC[i] === '}') { depth--; if (depth === 0) break; }
+    }
+    return stripLineComments(API_SRC.slice(braceStart, i + 1));
+  })();
+  assert.ok(!/requireAuth\s*\(/.test(bodyOnly), 'health endpoint không được yêu cầu đăng nhập');
+  assert.ok(!/getPool\s*\(|ensureOptimizerTables|\.query\s*\(/.test(bodyOnly), 'health endpoint không được đụng DB');
+  assert.ok(!DANGEROUS_PATTERN.test(bodyOnly), 'health endpoint không được đụng native optimizer');
+});
+
+test('api/index.js: route GET /diagnostics gọi requireAdmin() (Phần IV — "chỉ admin mới được gọi")', () => {
+  const diagIdx = API_SRC.indexOf("app.get('/api/fsrs-optimizer/diagnostics'");
+  assert.ok(diagIdx !== -1, 'route /diagnostics phải tồn tại');
+  const nextRouteIdx = API_SRC.indexOf('app.', diagIdx + 10);
+  const diagSrc = API_SRC.slice(diagIdx, nextRouteIdx > diagIdx ? nextRouteIdx : diagIdx + 2000);
+  assert.ok(/requireAdmin\s*\(/.test(diagSrc), 'route /diagnostics phải chặn non-admin bằng requireAdmin()');
+});
+
+test('getOptimizerDiagnostics({probe:false}) — chạy thật, không throw, không probe (Tầng 1 an toàn — chạy được ngay cả khi package @open-spaced-repetition/binding hoàn toàn không cài trong môi trường này)', () => {
+  const d = optimizer.getOptimizerDiagnostics({ probe: false });
+  assert.strictEqual(d.probed, false);
+  assert.strictEqual(d.available, null);
+  assert.strictEqual(typeof d.packageResolvable, 'boolean');
+  assert.ok(d.node && d.platform && d.arch, 'vẫn phải có thông tin runtime cơ bản (an toàn tuyệt đối, không cần native)');
+});
+
+test('getOptimizerDiagnostics({probe:true}) — chạy thật (Tầng 2), package chưa cài trong sandbox này → available=false + loadError RÕ RÀNG, KHÔNG throw (mô phỏng đúng "native unavailable" — Phần XVI)', () => {
+  const d = optimizer.getOptimizerDiagnostics({ probe: true });
+  assert.strictEqual(d.probed, true);
+  // Trong sandbox test này, package thật SỰ chưa được cài (không có mạng để npm install) — nếu môi
+  // trường thật của người chạy test CÓ cài package, available sẽ là true, cả 2 trường hợp đều hợp lệ
+  // (điều test này khẳng định là: KHÔNG THROW dù package thiếu, không phải khẳng định package thiếu).
+  assert.strictEqual(typeof d.available, 'boolean');
+  if (!d.available) assert.ok(d.loadError, 'khi unavailable phải có loadError giải thích rõ, không im lặng');
+});
+
+test('sanitizeEngineStatusForUser(): chỉ giữ available/engine/packageVersion, ẩn thông tin hệ thống chi tiết (Phần "ERROR SECURITY")', () => {
+  const raw = { available: true, engine: 'native', packageVersion: '0.5.0', nodeVersion: 'v22.0.0', platform: 'linux', arch: 'x64', glibcVersion: '2.35', nativeBinary: '@open-spaced-repetition/binding-linux-x64-gnu', error: null };
+  const sanitized = optimizer.sanitizeEngineStatusForUser(raw);
+  assert.deepStrictEqual(sanitized, { available: true, engine: 'native', packageVersion: '0.5.0' });
+  assert.strictEqual(sanitized.nodeVersion, undefined);
+  assert.strictEqual(sanitized.nativeBinary, undefined);
 });
 
 console.log('\n[lib/fsrs/optimizer.js — trainWithOfficialOptimizer() (Phần 3/21 — KHÔNG fallback tự viết optimizer)]');

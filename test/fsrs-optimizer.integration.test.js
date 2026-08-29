@@ -409,6 +409,39 @@ async function main() {
     }
 
     console.log('\n════════════════════════════════════════════════════');
+    console.log('\n[V87 (Postgres thật) — GET /status vẫn trả JSON hợp lệ, KHÔNG throw, KHÔNG chạm native optimizer, dù package @open-spaced-repetition/binding có cài được trên máy chạy test hay không]');
+    // Đây là bản THỰC THI ĐẦY ĐỦ (có DB thật) của Test bắt buộc ở Phần XVI — khác bản trong
+    // test/fsrs-optimizer.test.js (chỉ kiểm tra TĨNH source text, không cần Postgres). Ở đây gọi
+    // getOptimizerStatus() THẬT, với DB THẬT, để chứng minh toàn bộ đường đi thật sự không throw dù
+    // môi trường chạy test này có/không có native binding — vì bản thân hàm KHÔNG CÒN đụng tới nó nữa.
+    let bindingInstalledForStatusTest = true;
+    try { require('@open-spaced-repetition/binding'); } catch { bindingInstalledForStatusTest = false; }
+    console.log(`     ℹ️  Package @open-spaced-repetition/binding ${bindingInstalledForStatusTest ? 'ĐÃ' : 'CHƯA'} cài trên máy chạy test này — cả 2 trường hợp GET /status đều PHẢI trả JSON hợp lệ như nhau.`);
+
+    const statusForUser = await optimizer.getOptimizerStatus(TEST_USER, { isAdmin: false });
+    assert.ok(statusForUser && typeof statusForUser === 'object', 'getOptimizerStatus() phải trả về 1 object, không throw');
+    assert.strictEqual(statusForUser.optimizerEngineState, 'UNKNOWN', "Phần III — mặc định PHẢI là 'UNKNOWN' vì /status không còn tự thăm dò native nữa");
+    assert.strictEqual(statusForUser.bindingAvailable, null, "Phần III — bindingAvailable PHẢI null (không phải true/false — true/false ngụ ý ĐÃ thăm dò, điều KHÔNG được xảy ra ở đây)");
+    assert.strictEqual(typeof statusForUser.bindingVersion, 'string', 'bindingVersion (đọc package.json thuần — an toàn) vẫn nên có nếu package đã cài; ít nhất không throw');
+    // Phải serialize được thành JSON sạch (đúng những gì GET /status thật sự trả cho browser qua res.json())
+    assert.doesNotThrow(() => JSON.stringify(statusForUser), 'kết quả phải serialize JSON được — đúng cái browser sẽ nhận qua fetch().json()');
+    console.log('  ✅ GET /status (qua getOptimizerStatus() thật, DB thật) trả JSON hợp lệ, optimizerEngineState=UNKNOWN, bindingAvailable=null — không còn phụ thuộc native (Test bắt buộc Phần XVI)');
+
+    const statusForAdmin = await optimizer.getOptimizerStatus(TEST_USER, { isAdmin: true });
+    assert.strictEqual(statusForAdmin.optimizerEngineState, 'UNKNOWN');
+    assert.strictEqual(statusForAdmin.engineStatus, undefined, "Field 'engineStatus' cũ (V85) đã bị xoá hẳn khỏi response — không còn field nào chứa dữ liệu lấy từ native probe trong /status nữa, kể cả cho admin");
+    console.log('  ✅ Admin gọi GET /status cũng KHÔNG kích hoạt native probe (field engineStatus cũ đã xoá hẳn, không chỉ ẩn)');
+
+    console.log('\n[Test J (V87) — getOptimizerDiagnostics() Tầng 1 (mặc định) vs Tầng 2 (probe=true) — Postgres KHÔNG liên quan (hàm này không đụng DB), chạy lại ở đây để xác nhận nhất quán với bản pure-JS]');
+    const diagSafe = optimizer.getOptimizerDiagnostics({ probe: false });
+    assert.strictEqual(diagSafe.probed, false);
+    assert.strictEqual(diagSafe.available, null);
+    const diagProbed = optimizer.getOptimizerDiagnostics({ probe: true });
+    assert.strictEqual(diagProbed.probed, true);
+    assert.strictEqual(diagProbed.available, bindingInstalledForStatusTest, 'kết quả probe=true phải khớp ĐÚNG với thực tế package có cài được hay không trên máy này');
+    console.log(`  ✅ getOptimizerDiagnostics: Tầng 1 an toàn (probed=false), Tầng 2 phản ánh đúng thực tế (available=${diagProbed.available})`);
+
+    console.log('════════════════════════════════════════════════════');
     console.log('Tất cả integration test (FSRS Personal Optimizer) PASS');
     console.log('════════════════════════════════════════════════════');
   } finally {
