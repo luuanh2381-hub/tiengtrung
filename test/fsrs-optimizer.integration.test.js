@@ -142,8 +142,11 @@ async function main() {
     console.log('  ✅ 2 lượt tạo job gần như đồng thời → chỉ 1 job thật, lượt kia idempotent trả lại job đã có (Test bắt buộc #4)');
 
     console.log('\n[Job — stale (queued quá lâu, worker không bao giờ claim) → tự chuyển failed, KHÔNG kẹt mãi (Phần "FAILURE HANDLING")]');
+    // V86: attempt = max_attempts mô phỏng "đã hết lượt retry" — giữ ĐÚNG mục đích gốc của test này
+    // (kiểm tra trạng thái CUỐI CÙNG là failed, không kẹt mãi). Hành vi MỚI "còn lượt thì requeue
+    // trước khi failed hẳn" được test RIÊNG ở Test F/G bên dưới, không lẫn vào đây.
     await pool.query(
-      `UPDATE fsrs_optimizer_jobs SET created_at = now() - interval '10 minutes', heartbeat_at = now() - interval '10 minutes' WHERE id = $1`,
+      `UPDATE fsrs_optimizer_jobs SET created_at = now() - interval '10 minutes', heartbeat_at = now() - interval '10 minutes', attempt = max_attempts WHERE id = $1`,
       [jobA.job.id]
     );
     const statusAfterStale = await optimizer.getOptimizerStatus(TEST_USER);
@@ -181,7 +184,9 @@ async function main() {
     console.log('\n[Test C — Worker "chết" thật (running, hết heartbeat lâu, KHÔNG có tick độc lập nào cứu) → stale recovery tự chuyển failed]');
     const jobC = await optimizer.createOptimizerJob(TEST_USER, { desiredRetention: 0.9 });
     await optimizer.claimQueuedJob(jobC.job.id, TEST_USER);
-    await pool.query(`UPDATE fsrs_optimizer_jobs SET heartbeat_at = now() - interval '4 minutes' WHERE id = $1`, [jobC.job.id]); // > 180s mặc định, KHÔNG có updateJobHeartbeat() nào chạy tiếp sau đó — đúng mô phỏng "worker chết thật"
+    // V86: attempt = max_attempts — test này kiểm tra trạng thái CUỐI CÙNG (đã hết lượt retry), giống
+    // ghi chú ở test "stale (queued quá lâu)" phía trên. Test F/G bên dưới kiểm tra riêng nhánh requeue.
+    await pool.query(`UPDATE fsrs_optimizer_jobs SET heartbeat_at = now() - interval '4 minutes', attempt = max_attempts WHERE id = $1`, [jobC.job.id]); // > 180s mặc định, KHÔNG có updateJobHeartbeat() nào chạy tiếp sau đó — đúng mô phỏng "worker chết thật"
     const statusAfterDead = await optimizer.getOptimizerStatus(TEST_USER);
     assert.strictEqual(statusAfterDead.job.status, 'failed', 'Job "running" mất heartbeat > OPTIMIZER_RUNNING_STALE_MS, không có tick độc lập nào cứu → PHẢI tự chuyển failed (Test bắt buộc C)');
     assert.ok(statusAfterDead.lastError, 'Job "chết" phải có lastError (câu thông báo an toàn cho user)');
@@ -193,7 +198,9 @@ async function main() {
     // Stale recovery chạy TRƯỚC (vd do 1 lần poll status() của user) và phát hiện heartbeat quá cũ —
     // đánh dấu failed — TRONG KHI Worker A thật ra vẫn đang chạy và sắp hoàn tất (đúng race condition
     // nêu trong báo cáo: "Worker A = running → stale recovery đánh failed → Worker A sau đó hoàn thành").
-    await pool.query(`UPDATE fsrs_optimizer_jobs SET heartbeat_at = now() - interval '10 minutes', started_at = now() - interval '10 minutes' WHERE id = $1`, [jobD.job.id]);
+    // V86: attempt = max_attempts để chắc chắn rơi vào nhánh failed HẲN (không phải requeue) — test
+    // này kiểm tra race condition SAU KHI đã failed, không phải nhánh requeue (test riêng ở Test F/G).
+    await pool.query(`UPDATE fsrs_optimizer_jobs SET heartbeat_at = now() - interval '10 minutes', started_at = now() - interval '10 minutes', attempt = max_attempts WHERE id = $1`, [jobD.job.id]);
     await optimizer.recoverStaleJobsForUser(pool, TEST_USER);
     let jobDStatus = await pool.query('SELECT status FROM fsrs_optimizer_jobs WHERE id = $1', [jobD.job.id]);
     assert.strictEqual(jobDStatus.rows[0].status, 'failed', '(setup) job phải đã bị stale recovery đánh failed TRƯỚC bước Worker A "hoàn tất" bên dưới');
@@ -226,6 +233,62 @@ async function main() {
     assert.strictEqual(afterLateTouch.rows[0].status, 'completed', 'Job PHẢI giữ nguyên "completed" — lời gọi finishJob(\'failed\') trễ KHÔNG được phép lật lại (Test bắt buộc E)');
     assert.strictEqual(afterLateTouch.rows[0].heartbeat_at.getTime(), beforeLateTouch.rows[0].heartbeat_at.getTime(), 'updateJobHeartbeat() gọi TRỄ sau khi job đã completed PHẢI là no-op hoàn toàn — heartbeat_at không đổi (Test bắt buộc E)');
     console.log('  ✅ Job completed → mọi lời gọi heartbeat/finishJob TRỄ sau đó đều là no-op, không "hồi sinh" job (Test bắt buộc E)');
+
+    // ════════════════════════════════════════════════════
+    // V86 — ADDENDUM: "TEST TỐI THIỂU" F/G/H — retry có kiểm soát + resume qua checkpoint. Đây chính
+    // là phần MỚI so với V85 (V85 chỉ phát hiện worker chết; V86 còn tự requeue-và-resume trước khi
+    // failed hẳn — xem AUDIT-REPORT-V86-FSRS-OPTIMIZER-DURABILITY.md).
+    // ════════════════════════════════════════════════════
+
+    console.log('\n[Test F (V86) — Job "running" mất heartbeat NHƯNG còn lượt retry (attempt < max_attempts) → REQUEUE (không failed hẳn), attempt tăng, GIỮ training_payload để resume]');
+    const jobF = await optimizer.createOptimizerJob(TEST_USER, { desiredRetention: 0.9 });
+    await optimizer.claimQueuedJob(jobF.job.id, TEST_USER);
+    const fakePayload = { train: [{ cardId: 'x', reviews: [{ rating: 3, deltaT: 0 }] }], validation: [], report: { validReviews: 999 }, retention: 0.9, defaultWeights: new Array(21).fill(0.1) };
+    await optimizer.persistTrainingPayload(jobF.job.id, fakePayload); // mô phỏng đã qua checkpoint 'prepared'
+    await pool.query(`UPDATE fsrs_optimizer_jobs SET heartbeat_at = now() - interval '4 minutes' WHERE id = $1`, [jobF.job.id]); // stale, KHÔNG có tick nào cứu — nhưng attempt=1 < max_attempts=3 mặc định
+    const statusAfterRequeue = await optimizer.getOptimizerStatus(TEST_USER); // gọi getOptimizerStatus() sẽ tự chạy recoverStaleJobsForUser() bên trong
+    assert.strictEqual(statusAfterRequeue.job.status, 'queued', 'Còn lượt retry (attempt 1 < max_attempts 3) → PHẢI requeue, KHÔNG được failed hẳn ngay (khác V85: V85 luôn failed ngay ở lần stale đầu tiên; V86 chỉ failed hẳn khi HẾT lượt — xem Test G)');
+    assert.strictEqual(statusAfterRequeue.job.attempt, 2, 'attempt phải tăng từ 1 lên 2 sau khi requeue');
+    const rowAfterRequeue = await pool.query('SELECT stage, training_payload FROM fsrs_optimizer_jobs WHERE id = $1', [jobF.job.id]);
+    assert.strictEqual(rowAfterRequeue.rows[0].stage, 'prepared', "Requeue phải GIỮ stage='prepared' (không lùi về 'queued' trơn) vì đã có training_payload — worker mới claim lại sẽ nhảy thẳng vào train, không load/validate lại (Phần VI)");
+    assert.ok(rowAfterRequeue.rows[0].training_payload, 'training_payload PHẢI được giữ nguyên qua lượt requeue để resume được (Phần VI)');
+    console.log('  ✅ Stale nhưng còn lượt retry → requeue (không failed), attempt tăng, GIỮ checkpoint để resume');
+
+    // Claim lại (mô phỏng invocation MỚI tự kích hoạt qua triggerOptimizerWorker ở api/index.js) →
+    // PHẢI nhảy thẳng vào 'prepared', KHÔNG phải 'loading_reviews' — đây CHÍNH LÀ cốt lõi của fix V86
+    // (invocation mới không phải load/validate lại từ đầu, dành trọn ngân sách mới cho phần train).
+    const reclaimedF = await optimizer.claimQueuedJob(jobF.job.id, TEST_USER);
+    assert.strictEqual(reclaimedF.stage, 'prepared', "claimQueuedJob() PHẢI thấy training_payload và claim thẳng vào stage='prepared' — không load/validate lại từ đầu");
+    assert.ok(reclaimedF.training_payload, 'Row vừa claim lại vẫn còn training_payload để runOptimizerJob() đọc và resume');
+    console.log('  ✅ Claim lại job vừa requeue → nhảy thẳng \'prepared\', training_payload còn nguyên để resume (cốt lõi của fix V86)');
+    await optimizer.finishJob(jobF.job.id, { status: 'completed', stage: 'completed' }); // dọn
+
+    console.log('\n[Test G (V86) — Job stale ĐÃ HẾT lượt retry (attempt >= max_attempts) → failed HẲN (không requeue thêm lần nào nữa, không lặp vô hạn — Phần IX)]');
+    const jobG = await optimizer.createOptimizerJob(TEST_USER, { desiredRetention: 0.9 });
+    await optimizer.claimQueuedJob(jobG.job.id, TEST_USER);
+    await pool.query(`UPDATE fsrs_optimizer_jobs SET heartbeat_at = now() - interval '4 minutes', attempt = max_attempts WHERE id = $1`, [jobG.job.id]); // đã dùng hết lượt
+    const statusAfterExhausted = await optimizer.getOptimizerStatus(TEST_USER);
+    assert.strictEqual(statusAfterExhausted.job.status, 'failed', 'Hết lượt retry (attempt >= max_attempts) → PHẢI failed HẲN, không requeue thêm (Phần IX — "không retry vô hạn")');
+    assert.ok(statusAfterExhausted.lastError && /thử lại tối đa/.test(statusAfterExhausted.lastError), 'Thông báo lỗi phải nói rõ đã thử lại tối đa (khác thông báo lần fail thường)');
+    console.log('  ✅ Hết lượt retry → failed hẳn, thông báo rõ ràng đã thử tối đa (Phần IX)');
+
+    console.log('\n[Test H (V86) — finishJob() với errorRetryable=false (mô phỏng lỗi NON_RETRYABLE mà failOrRequeue() sẽ tạo ra) → failed NGAY từ attempt 1, KHÔNG tự tăng attempt/requeue]');
+    // Lưu ý: đây kiểm tra ĐÚNG những gì failOrRequeue() sẽ LÀM khi classifyOptimizerError() trả về
+    // NON_RETRYABLE (gọi finishJob trực tiếp, không requeue) — bản thân classifyOptimizerError() đã
+    // có bộ test thuần JS riêng, đầy đủ, không cần Postgres (xem test/fsrs-optimizer.test.js).
+    const jobH = await optimizer.createOptimizerJob(TEST_USER, { desiredRetention: 0.9 });
+    await optimizer.claimQueuedJob(jobH.job.id, TEST_USER);
+    const nonRetryableFail = await optimizer.finishJob(jobH.job.id, {
+      status: 'failed', stage: 'failed',
+      errorMessage: 'Optimizer chính thức trả về weights không hợp lệ (cần đúng 21 số hữu hạn). Nhận được: [NaN,...]',
+      errorPublic: 'Optimizer thất bại. Vui lòng thử lại.', errorRetryable: false,
+    });
+    assert.strictEqual(nonRetryableFail, true);
+    const statusAfterNonRetryable = await optimizer.getOptimizerStatus(TEST_USER);
+    assert.strictEqual(statusAfterNonRetryable.job.status, 'failed');
+    assert.strictEqual(statusAfterNonRetryable.job.attempt, 1, 'Lỗi NON_RETRYABLE → job kết thúc NGAY ở attempt 1, KHÔNG bị tự động tăng attempt/requeue như lỗi hạ tầng (Test F) — failOrRequeue() chỉ requeue khi classification=RETRYABLE');
+    assert.strictEqual(statusAfterNonRetryable.job.errorRetryable, false, 'errorRetryable=false PHẢI được lưu đúng và trả lại qua getOptimizerStatus() — đây là metadata phân loại (không phải nội dung lỗi chi tiết) nên KHÔNG cần ẩn khỏi user thường, khác với errorMessage/workerId (Phần ERROR SECURITY chỉ áp dụng cho nội dung lỗi kỹ thuật chi tiết)');
+    console.log('  ✅ NON_RETRYABLE fail ngay từ attempt 1, không bị requeue lãng phí (Phần IX)');
 
     await pool.query(`DELETE FROM fsrs_optimizer_jobs WHERE user_id = $1`, [TEST_USER]); // dọn trước khi test full pipeline
 
@@ -303,6 +366,12 @@ async function main() {
       const optimizerWithTinyTimeout = require(optimizerModulePath);
       try {
         const jobTimeout = await optimizerWithTinyTimeout.createOptimizerJob(TEST_USER, { desiredRetention: 0.9 });
+        // V86: timeout compute nội bộ giờ được classifyOptimizerError() coi là RETRYABLE (có thể chỉ
+        // do tải hệ thống — xem lib/fsrs/optimizer.js) → failOrRequeue() sẽ REQUEUE trước, không failed
+        // ngay ở lần đầu như V85. Test B gốc chỉ muốn kiểm tra "timeout → kết thúc sạch, không kẹt
+        // running" — ép max_attempts=1 để giữ ĐÚNG ý nghĩa gốc (timeout đầu tiên = hết lượt luôn).
+        // Hành vi retry-trước-khi-fail được test riêng, đầy đủ, ở Test F/G phía trên.
+        await pool.query('UPDATE fsrs_optimizer_jobs SET max_attempts = 1 WHERE id = $1', [jobTimeout.job.id]);
         await optimizerWithTinyTimeout.runOptimizerJob(jobTimeout.job.id, TEST_USER);
         const statusAfterTimeout = await optimizerWithTinyTimeout.getOptimizerStatus(TEST_USER);
         assert.strictEqual(statusAfterTimeout.job.status, 'failed', 'timeout cực nhỏ (1ms) → computeParameters() PHẢI bị timeout → job "failed", KHÔNG kẹt "running" (Test bắt buộc B)');
@@ -311,6 +380,25 @@ async function main() {
         const candidateAfterTimeout = await pool.query('SELECT candidate_trained_at FROM user_fsrs_weights WHERE user_id = $1', [TEST_USER]);
         assert.deepStrictEqual(candidateAfterTimeout.rows[0], candidateBeforeTimeout.rows[0], 'Optimizer fail/timeout → candidate_weights cũ (từ lần chạy thành công trước đó) PHẢI giữ nguyên, KHÔNG bị đè bởi lần chạy fail (Test bắt buộc F)');
         console.log('  ✅ Timeout thật (FSRS_OPTIMIZER_TIMEOUT_MS=1) → job "failed" đúng kỳ vọng, active/candidate weights không đổi (Test bắt buộc B/F)');
+
+        console.log('\n[Test I (V86) — ĐÚNG kịch bản "computeParameters() liên tục chậm hơn ngân sách": timeout THẬT lặp lại nhiều lần → tự requeue-và-thử-lại TỰ ĐỘNG, cuối cùng failed hẳn khi hết max_attempts, KHÔNG kẹt vô hạn]');
+        const jobRetryLoop = await optimizerWithTinyTimeout.createOptimizerJob(TEST_USER, { desiredRetention: 0.9 });
+        assert.strictEqual(jobRetryLoop.job.attempt, 1);
+        const maxAttemptsForLoop = jobRetryLoop.job.maxAttempts || 3;
+        let lastLoopStatus = null;
+        for (let i = 0; i < maxAttemptsForLoop + 1; i++) {
+          // Mô phỏng ĐÚNG cơ chế thật: mỗi "lượt" ở đây tương ứng 1 invocation /worker MỚI tự kích
+          // hoạt lại (api/index.js:triggerOptimizerWorker) sau khi lượt trước bị failOrRequeue()
+          // requeue — ở integration test này gọi trực tiếp runOptimizerJob() lặp lại, KHÔNG qua HTTP
+          // (giống toàn bộ file test này, không có server thật chạy).
+          await optimizerWithTinyTimeout.runOptimizerJob(jobRetryLoop.job.id, TEST_USER);
+          lastLoopStatus = await optimizerWithTinyTimeout.getOptimizerStatus(TEST_USER);
+          if (lastLoopStatus.job.status === 'failed') break;
+          assert.strictEqual(lastLoopStatus.job.status, 'queued', `Lượt ${i + 1}: timeout RETRYABLE, còn lượt → phải 'queued' (chờ claim lại), không phải trạng thái nào khác`);
+        }
+        assert.strictEqual(lastLoopStatus.job.status, 'failed', `Sau tối đa ${maxAttemptsForLoop + 1} lượt gọi runOptimizerJob(), job PHẢI kết thúc 'failed' HẲN — KHÔNG được lặp vô hạn (Phần IX "không retry vô hạn", đây chính là kịch bản "computeParameters() liên tục chậm/timeout" mà yêu cầu audit đặc biệt nhấn mạnh phải có test)`);
+        assert.ok(lastLoopStatus.job.attempt >= maxAttemptsForLoop, `attempt cuối (${lastLoopStatus.job.attempt}) phải >= max_attempts (${maxAttemptsForLoop}) — chứng minh ĐÃ thử lại đủ số lần trước khi bỏ cuộc, không fail oan ở lần đầu`);
+        console.log(`  ✅ computeParameters() timeout lặp lại ${maxAttemptsForLoop} lần → tự động requeue-và-thử-lại mỗi lần, CUỐI CÙNG failed hẳn đúng lúc hết lượt — không kẹt vô hạn, không fail oan quá sớm (Test bắt buộc: mô phỏng compute chậm hơn ngân sách)`);
       } finally {
         if (prevTimeoutEnv === undefined) delete process.env.FSRS_OPTIMIZER_TIMEOUT_MS;
         else process.env.FSRS_OPTIMIZER_TIMEOUT_MS = prevTimeoutEnv;

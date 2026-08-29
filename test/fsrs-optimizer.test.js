@@ -258,6 +258,81 @@ test('OptimizerDependencyError là 1 loại Error hợp lệ (để caller phân
   assert.ok(e instanceof Error);
 });
 
+console.log('\n[V86 — classifyOptimizerError()/mapJobRow() — Phần IX "RETRY" + Phần III "STATE MACHINE", thuần JS không cần Postgres]');
+
+test('classifyOptimizerError(): timeout compute nội bộ ("timeout cấu hình=...") → RETRYABLE (hạ tầng/tải hệ thống, không phải dữ liệu sai)', () => {
+  const e = new optimizer.OptimizerDependencyError('Optimizer chính thức chạy lỗi khi train (engine=native, sau 45.2s, timeout cấu hình=45000ms): timed out');
+  assert.strictEqual(optimizer.classifyOptimizerError(e), 'RETRYABLE');
+});
+
+test('classifyOptimizerError(): "KHÔNG load được trên môi trường" → NON_RETRYABLE (lỗi deployment, retry sẽ luôn lỗi y hệt)', () => {
+  const e = new optimizer.OptimizerDependencyError('Optimizer chính thức "@open-spaced-repetition/binding" KHÔNG load được trên môi trường hiện tại (node=v20 platform=linux arch=x64). Lỗi gốc: Cannot find module');
+  assert.strictEqual(optimizer.classifyOptimizerError(e), 'NON_RETRYABLE');
+});
+
+test('classifyOptimizerError(): "trả về weights không hợp lệ" → NON_RETRYABLE (deterministic với cùng dữ liệu, retry vô ích)', () => {
+  const e = new optimizer.OptimizerDependencyError('Optimizer chính thức trả về weights không hợp lệ (cần đúng 21 số hữu hạn). Nhận được: [NaN,...]');
+  assert.strictEqual(optimizer.classifyOptimizerError(e), 'NON_RETRYABLE');
+});
+
+test('classifyOptimizerError(): lỗi kết nối Postgres điển hình (ECONNREFUSED/Connection terminated) → RETRYABLE', () => {
+  assert.strictEqual(optimizer.classifyOptimizerError(new Error('connect ECONNREFUSED 127.0.0.1:5432')), 'RETRYABLE');
+  assert.strictEqual(optimizer.classifyOptimizerError(new Error('Connection terminated unexpectedly')), 'RETRYABLE');
+});
+
+test('classifyOptimizerError(): OPTIMIZER_WORKER_BUDGET_EXCEEDED (guard tự áp trước khi train) → RETRYABLE', () => {
+  const e = new optimizer.OptimizerDependencyError('OPTIMIZER_WORKER_BUDGET_EXCEEDED: ngân sách nhỏ hơn mức tối thiểu cần cho train...');
+  assert.strictEqual(optimizer.classifyOptimizerError(e), 'RETRYABLE');
+});
+
+test('classifyOptimizerError(): lỗi lập trình lạ/không rõ nguyên nhân → mặc định NON_RETRYABLE (an toàn hơn là lặp vô ích)', () => {
+  const e = new TypeError("Cannot read properties of undefined (reading 'foo')");
+  assert.strictEqual(optimizer.classifyOptimizerError(e), 'NON_RETRYABLE');
+});
+
+test('mapJobRow(): user thường KHÔNG thấy errorMessage/workerId — chỉ admin (Phần ERROR SECURITY, vẫn giữ nguyên nguyên tắc V85)', () => {
+  const row = {
+    id: 42, status: 'failed', stage: 'failed', attempt: 2, max_attempts: 3, error_retryable: false,
+    error_message: 'stack trace nội bộ nhạy cảm — KHÔNG được lộ ra user thường',
+    error_public: 'Optimizer thất bại. Vui lòng thử lại.', worker_id: 'worker-abc-123',
+  };
+  const forUser = optimizer.mapJobRow(row, { isAdmin: false });
+  assert.strictEqual(forUser.errorMessage, undefined);
+  assert.strictEqual(forUser.workerId, undefined);
+  assert.strictEqual(forUser.errorPublic, 'Optimizer thất bại. Vui lòng thử lại.');
+  const forAdmin = optimizer.mapJobRow(row, { isAdmin: true });
+  assert.strictEqual(forAdmin.errorMessage, row.error_message);
+  assert.strictEqual(forAdmin.workerId, 'worker-abc-123');
+});
+
+test('mapJobRow(): attempt/maxAttempts được trả cho FE (Phần XV — để hiện "Đang thử lại...")', () => {
+  const mapped = optimizer.mapJobRow({ id: 1, status: 'running', stage: 'prepared', attempt: 2, max_attempts: 3 }, {});
+  assert.strictEqual(mapped.attempt, 2);
+  assert.strictEqual(mapped.maxAttempts, 3);
+});
+
+test('mapJobRow(): cột attempt/max_attempts NULL (dòng job cũ trước khi có migration V86) → fallback 1/3, không throw', () => {
+  const mapped = optimizer.mapJobRow({ id: 1, status: 'completed', stage: 'completed', attempt: null, max_attempts: null }, {});
+  assert.strictEqual(mapped.attempt, 1);
+  assert.strictEqual(mapped.maxAttempts, 3);
+});
+
+test('mapJobRow(null) → null, không throw', () => {
+  assert.strictEqual(optimizer.mapJobRow(null), null);
+});
+
+test('OPTIMIZER_MIN_TRAIN_BUDGET_MS có biên an toàn phía trên OPTIMIZER_COMPUTE_TIMEOUT_MS mặc định (Phần VIII — mỗi timeout phải có lý do, không phải số tuỳ tiện)', () => {
+  // 45s (timeout compute mặc định) + margin cho evaluate/save — xem comment tại khai báo hằng số này
+  // trong lib/fsrs/optimizer.js. Test này CHỈ xác nhận quan hệ giữa 2 hằng số, không hard-code lại
+  // số cụ thể (để không vỡ nếu sau này chỉnh OPTIMIZER_COMPUTE_TIMEOUT_MS qua biến môi trường).
+  assert.ok(optimizer.OPTIMIZER_MIN_TRAIN_BUDGET_MS >= 45_000, 'phải đủ chỗ cho ít nhất 1 lượt compute-timeout mặc định (45s) trọn vẹn');
+});
+
+test('OPTIMIZER_WORKER_BUDGET_MS < 300.000ms (maxDuration khai trong vercel.json) — để lại margin an toàn, không dùng sát nút', () => {
+  assert.ok(optimizer.OPTIMIZER_WORKER_BUDGET_MS < 300_000);
+  assert.ok(optimizer.OPTIMIZER_WORKER_BUDGET_MS > optimizer.OPTIMIZER_MIN_TRAIN_BUDGET_MS, 'ngân sách tổng phải lớn hơn mức tối thiểu cần riêng cho train, nếu không mọi lượt chạy đều fail ngay ở guard');
+});
+
 console.log('\n[lib/fsrs/optimizer.js — trainWithOfficialOptimizer() (Phần 3/21 — KHÔNG fallback tự viết optimizer)]');
 
 // CommonJS không có top-level await — bọc phần async (chỉ 1 test duy nhất cần async) trong 1 IIFE
