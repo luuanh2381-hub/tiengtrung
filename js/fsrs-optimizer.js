@@ -61,15 +61,8 @@ const OPTIMIZER_READINESS_LABEL = {
   OPTIMIZABLE: { icon: '🟢', label: 'Sẵn sàng tối ưu', color: 'var(--ok)' },
 };
 
-// V83-FIX-v3 (Phần 7) — 4 trạng thái engine tường minh, KHÔNG gộp chung 1 chữ "chưa sẵn sàng" mơ
-// hồ giữa native/WASI/unavailable — chi tiết kỹ thuật đầy đủ (s.engineStatus) giờ CHỈ được SERVER
-// trả cho admin (V85 — Phần "ERROR SECURITY", sanitize ở tầng server chứ không chỉ ẩn ở UI).
-const OPTIMIZER_ENGINE_LABEL = {
-  OPTIMIZER_NATIVE_READY: { icon: '⚙️', label: 'Engine: Native (nhanh nhất)', color: 'var(--ok)' },
-  OPTIMIZER_WASI_READY: { icon: '🧩', label: 'Engine: WASI (fallback chính thức)', color: 'var(--l7a)' },
-  OPTIMIZER_READY: { icon: '✅', label: 'Engine: sẵn sàng', color: 'var(--ok)' },
-  OPTIMIZER_UNAVAILABLE: { icon: '⚠️', label: 'Engine: chưa sẵn sàng', color: 'var(--fail)' },
-};
+// (V87: bảng nhãn engine 4-trạng-thái cũ đã được thay bằng checkOptimizerEngineDiagnostics() —
+// GET /status không còn tự thăm dò engine nữa, xem AUDIT-REPORT-V87-FAILED-TO-FETCH.md)
 
 // V85 — nhãn TIẾN ĐỘ THẬT (Phần "PROGRESS") — khớp đúng thứ tự stage mà worker thật sự đi qua
 // (lib/fsrs/optimizer.js:runOptimizerJob). KHÔNG có nhãn nào là fake/nội suy.
@@ -87,19 +80,73 @@ const OPTIMIZER_STAGE_LABEL = {
   failed: '⚠️ Thất bại',
 };
 
+// V87 (Phần IV) — GET /diagnostics chỉ gọi khi ADMIN CHỦ ĐỘNG bấm nút (KHÔNG BAO GIỜ tự động/định kỳ
+// — khác hẳn loadOptimizerStatus()). ?probe=1 nghĩa là chấp nhận rủi ro thật (Phần XIII — nếu native
+// binary hỏng tới mức crash process, CHÍNH lượt gọi này có thể làm 1 invocation chết — nhưng chỉ ảnh
+// hưởng admin đang bấm, không ảnh hưởng user thường vì route này tách biệt hoàn toàn khỏi /status).
+async function checkOptimizerEngineDiagnostics() {
+  const el = document.getElementById('optimizer-diag-result');
+  if (!el) return;
+  el.textContent = '⏳ Đang kiểm tra (probe=1 — có gọi thật native binding)...';
+  let res;
+  try {
+    res = await fetch('/api/fsrs-optimizer/diagnostics?probe=1', { headers: authHeaders() });
+  } catch (e) {
+    console.error('[fsrs-optimizer] diagnostics network error', { url: '/api/fsrs-optimizer/diagnostics', method: 'GET', name: e.name, message: e.message });
+    el.textContent = `⚠️ Không kết nối được máy chủ khi kiểm tra engine (${e.message}) — nếu vừa PASS trước đó rồi mất kết nối ngay lúc probe, có thể native binary vừa làm crash worker này, hãy thử tải lại trang.`;
+    return;
+  }
+  let data = null;
+  try { data = await res.json(); } catch { /* để lại data=null, xử lý bên dưới */ }
+  if (!data || !data.ok) {
+    el.textContent = `⚠️ ${(data && data.error) || ('Lỗi server (mã ' + res.status + ')')}`;
+    return;
+  }
+  const d = data.diagnostics;
+  const state = !d.probed ? 'chưa probe'
+    : !d.available ? 'KHÔNG khả dụng'
+    : d.engine === 'native' ? 'Native ✅'
+    : d.engine === 'wasi' ? 'WASI ✅'
+    : 'sẵn sàng (không rõ engine)';
+  el.innerHTML = `Engine: <b>${state}</b> · package=${d.packageVersion || '—'} (resolvable=${d.packageResolvable}) · node=${d.node} ${d.platform}/${d.arch}${d.glibc ? ' glibc=' + d.glibc : ''}` +
+    (d.loadError ? `<br><span style="color:var(--fail);">${String(d.loadError).slice(0, 300)}</span>` : '');
+}
+
 async function loadOptimizerStatus() {
   const body = document.getElementById('optimizer-body');
   if (!body) return;
+  let res;
   try {
-    const res = await fetch('/api/fsrs-optimizer/status', { headers: authHeaders() });
-    const data = await res.json();
-    if (!data.ok) { body.innerHTML = `<div class="study-empty">⚠️ ${data.error || 'Không tải được'}</div>`; stopOptimizerPolling(); return; }
-    renderOptimizerBody(data);
-    const isActive = data.status === 'queued' || data.status === 'running';
-    ensureOptimizerPolling(isActive);
+    res = await fetch('/api/fsrs-optimizer/status', { headers: authHeaders() });
   } catch (e) {
-    body.innerHTML = `<div class="study-empty">⚠️ Không kết nối được máy chủ: ${e.message}</div>`;
+    // V87 (Phần XVII) — fetch() TỰ THROW (TypeError, vd "Failed to fetch") nghĩa là KHÔNG CÓ response
+    // nào tới được ở tầng mạng (mất mạng/DNS/CORS/server không phản hồi TCP) — CHỈ trường hợp NÀY mới
+    // đúng là "không kết nối được máy chủ". Không log token — chỉ log tên/thông điệp lỗi + URL/method.
+    console.error('[fsrs-optimizer] network error', { url: '/api/fsrs-optimizer/status', method: 'GET', name: e.name, message: e.message });
+    body.innerHTML = `<div class="study-empty">⚠️ Không kết nối được máy chủ (mất mạng hoặc server không phản hồi). Thử tải lại trang.</div>`;
+    return;
   }
+
+  let data = null;
+  try {
+    data = await res.json();
+  } catch (e) {
+    // Có HTTP response THẬT (res.status cụ thể) nhưng body không phải JSON hợp lệ — lỗi SERVER, khác
+    // hẳn lỗi mạng — KHÔNG được gộp chung thành "Không kết nối được máy chủ" (Phần XVII).
+    console.error('[fsrs-optimizer] non-JSON response', { url: '/api/fsrs-optimizer/status', status: res.status });
+    body.innerHTML = `<div class="study-empty">⚠️ Lỗi server (phản hồi không hợp lệ, mã ${res.status}). Thử tải lại trang.</div>`;
+    return;
+  }
+
+  if (res.status === 401 || !data.ok) {
+    body.innerHTML = `<div class="study-empty">⚠️ ${data.error || (res.status === 401 ? 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' : ('Lỗi server (mã ' + res.status + ')'))}</div>`;
+    stopOptimizerPolling();
+    return;
+  }
+
+  renderOptimizerBody(data);
+  const isActive = data.status === 'queued' || data.status === 'running';
+  ensureOptimizerPolling(isActive);
 }
 
 function renderOptimizerBody(s) {
@@ -155,24 +202,18 @@ function renderOptimizerBody(s) {
   html += `<div style="text-align:center;font-weight:800;font-size:.82rem;margin-bottom:4px;color:${readinessInfo.color};">${readinessInfo.icon} ${readinessInfo.label}</div>`;
   html += `<div style="color:var(--muted);font-size:.74rem;text-align:center;margin-bottom:14px;line-height:1.5;">${(s.readiness && s.readiness.reason) || ''}</div>`;
 
-  // Diagnostic (Phần 7/11): optimizer engine (native/WASI "@open-spaced-repetition/binding") chưa
-  // load được trên server → báo rõ NGAY, không để user bấm Run rồi mới nhận lỗi mơ hồ. V85: chi tiết
-  // kỹ thuật đầy đủ (root cause/node/platform/arch/glibc) giờ CHỈ CÓ TRONG s.engineStatus khi CHÍNH
-  // SERVER xác định user hiện tại là admin (sanitize ở server, không chỉ ẩn ở UI như bản trước).
-  const bindingUnavailable = s.bindingAvailable === false;
-  const engineInfo = OPTIMIZER_ENGINE_LABEL[s.optimizerEngineState] || null;
-  if (bindingUnavailable) {
-    html += `<div style="background:#fff3f0;border:1px solid var(--fail);border-radius:12px;padding:10px 12px;margin-bottom:12px;font-size:.74rem;line-height:1.5;color:var(--fail);">
-      ⚠️ Optimizer engine chưa sẵn sàng trên máy chủ (thiếu/không load được dependency chính thức).
-      Đây là lỗi triển khai (deployment), không phải lỗi dữ liệu của bạn — vui lòng báo quản trị viên.
-      ${(s.engineStatus && s.engineStatus.error) ? `<div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--fail);font-family:monospace;font-size:.66rem;word-break:break-word;">
-        <b>[Chỉ admin thấy] Root cause:</b> ${s.engineStatus.error.slice(0, 300)}<br>
-        node=${s.engineStatus.nodeVersion} platform=${s.engineStatus.platform} arch=${s.engineStatus.arch}${s.engineStatus.glibcVersion ? ' glibc=' + s.engineStatus.glibcVersion : ''}<br>
-        native gói kỳ vọng: ${s.engineStatus.nativeBinary || '—'}
-      </div>` : ''}
+  // V87 (Phần IV/XVII) — GET /status KHÔNG còn thăm dò native optimizer nữa (đã sửa tận gốc bug
+  // "Failed to fetch" — xem lib/fsrs/optimizer.js:getOptimizerStatus + AUDIT-REPORT-V87-FAILED-TO-
+  // FETCH.md). s.bindingAvailable/s.optimizerEngineState giờ LUÔN null/'UNKNOWN' trừ khi có ai đó CHỦ
+  // ĐỘNG gọi GET /diagnostics (admin, xem checkOptimizerEngineDiagnostics() bên dưới) — vì vậy KHÔNG
+  // còn hiện cảnh báo "Engine chưa sẵn sàng" tự động ở đây nữa (trước đây có thể HIỆN SAI nếu chính
+  // request lấy trạng thái engine đó làm hỏng cả status — nghịch lý cần tránh). Admin có nút riêng để
+  // tự kiểm tra khi cần (có rủi ro thật nếu native binary hỏng — Phần XIII — nên KHÔNG tự động).
+  if (isAdminRole()) {
+    html += `<div style="text-align:center;margin-bottom:10px;">
+      <button type="button" style="font-size:.66rem;color:var(--muted);background:none;border:1px solid var(--muted);border-radius:8px;padding:3px 10px;cursor:pointer;" onclick="checkOptimizerEngineDiagnostics()">🔎 [Admin] Kiểm tra engine native/WASI</button>
+      <div id="optimizer-diag-result" style="font-size:.66rem;color:var(--muted);margin-top:4px;word-break:break-word;"></div>
     </div>`;
-  } else if (engineInfo) {
-    html += `<div style="text-align:center;font-size:.66rem;color:${engineInfo.color};margin-bottom:10px;">${engineInfo.icon} ${engineInfo.label}</div>`;
   }
 
   // ── Đang dùng weights nào ──
