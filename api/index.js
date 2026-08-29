@@ -952,6 +952,22 @@ app.get('/api/admin/fsrs-optimizer/weights/:userId', async (req, res) => {
 // Toàn bộ logic thật nằm ở lib/fsrs/optimizer.js — route ở đây chỉ auth + gọi + trả JSON.
 // ════════════════════════════════════════════════════
 
+// ════════════════════════════════════════════════════
+// V87 — GET /api/fsrs-optimizer/health (Phần VI của yêu cầu audit "Failed to fetch").
+//
+// Mục tiêu DUY NHẤT: chứng minh route /api/fsrs-optimizer/* nói chung — routing (vercel.json rewrite)
+// + Express app — SỐNG, TÁCH BIỆT hoàn toàn khỏi auth/DB/native optimizer. TUYỆT ĐỐI KHÔNG:
+//   - requireAuth() (không cần đăng nhập mới gọi được — health check không phải dữ liệu riêng tư)
+//   - đọc DB (không ensureOptimizerTables/query gì)
+//   - đụng tới native binding dưới bất kỳ hình thức nào
+// Dùng để phân biệt (A) route chết hẳn (Failed to fetch ở CHÍNH /health) vs (B) auth chết (health OK,
+// status 401) vs (C) DB chết (health OK, status 500) vs (D) native chết (health OK, status vẫn 200
+// nhờ fix ở getOptimizerStatus() — không còn cách nào để "native chết" làm hỏng health/status nữa).
+// ════════════════════════════════════════════════════
+app.get('/api/fsrs-optimizer/health', (req, res) => {
+  res.json({ ok: true, service: 'fsrs-optimizer', api: true });
+});
+
 // GET status: nhẹ (Phần "STATUS API") — đọc job mới nhất + weights hiện tại theo khoá chính, KHÔNG
 // quét lại toàn bộ review_history mỗi lần poll (data quality lấy từ cache của job, hoặc ước tính rẻ
 // nếu chưa từng chạy — xem lib/fsrs/optimizer.js:getOptimizerStatus). isAdmin quyết định có được xem
@@ -960,6 +976,12 @@ app.get('/api/admin/fsrs-optimizer/weights/:userId', async (req, res) => {
 // V86: FE poll route này mỗi ~2s trong lúc job active (xem js/fsrs-optimizer.js) — tận dụng ĐÚNG chu
 // kỳ đó làm cơ chế kích hoạt lại /worker cho các job vừa được TỰ ĐỘNG requeue (retry có kiểm soát —
 // xem recoverStaleJobsForUser, Phần IX/VI). requeuedJobIds là field NỘI BỘ, KHÔNG trả về cho client.
+//
+// V87 (QUAN TRỌNG — xem AUDIT-REPORT-V87-FAILED-TO-FETCH.md): route này TUYỆT ĐỐI KHÔNG được gọi
+// require('@open-spaced-repetition/binding') hay bất kỳ hàm nào chạm native code, dù trực tiếp hay
+// gián tiếp qua fsrsOptimizer.getOptimizerStatus() — đã sửa tận gốc bên lib/fsrs/optimizer.js, xem
+// comment ở getOptimizerStatus(). Muốn kiểm tra engine THẬT, dùng GET /diagnostics (admin, có rủi ro
+// riêng — không được FE tự poll).
 app.get('/api/fsrs-optimizer/status', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
@@ -970,6 +992,28 @@ app.get('/api/fsrs-optimizer/status', async (req, res) => {
     const { requeuedJobIds, ...publicStatus } = status;
     (requeuedJobIds || []).forEach((jobId) => triggerOptimizerWorker(req, jobId));
     res.json({ ok: true, ...publicStatus });
+  } catch (e) { fail(res, e); }
+});
+
+// ════════════════════════════════════════════════════
+// V87 — GET /api/fsrs-optimizer/diagnostics (Phần IV/V của yêu cầu audit).
+//
+// CHỈ admin — endpoint này CÓ THỂ chạm native code (khi ?probe=1), khác hẳn /health và /status. KHÔNG
+// được FE tự động gọi định kỳ (không có polling nào trỏ tới route này) — chỉ gọi khi 1 admin CHỦ ĐỘNG
+// mở trang chẩn đoán/bấm nút kiểm tra. requireAdmin() chặn user thường TRƯỚC khi chạm bất kỳ code
+// nguy hiểm nào; sanitizeEngineStatusForUser() (dù lẽ ra không cần vì đã chặn ở trên) vẫn được áp
+// dụng làm lớp phòng thủ thứ 2 — phòng khi có lỗi auth trong tương lai vẫn không lộ thông tin hệ
+// thống chi tiết (Phần "ERROR SECURITY", nguyên tắc phòng thủ theo chiều sâu).
+app.get('/api/fsrs-optimizer/diagnostics', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const user = authed.db.users[authed.username];
+  const isAdmin = user && (user.role === 'admin' || user.role === 'superadmin');
+  if (!requireAdmin(user, res)) return;
+  try {
+    const probe = req.query.probe === '1' || req.query.probe === 'true';
+    const diag = fsrsOptimizer.getOptimizerDiagnostics({ probe });
+    res.json({ ok: true, diagnostics: isAdmin ? diag : fsrsOptimizer.sanitizeEngineStatusForUser(diag) });
   } catch (e) { fail(res, e); }
 });
 
