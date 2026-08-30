@@ -334,7 +334,64 @@ test('OPTIMIZER_WORKER_BUDGET_MS < 300.000ms (maxDuration khai trong vercel.json
   assert.ok(optimizer.OPTIMIZER_WORKER_BUDGET_MS > optimizer.OPTIMIZER_MIN_TRAIN_BUDGET_MS, 'ngân sách tổng phải lớn hơn mức tối thiểu cần riêng cho train, nếu không mọi lượt chạy đều fail ngay ở guard');
 });
 
-console.log('\n[V87 — "Failed to fetch" — GET /status/POST /run TUYỆT ĐỐI không được chạm native optimizer]');
+console.log('\n[V88 — Phần 5 audit "API Error Leak" — PublicError/publicErrorMessage()]');
+
+const { PublicError } = require(path.join(__dirname, '..', 'lib', 'publicError'));
+// Bản sao CHÍNH XÁC logic publicErrorMessage() trong api/index.js — kiểm tra ở đây để không cần khởi
+// động cả Express app (api/index.js cần pg/express thật, không load được trong sandbox thuần này) —
+// đối chiếu bằng cách trích TĨNH đúng thân hàm thật từ api/index.js, đảm bảo test theo ĐÚNG code thật,
+// không phải bản chép tay có thể lệch khỏi implementation thật theo thời gian.
+const API_SRC_FOR_ERROR_TEST = fs.readFileSync(path.join(__dirname, '..', 'api', 'index.js'), 'utf8');
+test('api/index.js: publicErrorMessage() tồn tại và default về "Lỗi server nội bộ..." (không phải chuỗi rỗng/undefined) khi KHÔNG phải PublicError', () => {
+  assert.ok(/function publicErrorMessage/.test(API_SRC_FOR_ERROR_TEST), 'phải có hàm publicErrorMessage() dùng chung');
+  assert.ok(/GENERIC_SERVER_ERROR_MESSAGE\s*=\s*'[^']+'/.test(API_SRC_FOR_ERROR_TEST), 'phải có 1 thông điệp mặc định cố định, an toàn');
+});
+
+test('api/index.js: KHÔNG còn bất kỳ "error: e.message" trần nào (Phần 5 — mọi chỗ phải qua publicErrorMessage()/fail())', () => {
+  const bareLeak = /error:\s*e\.message\b/;
+  assert.ok(!bareLeak.test(stripLineComments(API_SRC_FOR_ERROR_TEST)), 'còn sót ít nhất 1 chỗ trả thẳng e.message cho client — rò rỉ chi tiết lỗi nội bộ (SQL/đường dẫn/package error)');
+});
+
+test('PublicError: instance vẫn là Error hợp lệ (instanceof Error), message giữ nguyên', () => {
+  const e = new PublicError('Tên đăng nhập đã tồn tại');
+  assert.ok(e instanceof Error);
+  assert.ok(e instanceof PublicError);
+  assert.strictEqual(e.message, 'Tên đăng nhập đã tồn tại');
+});
+
+test('lib/fsrs.js: rating không hợp lệ ném PublicError (an toàn hiện cho user — không phải lỗi nội bộ)', () => {
+  assert.throws(() => fsrs.reviewCard({}, 'invalid_rating_xyz', new Date(), 0.9), (e) => {
+    assert.ok(e instanceof PublicError, 'phải là PublicError để user thấy được lý do input sai, không bị thay bằng thông điệp chung chung');
+    return true;
+  });
+});
+
+test('lib/fsrs/optimizer.js: 6 thông điệp Apply/Rollback/Reset "đang chạy"/"chưa có kết quả"/"chưa có trạng thái trước đó" đã chuyển sang PublicError (không bị genericize oan — đây là hướng dẫn hành động rõ ràng cho user, không phải chi tiết nội bộ)', () => {
+  const src = stripLineComments(fs.readFileSync(path.join(__dirname, '..', 'lib', 'fsrs', 'optimizer.js'), 'utf8'));
+  const expectedMessages = [
+    'Optimizer đang chạy — đợi hoàn tất trước khi Apply',
+    'Chưa có kết quả Optimizer nào để Apply',
+    'Chưa có candidate weights hợp lệ để Apply',
+    'Optimizer đang chạy — đợi hoàn tất trước khi Rollback',
+    'Không có trạng thái trước đó để khôi phục',
+    'Optimizer đang chạy — đợi hoàn tất trước khi Reset',
+  ];
+  expectedMessages.forEach((msgFragment) => {
+    const re = new RegExp(`throw new PublicError\\([^)]*${msgFragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
+    assert.ok(re.test(src), `thông điệp "${msgFragment}" phải được ném bằng PublicError (không phải Error thường)`);
+  });
+});
+
+test('lib/fsrs/optimizer.js: các lỗi NỘI BỘ thật (data.js config/version-conflict/card row thiếu field) KHÔNG bị đổi sang PublicError (đúng — không nên hiện chi tiết đó cho user)', () => {
+  // Đối chứng: xác nhận KHÔNG lỡ tay convert lan sang mọi throw new Error(...) trong file — chỉ đúng
+  // 6 chỗ nêu trên. Đếm tổng throw new PublicError trong optimizer.js phải khớp CHÍNH XÁC 6 (không
+  // nhiều hơn, không ít hơn) — nếu số này đổi trong tương lai, cần cập nhật lại test để soát chủ đích.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'fsrs', 'optimizer.js'), 'utf8');
+  const count = (src.match(/throw new PublicError\(/g) || []).length;
+  assert.strictEqual(count, 6, `kỳ vọng đúng 6 throw new PublicError() trong optimizer.js (Apply×3/Rollback×2/Reset×1), thấy ${count} — nếu có thay đổi chủ đích, cập nhật lại test này`);
+});
+
+
 
 // Đọc thẳng SOURCE THẬT của lib/fsrs/optimizer.js + api/index.js (không phải copy/diễn giải lại) —
 // trích ĐÚNG thân 1 hàm bằng cách đếm độ sâu dấu ngoặc { } bắt đầu từ dòng khai báo, để chắc chắn
