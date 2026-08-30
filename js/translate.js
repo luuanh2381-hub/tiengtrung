@@ -35,12 +35,12 @@ function trRenderQ() {
   area.innerHTML=`<div class="panel">
     <div style="font-size:.75rem;color:var(--muted);margin-bottom:8px">${trIdx+1}/${trItems.length} · Dịch sang tiếng Trung</div>
     <div class="trans-vi">${s.vi}</div>
-    <div class="trans-hint">💡 Gợi ý: ${s.hint}</div>
+    <div class="trans-hint">💡 Gợi ý: ${escapeHtml(s.hint)}</div>
     <textarea class="trans-input" id="tr-inp" placeholder="Gõ câu tiếng Trung..."></textarea>
     <div class="trans-answer" id="tr-ans">
-      <div>📖 Đáp án: ${s.hz}</div>
+      <div>📖 Đáp án: ${escapeHtml(s.hz)}</div>
       ${showPinyin?`<div style="font-size:.8rem;margin-top:4px;color:var(--muted)">(bài ${s.l})</div>`:''}
-      <button class="btn btn-sound btn-sm" style="margin-top:6px" onclick="speak('${s.hz.replace(/'/g,"\\'")}')">🔊 Nghe</button>
+      <button class="btn btn-sound btn-sm" style="margin-top:6px" onclick="speak('${escapeJsAttr(s.hz)}')">🔊 Nghe</button>
     </div>
     <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
       <button class="btn" style="background:var(--l9b);color:var(--l9a)" onclick="trShowAns()">👁 Xem đáp án</button>

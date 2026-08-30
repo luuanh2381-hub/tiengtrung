@@ -122,14 +122,14 @@ function qzRenderQ() {
   const opts = rvMakeOpts(w, { answerField, mode }); // dùng chung bộ sinh nhiễu Heavy Distractor với "Hôm nay học" (pool = toàn bộ WORDS) — xem js/distractor-engine.js
   let qHtml, optHtml;
   if (qzType === '漢→Việt') {
-    qHtml = `<div class="fc-hz">${w.hz}</div>${showPinyin?`<div class="fc-py">${w.py}</div>`:''}${showHanViet && w.hanviet?`<div class="fc-hv">Hán Việt: ${w.hanviet}</div>`:''}`;
-    optHtml = opts.map(o=>`<button class="quiz-opt" data-v="${o.vi}" onclick="qzPick(this,'${o.hz}')">${o.vi}</button>`).join('');
+    qHtml = `<div class="fc-hz">${escapeHtml(w.hz)}</div>${showPinyin?`<div class="fc-py">${escapeHtml(w.py)}</div>`:''}${showHanViet && w.hanviet?`<div class="fc-hv">Hán Việt: ${escapeHtml(w.hanviet)}</div>`:''}`;
+    optHtml = opts.map(o=>`<button class="quiz-opt" data-v="${escapeHtml(o.vi)}" onclick="qzPick(this,'${escapeJsAttr(o.hz)}')">${escapeHtml(o.vi)}</button>`).join('');
   } else if (qzType === 'Việt→漢') {
-    qHtml = `<div class="fc-vi" style="font-size:1.3rem">${w.vi}</div>`;
-    optHtml = opts.map(o=>`<button class="quiz-opt" data-v="${o.hz}" onclick="qzPick(this,'${o.hz}')">${o.hz}${showPinyin?`<div class="quiz-sub">${o.py}</div>`:''}${showHanViet && o.hanviet?`<div class="quiz-hv">${o.hanviet}</div>`:''}</button>`).join('');
+    qHtml = `<div class="fc-vi" style="font-size:1.3rem">${escapeHtml(w.vi)}</div>`;
+    optHtml = opts.map(o=>`<button class="quiz-opt" data-v="${escapeHtml(o.hz)}" onclick="qzPick(this,'${escapeJsAttr(o.hz)}')">${escapeHtml(o.hz)}${showPinyin?`<div class="quiz-sub">${escapeHtml(o.py)}</div>`:''}${showHanViet && o.hanviet?`<div class="quiz-hv">${escapeHtml(o.hanviet)}</div>`:''}</button>`).join('');
   } else {
-    qHtml = `<div class="fc-py" style="font-size:1.4rem;font-style:normal;color:var(--ink)">${w.py}</div>`;
-    optHtml = opts.map(o=>`<button class="quiz-opt" data-v="${o.hz}" onclick="qzPick(this,'${o.hz}')">${o.hz}</button>`).join('');
+    qHtml = `<div class="fc-py" style="font-size:1.4rem;font-style:normal;color:var(--ink)">${escapeHtml(w.py)}</div>`;
+    optHtml = opts.map(o=>`<button class="quiz-opt" data-v="${escapeHtml(o.hz)}" onclick="qzPick(this,'${escapeJsAttr(o.hz)}')">${escapeHtml(o.hz)}</button>`).join('');
   }
   const example = qzFindExample(w.hz);
   const exampleHtml = example

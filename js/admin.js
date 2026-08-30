@@ -636,9 +636,9 @@ async function adminLoadUsers() {
         </div>
         <div style="font-size:.72rem;color:var(--muted);margin:4px 0 8px;">Tạo lúc: ${new Date(u.createdAt).toLocaleString('vi-VN')}</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
-          ${canReset ? `<button class="btn btn-sm" style="background:var(--l9c);color:var(--l9a);" onclick="adminResetUser('${u.key}','${u.username}')">🔄 Reset tiến độ</button>` : ''}
-          ${canToggleRole ? `<button class="btn btn-sm" style="background:var(--l11c);color:var(--l11a);" onclick="adminToggleRole('${u.key}','${u.role}')">${u.role==='admin' ? '⬇️ Bỏ quyền admin' : '⬆️ Cấp quyền admin'}</button>` : ''}
-          ${canDelete ? `<button class="btn btn-sm" style="background:#fdecea;color:#c0392b;" onclick="adminDeleteUser('${u.key}','${u.username}')">🗑️ Xoá tài khoản</button>` : '<span style="font-size:.72rem;color:var(--muted);align-self:center;">🔒 Được bảo vệ</span>'}
+          ${canReset ? `<button class="btn btn-sm" style="background:var(--l9c);color:var(--l9a);" onclick="adminResetUser('${escapeJsAttr(u.key)}','${escapeJsAttr(u.username)}')">🔄 Reset tiến độ</button>` : ''}
+          ${canToggleRole ? `<button class="btn btn-sm" style="background:var(--l11c);color:var(--l11a);" onclick="adminToggleRole('${escapeJsAttr(u.key)}','${escapeJsAttr(u.role)}')">${u.role==='admin' ? '⬇️ Bỏ quyền admin' : '⬆️ Cấp quyền admin'}</button>` : ''}
+          ${canDelete ? `<button class="btn btn-sm" style="background:#fdecea;color:#c0392b;" onclick="adminDeleteUser('${escapeJsAttr(u.key)}','${escapeJsAttr(u.username)}')">🗑️ Xoá tài khoản</button>` : '<span style="font-size:.72rem;color:var(--muted);align-self:center;">🔒 Được bảo vệ</span>'}
         </div>
       </div>`;
       }).join('');

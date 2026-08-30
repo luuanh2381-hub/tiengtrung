@@ -426,13 +426,13 @@ function renderReview() {
     // Chỉ 1 bước duy nhất: nhìn chữ Hán → chọn nghĩa đúng (Phần 1/17). Không có bước "tự nhớ rồi
     // bấm Đúng/Sai" riêng như v66 — hệ thống tự xác định đúng/sai khi user chọn đáp án.
     const optHtml = rvOptions.map(o =>
-      `<button class="quiz-opt" data-v="${o.vi}" onclick="rvPick(this,'${o.hz}')" ${rvSubmitting ? 'disabled' : ''}>${o.vi}</button>`
+      `<button class="quiz-opt" data-v="${escapeHtml(o.vi)}" onclick="rvPick(this,'${escapeJsAttr(o.hz)}')" ${rvSubmitting ? 'disabled' : ''}>${escapeHtml(o.vi)}</button>`
     ).join('');
     body = `
       <div class="rv-tag">${tagLabel} · Bài ${w.l}</div>
-      <div class="rv-hz">${w.hz}</div>
-      ${showPinyin ? `<div class="rv-py">${w.py || ''}</div>` : ''}
-      <div class="rv-prompt">${w.hz} là gì?</div>
+      <div class="rv-hz">${escapeHtml(w.hz)}</div>
+      ${showPinyin ? `<div class="rv-py">${escapeHtml(w.py || '')}</div>` : ''}
+      <div class="rv-prompt">${escapeHtml(w.hz)} là gì?</div>
       <div class="quiz-opts" id="rv-opts">${optHtml}</div>
       <div class="kbd-hint" style="text-align:center;margin-top:2px;">⌨️ 1-4 để chọn</div>`;
   } else {

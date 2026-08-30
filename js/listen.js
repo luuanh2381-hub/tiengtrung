@@ -91,10 +91,10 @@ function lsRenderWord(w) {
   const distractors = pickHeavyDistractors(w, pool, 3, { mode: 'listening', answerField: 'hz' });
   const opts = shuffle([w,...distractors]);
   const optHtml = opts.map(o=>`
-    <button class="listen-opt" onclick="lsPickWord(this,'${o.hz}','${w.hz}')">${o.hz}${showPinyin?`<div style="font-size:.7rem;color:var(--muted)">${o.py}</div>`:''}${showHanViet && o.hanviet?`<div style="font-size:.68rem;color:var(--active-dark);font-weight:600">${o.hanviet}</div>`:''}</button>`).join('');
+    <button class="listen-opt" onclick="lsPickWord(this,'${escapeJsAttr(o.hz)}','${escapeJsAttr(w.hz)}')">${escapeHtml(o.hz)}${showPinyin?`<div style="font-size:.7rem;color:var(--muted)">${escapeHtml(o.py)}</div>`:''}${showHanViet && o.hanviet?`<div style="font-size:.68rem;color:var(--active-dark);font-weight:600">${escapeHtml(o.hanviet)}</div>`:''}</button>`).join('');
   area.innerHTML=`<div class="panel">
     <div style="font-size:.75rem;color:var(--muted);margin-bottom:10px">Câu ${lsQueue.answeredCount+1} · còn ${lsQueue.items.length} trong hàng đợi · Nghe và chọn chữ Hán đúng</div>
-    <button id="ls-play" class="listen-play" onclick="speak('${w.hz}')" title="Phát lại">🔊</button>
+    <button id="ls-play" class="listen-play" onclick="speak('${escapeJsAttr(w.hz)}')" title="Phát lại">🔊</button>
     <div class="listen-opts">${optHtml}</div>
   </div>`;
   lsStartedAt = performance.now(); // Phần 4: đo từ thời điểm câu hỏi hiển thị (trước cả auto-play)

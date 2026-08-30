@@ -130,9 +130,9 @@ async function bindStats() {
       const scopeHz = new Set(all.map(w => w.hz));
       const weak = ((weakRes.ok && weakRes.words) || []).filter(w => scopeHz.has(w.hz)).slice(0, 6);
       weakEl.innerHTML = (weak.length ? weak.map(w => `<div class="weak-item">
-        <span class="weak-hz" style="color:${lessonColor(w.l)}">${w.hz}</span>
-        <span class="weak-info">${w.vi}${showPinyin ? ` · ${w.py}` : ''}${showHanViet && w.hanviet ? ` · ${w.hanviet}` : ''} · ${w.lapses || 0} lần quên</span>
-        <button class="btn-sound-sm" onclick="speak('${w.hz}')">🔊</button>
+        <span class="weak-hz" style="color:${lessonColor(w.l)}">${escapeHtml(w.hz)}</span>
+        <span class="weak-info">${escapeHtml(w.vi)}${showPinyin ? ` · ${escapeHtml(w.py)}` : ''}${showHanViet && w.hanviet ? ` · ${escapeHtml(w.hanviet)}` : ''} · ${w.lapses || 0} lần quên</span>
+        <button class="btn-sound-sm" onclick="speak('${escapeJsAttr(w.hz)}')">🔊</button>
       </div>`).join('') : '<div class="study-empty">Chưa có dữ liệu. Hãy bắt đầu học ở "🎯 Hôm nay học"!</div>')
         + `<button class="btn" style="width:100%;margin-top:10px" onclick="goTab('difficult')">😓 Xem tất cả từ khó & ôn riêng →</button>`;
     }
@@ -334,10 +334,10 @@ async function bindDifficult() {
     });
     if (!listEl) return;
     listEl.innerHTML = words.length ? words.map(w => `<div class="weak-item">
-        <span class="weak-hz" style="color:${lessonColor(w.l)}">${w.hz}</span>
-        <span class="weak-info">${w.vi}${showPinyin ? ` · ${w.py}` : ''}${showHanViet && w.hanviet ? ` · ${w.hanviet}` : ''}<br>
+        <span class="weak-hz" style="color:${lessonColor(w.l)}">${escapeHtml(w.hz)}</span>
+        <span class="weak-info">${escapeHtml(w.vi)}${showPinyin ? ` · ${escapeHtml(w.py)}` : ''}${showHanViet && w.hanviet ? ` · ${escapeHtml(w.hanviet)}` : ''}<br>
           ❌ ${w.wrongCount || 0} lần sai · 🕐 học gần nhất: ${formatRelativeTime(w.last_review)}</span>
-        <button class="btn-sound-sm" onclick="speak('${w.hz}')">🔊</button>
+        <button class="btn-sound-sm" onclick="speak('${escapeJsAttr(w.hz)}')">🔊</button>
       </div>`).join('')
       : '<div class="study-empty">🎉 Chưa có từ khó nào — bạn đang học rất tốt! Hãy tiếp tục ở "🎯 Hôm nay học".</div>';
   } catch (e) {

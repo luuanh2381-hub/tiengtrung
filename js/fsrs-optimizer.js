@@ -16,6 +16,8 @@
 // ════════════════════════════════════════════════════
 let _optimizerBusy = false;
 let _optimizerPollTimer = null;
+let _optimizerConsecutiveErrors = 0; // Phần 3 — chặn tự thử lại VÔ HẠN nếu lỗi hạ tầng KHÔNG PHẢI tạm thời (vd cấu hình sai vĩnh viễn), tránh dội tải DB/server không cần thiết
+const OPTIMIZER_MAX_CONSECUTIVE_ERRORS = 5; // ~10s tự thử lại liên tục (5 × 2s) trước khi cần user chủ động bấm lại
 const OPTIMIZER_POLL_MS = 2000;
 
 function openOptimizerModal() {
@@ -29,14 +31,21 @@ function closeOptimizerModal() {
 }
 
 function stopOptimizerPolling() {
-  if (_optimizerPollTimer) { clearInterval(_optimizerPollTimer); _optimizerPollTimer = null; }
+  if (_optimizerPollTimer) { clearTimeout(_optimizerPollTimer); _optimizerPollTimer = null; }
 }
+// V88 (Phần 3) — SEQUENTIAL polling bằng setTimeout thay vì setInterval: setInterval bắn đều đặn theo
+// đồng hồ KHÔNG QUAN TÂM lượt trước đã xong chưa — nếu 1 lượt fetch+render chẳng may chậm hơn 2s (mạng
+// yếu), 2 request GET /status có thể bay chồng nhau. setTimeout chỉ hẹn lượt TIẾP THEO SAU KHI lượt
+// hiện tại đã hoàn tất hẳn (loadOptimizerStatus() tự gọi lại ensureOptimizerPolling() ở cuối mỗi lượt,
+// dù thành công hay lỗi tạm thời) — đảm bảo tại một thời điểm chỉ có TỐI ĐA 1 request GET /status.
 // Chỉ poll khi modal đang MỞ (đỡ tốn request khi user không nhìn) — job vẫn tiếp tục ở server dù có
 // poll hay không; mở lại modal sẽ tự phát hiện lại đúng trạng thái qua loadOptimizerStatus().
 function ensureOptimizerPolling(shouldPoll) {
   const modalOpen = document.getElementById('optimizer-modal').style.display !== 'none';
   if (shouldPoll && modalOpen) {
-    if (!_optimizerPollTimer) _optimizerPollTimer = setInterval(loadOptimizerStatus, OPTIMIZER_POLL_MS);
+    if (!_optimizerPollTimer) {
+      _optimizerPollTimer = setTimeout(() => { _optimizerPollTimer = null; loadOptimizerStatus({ isAutoPoll: true }); }, OPTIMIZER_POLL_MS);
+    }
   } else {
     stopOptimizerPolling();
   }
@@ -112,9 +121,23 @@ async function checkOptimizerEngineDiagnostics() {
     (d.loadError ? `<br><span style="color:var(--fail);">${String(d.loadError).slice(0, 300)}</span>` : '');
 }
 
-async function loadOptimizerStatus() {
+async function loadOptimizerStatus({ isAutoPoll = false } = {}) {
   const body = document.getElementById('optimizer-body');
   if (!body) return;
+  // Lượt gọi THỦ CÔNG (mở modal, bấm nút "Thử lại", sau khi Run/Apply/Rollback/Reset) luôn coi là 1
+  // lần thử MỚI — xoá bộ đếm lỗi liên tiếp cũ, KHÔNG bị cap chặn oan chỉ vì trước đó đã lỗi nhiều lần
+  // (cap chỉ áp dụng cho chuỗi tự động lặp lại qua setTimeout, isAutoPoll:true — xem ensureOptimizerPolling).
+  if (!isAutoPoll) _optimizerConsecutiveErrors = 0;
+
+  // Phần 3 — nếu đã tự thử lại quá nhiều lần liên tiếp vì lỗi hạ tầng, đây rất có thể KHÔNG phải sự
+  // cố tạm thời (vd cấu hình sai) — dừng tự động, để user CHỦ ĐỘNG bấm thử lại thay vì dội request vô
+  // hạn vào server/DB (được reset về 0 ngay khi có 1 lượt load thành công — xem cuối hàm).
+  if (_optimizerConsecutiveErrors >= OPTIMIZER_MAX_CONSECUTIVE_ERRORS) {
+    body.innerHTML = `<div class="study-empty">⚠️ Không thể tải trạng thái Optimizer sau nhiều lần thử.<br><button class="auth-submit" style="margin-top:10px;" onclick="loadOptimizerStatus()">🔁 Thử lại</button></div>`;
+    stopOptimizerPolling();
+    return;
+  }
+
   let res;
   try {
     res = await fetch('/api/fsrs-optimizer/status', { headers: authHeaders() });
@@ -123,7 +146,12 @@ async function loadOptimizerStatus() {
     // nào tới được ở tầng mạng (mất mạng/DNS/CORS/server không phản hồi TCP) — CHỈ trường hợp NÀY mới
     // đúng là "không kết nối được máy chủ". Không log token — chỉ log tên/thông điệp lỗi + URL/method.
     console.error('[fsrs-optimizer] network error', { url: '/api/fsrs-optimizer/status', method: 'GET', name: e.name, message: e.message });
-    body.innerHTML = `<div class="study-empty">⚠️ Không kết nối được máy chủ (mất mạng hoặc server không phản hồi). Thử tải lại trang.</div>`;
+    _optimizerConsecutiveErrors++;
+    body.innerHTML = `<div class="study-empty">⚠️ Không kết nối được máy chủ (mất mạng hoặc server không phản hồi). Đang tự thử lại...</div>`;
+    // Phần 3/11 — lỗi HẠ TẦNG TẠM THỜI (mất mạng thoáng qua) tự hồi phục được, khác hẳn lỗi lập trình
+    // (render error, xem catch bên dưới) — KHÔNG dừng poll hẳn, cứ để tự thử lại mỗi 2s trong lúc modal
+    // còn mở (ensureOptimizerPolling tự dừng nếu user đóng modal — không lo lặp vô hạn sau khi đóng).
+    ensureOptimizerPolling(true);
     return;
   }
 
@@ -134,17 +162,49 @@ async function loadOptimizerStatus() {
     // Có HTTP response THẬT (res.status cụ thể) nhưng body không phải JSON hợp lệ — lỗi SERVER, khác
     // hẳn lỗi mạng — KHÔNG được gộp chung thành "Không kết nối được máy chủ" (Phần XVII).
     console.error('[fsrs-optimizer] non-JSON response', { url: '/api/fsrs-optimizer/status', status: res.status });
-    body.innerHTML = `<div class="study-empty">⚠️ Lỗi server (phản hồi không hợp lệ, mã ${res.status}). Thử tải lại trang.</div>`;
+    _optimizerConsecutiveErrors++;
+    body.innerHTML = `<div class="study-empty">⚠️ Lỗi server (phản hồi không hợp lệ, mã ${res.status}). Đang tự thử lại...</div>`;
+    ensureOptimizerPolling(true); // cũng là lỗi hạ tầng tạm thời điển hình (cold start/redeploy giữa chừng) — tự thử lại
+    return;
+  }
+  if (!data || typeof data !== 'object') {
+    // `res.json()` PARSE THÀNH CÔNG (không throw) nhưng ra `null`/không phải object — vd server trả
+    // literal "null" (JSON hợp lệ!) — KHÁC lỗi parse ở trên nhưng CÙNG hậu quả nếu không chặn: đọc
+    // data.ok bên dưới sẽ throw "Cannot read properties of null", crash y hệt bug gốc. Phát hiện được
+    // nhờ smoke test THẬT (test/fsrs-optimizer-frontend.smoke.test.js), không phải suy đoán lý thuyết.
+    console.error('[fsrs-optimizer] unexpected response shape', { url: '/api/fsrs-optimizer/status', status: res.status, dataType: typeof data });
+    _optimizerConsecutiveErrors++;
+    body.innerHTML = `<div class="study-empty">⚠️ Lỗi server (phản hồi không đúng định dạng, mã ${res.status}). Đang tự thử lại...</div>`;
+    ensureOptimizerPolling(true);
     return;
   }
 
-  if (res.status === 401 || !data.ok) {
-    body.innerHTML = `<div class="study-empty">⚠️ ${data.error || (res.status === 401 ? 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' : ('Lỗi server (mã ' + res.status + ')'))}</div>`;
+  if (res.status === 401) {
+    body.innerHTML = `<div class="study-empty">⚠️ Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.</div>`;
+    stopOptimizerPolling(); // phiên đã chết — tự thử lại vô ích tới khi user đăng nhập lại, không lặp vô ích
+    return;
+  }
+  if (!data.ok) {
+    _optimizerConsecutiveErrors++;
+    body.innerHTML = `<div class="study-empty">⚠️ ${data.error || ('Lỗi server (mã ' + res.status + ')')}</div>`;
+    ensureOptimizerPolling(true); // lỗi server khác (vd 500 tạm thời) — vẫn đáng thử lại, không phải lỗi vĩnh viễn như 401
+    return;
+  }
+
+  try {
+    renderOptimizerBody(data);
+  } catch (e) {
+    // Phần 2 (bắt buộc) — MỘT LỖI JAVASCRIPT KHÔNG ĐƯỢC KHIẾN UI MẮC VĨNH VIỄN Ở "Đang tải...". Nếu
+    // renderOptimizerBody() throw vì bất kỳ lý do gì (kể cả bug tương lai không lường trước), user vẫn
+    // PHẢI thấy 1 trạng thái rõ ràng + có cách bấm thử lại — không được im lặng giữ nguyên "Đang tải...".
+    // Khác lỗi hạ tầng ở trên: đây là lỗi LẬP TRÌNH — cùng dữ liệu sẽ throw Y HỆT mỗi lần, tự động lặp
+    // lại mỗi 2s vô ích (khác transient network/server error) — dừng hẳn, để user chủ động bấm thử lại.
+    console.error('[fsrs-optimizer] render error', e);
+    body.innerHTML = `<div class="study-empty">⚠️ Lỗi giao diện Optimizer (${e && e.message ? e.message : 'không rõ nguyên nhân'}).<br><button class="auth-submit" style="margin-top:10px;" onclick="loadOptimizerStatus()">🔁 Thử lại</button></div>`;
     stopOptimizerPolling();
     return;
   }
-
-  renderOptimizerBody(data);
+  _optimizerConsecutiveErrors = 0; // 1 lượt thành công — xoá bộ đếm lỗi liên tiếp
   const isActive = data.status === 'queued' || data.status === 'running';
   ensureOptimizerPolling(isActive);
 }
@@ -244,10 +304,9 @@ function renderOptimizerBody(s) {
   //     job failed → nút đổi thành "Thử lại" (Retry, Phần "MOBILE UX"). ──
   const runBtnLabel = isQueued ? '🕓 Đang xếp hàng...'
     : isRunning ? '⏳ Đang chạy...'
-    : bindingUnavailable ? '⚠️ Optimizer chưa sẵn sàng'
     : isFailed ? '🔁 Thử lại'
     : '🚀 Run Optimizer';
-  html += `<button class="auth-submit" id="optimizer-run-btn" onclick="runOptimizerNow()" ${(isActive || bindingUnavailable) ? 'disabled' : ''}>${runBtnLabel}</button>`;
+  html += `<button class="auth-submit" id="optimizer-run-btn" onclick="runOptimizerNow()" ${isActive ? 'disabled' : ''}>${runBtnLabel}</button>`;
   if (s.hasCandidate && !isActive) {
     html += `<button class="auth-submit" style="margin-top:8px;background:var(--ok);" onclick="applyOptimizerWeights()">✅ Apply Personal Weights</button>`;
   }

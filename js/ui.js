@@ -1,4 +1,31 @@
 // js/ui.js — State toàn cục (tab hiện tại, hiện/ẩn Pinyin·nghĩa·Hán Việt) + refreshCurrentCardDisplay() (vẽ lại thẻ đang học mà KHÔNG nạp lại hàng đợi)
+
+// V88 (Phần 4 — Audit XSS) — helper DÙNG CHUNG để nhúng dữ liệu (đặc biệt dữ liệu từ DB: hz/py/vi/
+// hanviet/tag/username...) an toàn vào HTML. KHÔNG được giả định dữ liệu DB luôn an toàn (vd hz/py/vi
+// hiện chỉ nhập được qua admin — nhưng admin cũng có thể bị chiếm quyền, và không nên phụ thuộc mãi
+// vào input-validation ở 1 nơi duy nhất — escape ở OUTPUT là lớp phòng thủ đúng chỗ nhất).
+//
+// escapeHtml(s): dùng khi chèn TRỰC TIẾP vào nội dung HTML (giữa 2 thẻ, hoặc trong 1 thuộc tính HTML
+// value="...") — encode &<>"' thành HTML entity. Cùng thuật toán với escapeHtml() cục bộ trong
+// js/admin.js (không đổi file đó — giữ nguyên, tránh rủi ro không cần thiết cho phần đã hoạt động
+// đúng) — thêm bản DÙNG CHUNG ở đây cho các file khác (compare.js/listen.js/stats.js/translate.js...)
+// chưa có sẵn helper riêng.
+//
+// escapeJsAttr(s): dùng khi chèn vào onclick="fn('...')" — dữ liệu nằm ở 2 lớp lồng nhau (chuỗi JS
+// trong dấu nháy đơn, bên trong thuộc tính HTML trong dấu nháy kép) — PHẢI escape ĐỦ CẢ 2 lớp: escape
+// ký tự đặc biệt của chuỗi JS (\, ') trước, rồi encode " thành HTML entity (một escapeHtml() phía sau
+// ĐƠN THUẦN không đủ, vì entity chỉ được HTML parser giải mã đúng 1 lần ở tầng ATTRIBUTE, không tự động
+// bảo vệ được dấu nháy đơn phá vỡ literal chuỗi JS lồng bên trong).
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function escapeJsAttr(s) {
+  return String(s == null ? '' : s)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/"/g, '&quot;');
+}
+
 // GLOBAL STATE
 // ════════════════════════════════════════════════════
 let currentTab = 'home'; // được applyUIState() ghi đè lại đúng giá trị đã lưu khi app khởi động
