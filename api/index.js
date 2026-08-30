@@ -50,6 +50,42 @@ function makeToken() {
   return crypto.randomBytes(24).toString('hex');
 }
 
+// ════════════════════════════════════════════════════
+// V88 (Phần 7 audit "Rate Limit") — bộ đếm rate-limit ĐƠN GIẢN, trong bộ nhớ (KHÔNG thêm dependency
+// mới — không cần express-rate-limit/Redis, đủ dùng cho quy mô app cá nhân hiện tại), áp dụng cho
+// login/register/change-password (Phần 6 chỉ định rõ 3 route này).
+//
+// RỦI RO CẦN GHI RÕ (theo đúng yêu cầu audit — không được giấu giới hạn của giải pháp): đây là bộ đếm
+// TRONG BỘ NHỚ CỦA 1 INSTANCE. Trên Vercel (serverless), nhiều instance/container có thể chạy song
+// song hoặc bị thay mới (cold start) — mỗi instance có bộ đếm RIÊNG, không dùng chung. Vì vậy đây là
+// biện pháp GIẢM THIỂU (best-effort, chặn được kịch bản phổ biến nhất: 1 script/1 người dùng gõ sai
+// liên tục từ 1 kết nối), KHÔNG PHẢI chặn tuyệt đối 1 kẻ tấn công có hạ tầng phân tán nhiều IP/nhiều
+// instance. Nâng cấp lên rate-limit CHIA SẺ ĐÚNG NGHĨA (vd đếm qua Postgres/Redis) là bước tiếp theo
+// nếu cần chống chịu mạnh hơn — NGOÀI phạm vi tối thiểu, ít thay đổi nhất của lần audit này.
+const _rateLimitBuckets = new Map(); // key: `${ip}:${routeName}` → { count, windowStartMs }
+function checkRateLimit(req, routeName, { maxAttempts, windowMs }) {
+  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || 'unknown';
+  const key = `${ip}:${routeName}`;
+  const now = Date.now();
+  const bucket = _rateLimitBuckets.get(key);
+  if (!bucket || now - bucket.windowStartMs > windowMs) {
+    _rateLimitBuckets.set(key, { count: 1, windowStartMs: now });
+    return true; // bắt đầu cửa sổ mới — trong hạn mức
+  }
+  bucket.count++;
+  return bucket.count <= maxAttempts;
+}
+// Dọn định kỳ bucket đã hết hạn từ lâu — tránh Map phình to vô hạn theo thời gian (Phần "memory leak"
+// trong yêu cầu audit polling cũng áp dụng tinh thần tương tự ở đây). unref() để KHÔNG giữ process
+// sống chỉ vì timer này (đúng tinh thần "không tạo tác vụ nền không cần thiết" trên serverless).
+const _rateLimitCleanupTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [key, bucket] of _rateLimitBuckets) {
+    if (now - bucket.windowStartMs > 15 * 60 * 1000) _rateLimitBuckets.delete(key);
+  }
+}, 5 * 60 * 1000);
+if (typeof _rateLimitCleanupTimer.unref === 'function') _rateLimitCleanupTimer.unref();
+
 const RANKS = [
   { min: 0,   name: 'Tân binh',      icon: '🌱' },
   { min: 20,  name: 'Mới nhập môn',  icon: '🐣' },
@@ -84,9 +120,22 @@ function todayKey() {
   return vnDateKey();
 }
 
+const { PublicError } = require('../lib/publicError');
+
+const GENERIC_SERVER_ERROR_MESSAGE = 'Lỗi server nội bộ. Vui lòng thử lại sau.';
+// V88 (Phần 5 audit "API Error Leak") — LUÔN log ĐẦY ĐỦ e.message (+ stack, phục vụ debug) ra server
+// console, nhưng CHỈ trả cho CLIENT: fallbackMsg do caller CHỦ ĐỘNG truyền (đã tự đánh giá an toàn),
+// hoặc e.message NẾU e là PublicError (tác giả code đã chủ động đánh dấu an toàn — vd validate input),
+// còn lại (Postgres/driver error, package/module error, TypeError do bug, v.v.) → thông điệp CHUNG
+// CHUNG cố định — KHÔNG BAO GIỜ lộ SQL error/đường dẫn hệ thống/stack trace/thông tin cấu hình nội bộ.
+function publicErrorMessage(e, fallbackMsg) {
+  if (fallbackMsg) return fallbackMsg;
+  if (e instanceof PublicError) return e.message;
+  return GENERIC_SERVER_ERROR_MESSAGE;
+}
 function fail(res, e, fallbackMsg) {
-  console.error('⚠️  Lỗi:', e && e.message);
-  res.status(500).json({ ok: false, error: fallbackMsg || ('Lỗi server: ' + (e && e.message)) });
+  console.error('⚠️  Lỗi:', e && e.message, e && e.stack ? '\n' + e.stack : '');
+  res.status(500).json({ ok: false, error: publicErrorMessage(e, fallbackMsg) });
 }
 
 // ── Ghi nhật ký hoạt động (không chờ, không để lỗi ghi log làm hỏng luồng chính) ──
@@ -144,6 +193,10 @@ app.post('/api/visit', async (req, res) => {
 
 // ── Đăng ký ──
 app.post('/api/register', async (req, res) => {
+  // V88 (Phần 7) — chặn tạo hàng loạt tài khoản kịch bản tự động (5 lần/10 phút mỗi IP).
+  if (!checkRateLimit(req, 'register', { maxAttempts: 5, windowMs: 10 * 60 * 1000 })) {
+    return res.status(429).json({ ok: false, error: 'Quá nhiều lần đăng ký. Vui lòng thử lại sau vài phút.' });
+  }
   const { username, password } = req.body || {};
   if (!username || !password) return res.json({ ok: false, error: 'Thiếu tên đăng nhập hoặc mật khẩu' });
   if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
@@ -179,20 +232,32 @@ app.post('/api/register', async (req, res) => {
 
 // ── Đăng nhập ──
 app.post('/api/login', async (req, res) => {
+  // V88 (Phần 7) — chặn brute-force mật khẩu (10 lần/5 phút mỗi IP — đủ rộng cho gõ nhầm thật, đủ hẹp
+  // để làm chậm đáng kể 1 script thử nhiều mật khẩu).
+  if (!checkRateLimit(req, 'login', { maxAttempts: 10, windowMs: 5 * 60 * 1000 })) {
+    return res.status(429).json({ ok: false, error: 'Quá nhiều lần thử đăng nhập. Vui lòng thử lại sau vài phút.' });
+  }
   const { username, password } = req.body || {};
   if (!username || !password) return res.json({ ok: false, error: 'Thiếu tên đăng nhập hoặc mật khẩu' });
   try {
     const key = String(username).toLowerCase();
     const db = await readDB();
     const user = db.users[key];
+    // V88 (Phần 6 — "username enumeration") — TRƯỚC ĐÂY 2 nhánh "tài khoản không tồn tại" vs "sai mật
+    // khẩu" trả 2 THÔNG ĐIỆP KHÁC NHAU — cho phép kẻ tấn công dò xem 1 username có tồn tại trong hệ
+    // thống hay không (thử đăng nhập, đọc thông điệp lỗi) mà KHÔNG cần biết mật khẩu. Giờ CẢ 2 trường
+    // hợp trả CÙNG 1 thông điệp chung — không còn phân biệt được từ phía client. Log server (chỉ
+    // admin/nội bộ thấy) VẪN ghi rõ lý do thật (tài khoản không tồn tại/sai mật khẩu) để phục vụ điều
+    // tra khi cần — chỉ ẩn khỏi RESPONSE cho client, không ẩn khỏi chính hệ thống.
+    const GENERIC_LOGIN_ERROR = 'Tên đăng nhập hoặc mật khẩu không đúng';
     if (!user) {
       logActivity(username, null, 'auth', 'Đăng nhập thất bại (tài khoản không tồn tại)');
-      return res.json({ ok: false, error: 'Tài khoản không tồn tại' });
+      return res.json({ ok: false, error: GENERIC_LOGIN_ERROR });
     }
     const match = await bcrypt.compare(String(password), user.passwordHash);
     if (!match) {
       logActivity(user.username, user.role, 'auth', 'Đăng nhập thất bại (sai mật khẩu)');
-      return res.json({ ok: false, error: 'Sai mật khẩu' });
+      return res.json({ ok: false, error: GENERIC_LOGIN_ERROR });
     }
     const token = makeToken();
     const result = await updateDB((db2) => {
@@ -801,7 +866,8 @@ app.post('/api/settings/retention', async (req, res) => {
   } catch (e) {
     // Sai giá trị retention là lỗi input của user, không phải lỗi server — trả 200/ok:false thay
     // vì 500, đúng convention lỗi nghiệp vụ của các endpoint khác trong file này.
-    res.json({ ok: false, error: e.message });
+    console.error('⚠️  Lỗi:', e && e.message);
+    res.json({ ok: false, error: publicErrorMessage(e) });
   }
 });
 
@@ -1120,7 +1186,7 @@ app.post('/api/fsrs-optimizer/apply', async (req, res) => {
     const result = await fsrsOptimizer.applyPersonalWeights(authed.username);
     logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'fsrs-optimizer', 'Apply personal FSRS weights');
     res.json({ ok: true, ...result });
-  } catch (e) { res.json({ ok: false, error: e.message }); }
+  } catch (e) { console.error('⚠️  Lỗi:', e && e.message); res.json({ ok: false, error: publicErrorMessage(e) }); }
 });
 
 app.post('/api/fsrs-optimizer/rollback', async (req, res) => {
@@ -1130,7 +1196,7 @@ app.post('/api/fsrs-optimizer/rollback', async (req, res) => {
     const result = await fsrsOptimizer.rollbackPersonalWeights(authed.username);
     logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'fsrs-optimizer', 'Rollback FSRS weights về trạng thái trước đó');
     res.json({ ok: true, ...result });
-  } catch (e) { res.json({ ok: false, error: e.message }); }
+  } catch (e) { console.error('⚠️  Lỗi:', e && e.message); res.json({ ok: false, error: publicErrorMessage(e) }); }
 });
 
 app.post('/api/fsrs-optimizer/reset', async (req, res) => {
@@ -1140,7 +1206,7 @@ app.post('/api/fsrs-optimizer/reset', async (req, res) => {
     const result = await fsrsOptimizer.resetToDefaultWeights(authed.username);
     logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'fsrs-optimizer', 'Reset FSRS weights về mặc định');
     res.json({ ok: true, ...result });
-  } catch (e) { res.json({ ok: false, error: e.message }); }
+  } catch (e) { console.error('⚠️  Lỗi:', e && e.message); res.json({ ok: false, error: publicErrorMessage(e) }); }
 });
 
 // ── [ADMIN] Nhập từ vựng hàng loạt (từ file Excel đã được parse ở trình duyệt, hoặc nhập thủ công 1 từ) ──
@@ -1256,6 +1322,12 @@ app.post('/api/admin/vocab/clear', async (req, res) => {
 app.post('/api/change-password', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
+  // V88 (Phần 7) — chặn thử nhiều mật khẩu cũ liên tiếp (5 lần/10 phút mỗi IP) — vd nếu token bị lộ,
+  // hạn chế số lần kẻ chiếm được token có thể dò "mật khẩu hiện tại" (dù đổi mật khẩu không tự lộ gì
+  // thêm ngoài đúng/sai, vẫn nên giới hạn tốc độ dò theo nguyên tắc chung).
+  if (!checkRateLimit(req, 'change-password', { maxAttempts: 5, windowMs: 10 * 60 * 1000 })) {
+    return res.status(429).json({ ok: false, error: 'Quá nhiều lần thử. Vui lòng thử lại sau vài phút.' });
+  }
   const { oldPassword, newPassword } = req.body || {};
   if (!oldPassword || !newPassword) return res.json({ ok: false, error: 'Thiếu dữ liệu' });
   if (String(newPassword).length < 4) return res.json({ ok: false, error: 'Mật khẩu mới cần tối thiểu 4 ký tự' });
@@ -1722,7 +1794,8 @@ app.post('/api/admin/generate-hanviet', async (req, res) => {
       `Chạy sinh nghĩa Hán Việt: ${result.done} từ xong${result.errors ? `, ${result.errors} lỗi` : ''}${errText}`);
     res.json({ ok: true, ...result });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    console.error('⚠️  Lỗi:', e && e.message);
+    res.status(500).json({ ok: false, error: publicErrorMessage(e) });
   }
 });
 
@@ -1764,7 +1837,8 @@ app.post('/api/admin/generate-hanzi-parts', async (req, res) => {
       `Chạy sinh chiết tự bộ thủ: ${result.done} chữ xong${result.errors ? `, ${result.errors} lỗi` : ''}${errText}`);
     res.json({ ok: true, ...result });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    console.error('⚠️  Lỗi:', e && e.message);
+    res.status(500).json({ ok: false, error: publicErrorMessage(e) });
   }
 });
 
@@ -1810,7 +1884,8 @@ app.post('/api/admin/generate-word-examples', async (req, res) => {
       `Chạy sinh ví dụ theo từ: ${result.wordsDone} từ xong, ${result.wordsRetried} cần thử lại${result.errors ? `, ${result.errors} lỗi` : ''}${errText}`);
     res.json({ ok: true, ...result });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    console.error('⚠️  Lỗi:', e && e.message);
+    res.status(500).json({ ok: false, error: publicErrorMessage(e) });
   }
 });
 
@@ -1850,7 +1925,8 @@ app.get('/api/cron/generate-daily', async (req, res) => {
       `[Tự động - cron] Hán Việt: ${hanvietResult.done} từ xong; Sinh ví dụ: ${wordResult.wordsDone} từ xong, ${wordResult.wordsRetried} cần thử lại; Chiết tự: ${hanziResult.done} chữ xong${errText}`);
     res.json({ ok: true, hanviet: hanvietResult, wordExamples: wordResult, hanziParts: hanziResult });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    console.error('⚠️  Lỗi:', e && e.message);
+    res.status(500).json({ ok: false, error: publicErrorMessage(e) });
   }
 });
 
