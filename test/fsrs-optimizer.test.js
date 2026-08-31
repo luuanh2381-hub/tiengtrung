@@ -261,8 +261,8 @@ test('OptimizerDependencyError là 1 loại Error hợp lệ (để caller phân
 
 console.log('\n[V86 — classifyOptimizerError()/mapJobRow() — Phần IX "RETRY" + Phần III "STATE MACHINE", thuần JS không cần Postgres]');
 
-test('classifyOptimizerError(): timeout compute nội bộ ("timeout cấu hình=...") → RETRYABLE (hạ tầng/tải hệ thống, không phải dữ liệu sai)', () => {
-  const e = new optimizer.OptimizerDependencyError('Optimizer chính thức chạy lỗi khi train (engine=native, sau 45.2s, timeout cấu hình=45000ms): timed out');
+test('classifyOptimizerError(): train bị abort theo budget ("abort budget=...") → RETRYABLE (hạ tầng/tải hệ thống, không phải dữ liệu sai)', () => {
+  const e = new optimizer.OptimizerDependencyError('Optimizer chính thức chạy lỗi khi train (engine=native, sau 45.2s, abort budget=40000ms, progress poll=500ms): timed out');
   assert.strictEqual(optimizer.classifyOptimizerError(e), 'RETRYABLE');
 });
 
@@ -322,13 +322,27 @@ test('mapJobRow(null) → null, không throw', () => {
   assert.strictEqual(optimizer.mapJobRow(null), null);
 });
 
-test('OPTIMIZER_MIN_TRAIN_BUDGET_MS có biên an toàn phía trên OPTIMIZER_COMPUTE_TIMEOUT_MS mặc định (Phần VIII — mỗi timeout phải có lý do, không phải số tuỳ tiện)', () => {
-  // So sánh ĐỘNG với chính hằng số kia (không hard-code lại số cụ thể — nếu không, test này sẽ vỡ mỗi
-  // khi OPTIMIZER_COMPUTE_TIMEOUT_MS được tinh chỉnh, dù quan hệ giữa 2 hằng số vẫn đúng).
+test('V90 — các budget optimizer phải nhất quán: train abort + reserve <= min train <= worker budget < Hobby 60s', () => {
+  assert.ok(optimizer.OPTIMIZER_TRAIN_ABORT_BUDGET_MS > 0);
+  assert.ok(optimizer.OPTIMIZER_POST_TRAIN_RESERVE_MS > 0);
   assert.ok(
-    optimizer.OPTIMIZER_MIN_TRAIN_BUDGET_MS >= optimizer.OPTIMIZER_COMPUTE_TIMEOUT_MS,
-    `MIN_TRAIN_BUDGET (${optimizer.OPTIMIZER_MIN_TRAIN_BUDGET_MS}ms) phải >= COMPUTE_TIMEOUT (${optimizer.OPTIMIZER_COMPUTE_TIMEOUT_MS}ms) — nếu không, guard sẽ luôn cho phép bắt đầu train dù không đủ thời gian cho 1 lượt compute-timeout trọn vẹn + evaluate/save`
+    optimizer.OPTIMIZER_MIN_TRAIN_BUDGET_MS >= optimizer.OPTIMIZER_TRAIN_ABORT_BUDGET_MS + optimizer.OPTIMIZER_POST_TRAIN_RESERVE_MS,
+    'MIN_TRAIN_BUDGET phải đủ cho train abort budget + evaluate/save reserve'
   );
+  assert.ok(
+    optimizer.OPTIMIZER_WORKER_BUDGET_MS > optimizer.OPTIMIZER_MIN_TRAIN_BUDGET_MS,
+    'WORKER_BUDGET phải lớn hơn MIN_TRAIN_BUDGET để guard không chặn mọi lượt train'
+  );
+  assert.ok(optimizer.OPTIMIZER_WORKER_BUDGET_MS < 60_000, 'default worker budget phải nằm dưới 60s Hobby');
+  assert.ok(optimizer.OPTIMIZER_PROGRESS_POLL_MS <= 5_000, 'progress poll phải đủ ngắn để abort không bị trễ hàng chục giây');
+});
+
+test('V90 — không được hiểu nhầm binding timeout là compute timeout', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'fsrs', 'optimizer.js'), 'utf8');
+  assert.ok(src.includes('timeout: OPTIMIZER_PROGRESS_POLL_MS'), 'computeParameters() phải nhận poll interval riêng');
+  assert.ok(src.includes('OPTIMIZER_TRAIN_ABORT_BUDGET_MS'), 'phải có budget train riêng ở phía app');
+  assert.ok(src.includes('return false'), 'progress callback phải có đường gửi tín hiệu abort cho binding');
+  assert.ok(!src.includes('timeout: OPTIMIZER_COMPUTE_TIMEOUT_MS'), 'không được dùng lại biến timeout cũ với nghĩa compute timeout');
 });
 
 test('V89 — OPTIMIZER_WORKER_BUDGET_MS mặc định phải AN TOÀN dưới ngưỡng THẬT của Vercel Hobby (60s cứng, đã tra cứu xác nhận — KHÔNG phải giả định), không chỉ dưới con số 300s khai trong vercel.json (con số đó bị Hobby bỏ qua hoàn toàn)', () => {

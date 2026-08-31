@@ -346,23 +346,22 @@ async function main() {
     console.log('  ✅ Gọi runOptimizerJob() trùng trên job đã xong → no-op, an toàn (Phần "IDEMPOTENCY/CONCURRENCY")');
 
     // ════════════════════════════════════════════════════
-    // Test B (V85-HEARTBEAT-FIX, "TEST TỐI THIỂU") — computeParameters() timeout THẬT (binding thật,
-    // timeout cực nhỏ) → job phải "failed" rõ ràng, KHÔNG kẹt "running". Cần binding thật cài được
-    // (SKIP nếu chưa cài, giống style "full pipeline THẬT" ở trên) — CHỈ ĐỌC lại module với
-    // FSRS_OPTIMIZER_TIMEOUT_MS cực nhỏ (OPTIMIZER_COMPUTE_TIMEOUT_MS là hằng số đọc 1 LẦN lúc
-    // require() — muốn đổi giá trị PHẢI xoá cache rồi require() lại, KHÔNG sửa được bằng cách set
-    // process.env sau khi module gốc đã load).
+    // Test B — application train-abort budget THẬT (binding thật, budget nhỏ) → job phải "failed" rõ ràng,
+    // KHÔNG kẹt "running". `timeout` của official binding chỉ là progress-poll interval, nên test này
+    // dùng FSRS_OPTIMIZER_TRAIN_ABORT_MS để ép abort có kiểm soát.
     // ════════════════════════════════════════════════════
-    console.log('\n[Test B — computeParameters() timeout THẬT (binding thật, FSRS_OPTIMIZER_TIMEOUT_MS=1) → job "failed", KHÔNG kẹt running, active weights không đổi]');
+    console.log('\n[Test B — application train-abort budget THẬT (binding thật, FSRS_OPTIMIZER_TRAIN_ABORT_MS=100) → job "failed", KHÔNG kẹt running, active weights không đổi]');
     let bindingInstalledForTimeoutTest = true;
     try { require('@open-spaced-repetition/binding'); } catch { bindingInstalledForTimeoutTest = false; }
     if (bindingInstalledForTimeoutTest) {
       const optimizerModulePath = require.resolve(path.join(__dirname, '..', 'lib', 'fsrs', 'optimizer'));
-      const prevTimeoutEnv = process.env.FSRS_OPTIMIZER_TIMEOUT_MS;
+      const prevTrainAbortEnv = process.env.FSRS_OPTIMIZER_TRAIN_ABORT_MS;
+      const prevProgressPollEnv = process.env.FSRS_OPTIMIZER_PROGRESS_POLL_MS;
       const enabledBeforeTimeout = (await optimizer.getOptimizerStatus(TEST_USER)).personalWeightsEnabled;
       const candidateBeforeTimeout = await pool.query('SELECT candidate_trained_at FROM user_fsrs_weights WHERE user_id = $1', [TEST_USER]);
       delete require.cache[optimizerModulePath];
-      process.env.FSRS_OPTIMIZER_TIMEOUT_MS = '1'; // 1ms — chắc chắn không đủ cho computeParameters() thật trên dataset đã sinh ở trên
+      process.env.FSRS_OPTIMIZER_TRAIN_ABORT_MS = '100'; // 100ms — ép test đi qua đường abort có kiểm soát
+      process.env.FSRS_OPTIMIZER_PROGRESS_POLL_MS = '1'; // poll nhanh để tín hiệu abort không chờ hàng trăm ms
       const optimizerWithTinyTimeout = require(optimizerModulePath);
       try {
         const jobTimeout = await optimizerWithTinyTimeout.createOptimizerJob(TEST_USER, { desiredRetention: 0.9 });
@@ -374,14 +373,14 @@ async function main() {
         await pool.query('UPDATE fsrs_optimizer_jobs SET max_attempts = 1 WHERE id = $1', [jobTimeout.job.id]);
         await optimizerWithTinyTimeout.runOptimizerJob(jobTimeout.job.id, TEST_USER);
         const statusAfterTimeout = await optimizerWithTinyTimeout.getOptimizerStatus(TEST_USER);
-        assert.strictEqual(statusAfterTimeout.job.status, 'failed', 'timeout cực nhỏ (1ms) → computeParameters() PHẢI bị timeout → job "failed", KHÔNG kẹt "running" (Test bắt buộc B)');
+        assert.strictEqual(statusAfterTimeout.job.status, 'failed', 'train-abort budget nhỏ → computeParameters() PHẢI dừng có kiểm soát → job "failed", KHÔNG kẹt "running" (Test B)');
         assert.ok(statusAfterTimeout.lastError, 'Job timeout phải có lastError (câu thông báo an toàn cho user)');
         assert.strictEqual(statusAfterTimeout.personalWeightsEnabled, enabledBeforeTimeout, 'Optimizer fail/timeout → active weights (enabled) PHẢI giữ nguyên, không đổi (Test bắt buộc F)');
         const candidateAfterTimeout = await pool.query('SELECT candidate_trained_at FROM user_fsrs_weights WHERE user_id = $1', [TEST_USER]);
         assert.deepStrictEqual(candidateAfterTimeout.rows[0], candidateBeforeTimeout.rows[0], 'Optimizer fail/timeout → candidate_weights cũ (từ lần chạy thành công trước đó) PHẢI giữ nguyên, KHÔNG bị đè bởi lần chạy fail (Test bắt buộc F)');
-        console.log('  ✅ Timeout thật (FSRS_OPTIMIZER_TIMEOUT_MS=1) → job "failed" đúng kỳ vọng, active/candidate weights không đổi (Test bắt buộc B/F)');
+        console.log('  ✅ Train-abort budget thật → job "failed" đúng kỳ vọng, active/candidate weights không đổi (Test B/F)');
 
-        console.log('\n[Test I (V86) — ĐÚNG kịch bản "computeParameters() liên tục chậm hơn ngân sách": timeout THẬT lặp lại nhiều lần → tự requeue-và-thử-lại TỰ ĐỘNG, cuối cùng failed hẳn khi hết max_attempts, KHÔNG kẹt vô hạn]');
+        console.log('\n[Test I — ĐÚNG kịch bản "train vượt application budget": abort có kiểm soát lặp lại nhiều lần → tự requeue-và-thử-lại, cuối cùng failed hẳn khi hết max_attempts]');
         const jobRetryLoop = await optimizerWithTinyTimeout.createOptimizerJob(TEST_USER, { desiredRetention: 0.9 });
         assert.strictEqual(jobRetryLoop.job.attempt, 1);
         const maxAttemptsForLoop = jobRetryLoop.job.maxAttempts || 3;
@@ -398,11 +397,13 @@ async function main() {
         }
         assert.strictEqual(lastLoopStatus.job.status, 'failed', `Sau tối đa ${maxAttemptsForLoop + 1} lượt gọi runOptimizerJob(), job PHẢI kết thúc 'failed' HẲN — KHÔNG được lặp vô hạn (Phần IX "không retry vô hạn", đây chính là kịch bản "computeParameters() liên tục chậm/timeout" mà yêu cầu audit đặc biệt nhấn mạnh phải có test)`);
         assert.ok(lastLoopStatus.job.attempt >= maxAttemptsForLoop, `attempt cuối (${lastLoopStatus.job.attempt}) phải >= max_attempts (${maxAttemptsForLoop}) — chứng minh ĐÃ thử lại đủ số lần trước khi bỏ cuộc, không fail oan ở lần đầu`);
-        console.log(`  ✅ computeParameters() timeout lặp lại ${maxAttemptsForLoop} lần → tự động requeue-và-thử-lại mỗi lần, CUỐI CÙNG failed hẳn đúng lúc hết lượt — không kẹt vô hạn, không fail oan quá sớm (Test bắt buộc: mô phỏng compute chậm hơn ngân sách)`);
+        console.log(`  ✅ train vượt application budget lặp lại ${maxAttemptsForLoop} lần → tự động requeue-và-thử-lại mỗi lần, CUỐI CÙNG failed hẳn đúng lúc hết lượt — không kẹt vô hạn`);
       } finally {
-        if (prevTimeoutEnv === undefined) delete process.env.FSRS_OPTIMIZER_TIMEOUT_MS;
-        else process.env.FSRS_OPTIMIZER_TIMEOUT_MS = prevTimeoutEnv;
-        delete require.cache[optimizerModulePath]; // dọn cache — module gốc `optimizer` (timeout mặc định 45s) không bị ảnh hưởng
+        if (prevTrainAbortEnv === undefined) delete process.env.FSRS_OPTIMIZER_TRAIN_ABORT_MS;
+        else process.env.FSRS_OPTIMIZER_TRAIN_ABORT_MS = prevTrainAbortEnv;
+        if (prevProgressPollEnv === undefined) delete process.env.FSRS_OPTIMIZER_PROGRESS_POLL_MS;
+        else process.env.FSRS_OPTIMIZER_PROGRESS_POLL_MS = prevProgressPollEnv;
+        delete require.cache[optimizerModulePath]; // dọn cache — module gốc không bị ảnh hưởng
       }
     } else {
       console.log('     ℹ️  Bỏ qua Test B — package "@open-spaced-repetition/binding" chưa cài trong môi trường này.');
