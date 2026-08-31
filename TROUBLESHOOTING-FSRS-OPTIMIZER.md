@@ -142,7 +142,7 @@ xảy ra khi bấm "Run Optimizer" thật trên dataset thật (4.060 review/794
    trên trang npm) — mặc định 45000 (đoán là ms theo convention JS, dưới `maxDuration: 60` của
    `vercel.json` 15 giây) — cho phép Rust-side TỰ dừng và trả lỗi JS bắt được, thay vì để Vercel
    platform giết cả process (nguồn gốc response non-JSON). Chỉnh được qua env `FSRS_OPTIMIZER_TIMEOUT_MS`
-   trên Vercel (Project Settings → Environment Variables) nếu 45s vẫn chưa đủ/quá nhiều.
+   trên Vercel (Project Settings → Environment Variables) nếu application train-abort budget cần điều chỉnh; KHÔNG dùng `timeout` của binding như compute timeout.
 2. Thêm `progress` callback (option có thật) — log tiến độ (throttle 1 dòng/2s) vào Vercel Function
    Logs — LẦN SAU nếu lỗi này xảy ra lại, log sẽ cho biết optimizer có đang chạy/chạy tới đâu trước
    khi chết, thay vì hoàn toàn không có manh mối như lần này.

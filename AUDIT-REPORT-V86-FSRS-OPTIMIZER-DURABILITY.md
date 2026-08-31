@@ -1,3 +1,5 @@
+> **V90 NOTICE:** Các đoạn trong tài liệu này gọi `timeout` của `@open-spaced-repetition/binding` là “timeout nội bộ của compute” là không chính xác. V90 xác nhận `timeout` là progress-poll interval; cơ chế abort phải thực hiện qua progress callback trả `false`. Các mô tả lifecycle/checkpoint/retry khác vẫn là lịch sử kiến trúc. Xem `AUDIT-REPORT-V90-FSRS-OPTIMIZER-ROOT-CAUSE.md`.
+
 # V86 — FSRS Optimizer: fix TRIỆT ĐỂ (durable retry + checkpoint), không chỉ heartbeat
 
 ## VẤN ĐỀ (báo cáo production, sau khi đã có V85-HEARTBEAT-FIX)

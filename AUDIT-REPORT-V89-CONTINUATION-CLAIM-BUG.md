@@ -1,3 +1,6 @@
+> **V90 NOTICE — TÀI LIỆU NÀY ĐÃ LỖI THỜI.**
+> Root cause ở phần `OPTIMIZER_COMPUTE_TIMEOUT_MS`/“timeout 35–45s” bên dưới đã được xác định là **sai semantics** của `@open-spaced-repetition/binding`. `computeParameters(..., { timeout })` dùng `timeout` làm progress-poll interval, không phải compute timeout. Xem **AUDIT-REPORT-V90-FSRS-OPTIMIZER-ROOT-CAUSE.md** và `CLAUDE-PROMPT-V90-FSRS-OPTIMIZER-FIX.md`. Phần continuation reset `status='queued'` của V89 vẫn đúng và được giữ lại.
+
 # V89 — FSRS Optimizer: root cause THẬT của "mất heartbeat, đã thử lại tối đa 3 lần"
 
 ## TRIỆU CHỨNG
