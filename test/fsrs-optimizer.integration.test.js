@@ -408,6 +408,50 @@ async function main() {
       console.log('     ℹ️  Bỏ qua Test B — package "@open-spaced-repetition/binding" chưa cài trong môi trường này.');
     }
 
+    // ════════════════════════════════════════════════════
+    // Test K (V89) — BUG GỐC THẬT SỰ đã gây "mất heartbeat" dù dữ liệu bình thường: budget-guard
+    // continuation (checkpoint 'prepared', xem runOptimizerJob()) TRẢ continuation:true nhưng KHÔNG
+    // reset job về status='queued' trước — khiến invocation MỚI (do api/index.js tự kích hoạt ngay
+    // sau đó) KHÔNG claim lại được (claimQueuedJob() đòi WHERE status='queued'), im lặng no-op, job
+    // kẹt tới khi stale-recovery (180s) mới cứu được — tốn oan 1 attempt cho MỖI lần chuyển tiếp hoàn
+    // toàn bình thường. KHÔNG cần binding thật cài được (guard trigger TRƯỚC khi gọi computeParameters
+    // ()) — test này chạy được trong MỌI môi trường có Postgres, không phụ thuộc native binding.
+    // ════════════════════════════════════════════════════
+    console.log('\n[Test K (V89) — Budget-guard continuation PHẢI reset status=\'queued\' trước khi trả continuation:true (BUG GỐC gây "mất heartbeat" dù dữ liệu bình thường)]');
+    const optimizerModulePathBudget = require.resolve(path.join(__dirname, '..', 'lib', 'fsrs', 'optimizer'));
+    const prevBudgetEnv = process.env.FSRS_OPTIMIZER_WORKER_BUDGET_MS;
+    const prevMinTrainEnv = process.env.FSRS_OPTIMIZER_MIN_TRAIN_BUDGET_MS;
+    delete require.cache[optimizerModulePathBudget];
+    process.env.FSRS_OPTIMIZER_WORKER_BUDGET_MS = '1'; // 1ms — ngân sách hết NGAY sau khi claim, đảm bảo guard trigger đúng lúc sau prepare (chưa kịp train)
+    process.env.FSRS_OPTIMIZER_MIN_TRAIN_BUDGET_MS = '1000000'; // rất lớn — đảm bảo budgetLeftMs() luôn nhỏ hơn, chắc chắn trigger guard mỗi lần
+    const optimizerWithTinyBudget = require(optimizerModulePathBudget);
+    try {
+      const jobBudget = await optimizerWithTinyBudget.createOptimizerJob(TEST_USER, { desiredRetention: 0.9 });
+      const result = await optimizerWithTinyBudget.runOptimizerJob(jobBudget.job.id, TEST_USER);
+      assert.strictEqual(result.continuation, true, 'budget=1ms → phải trigger continuation NGAY sau prepare (chưa kịp chạm tới train)');
+
+      // ĐÂY LÀ ASSERTION QUAN TRỌNG NHẤT của toàn bộ file test này — TRƯỚC khi sửa bug V89, status ở
+      // đây vẫn là 'running' (BUG); SAU khi sửa, PHẢI là 'queued' để invocation tiếp theo claim lại được.
+      const rowAfterContinuation = await pool.query(
+        `SELECT status, stage, (training_payload IS NOT NULL) as has_payload FROM fsrs_optimizer_jobs WHERE id = $1`,
+        [jobBudget.job.id]
+      );
+      assert.strictEqual(rowAfterContinuation.rows[0].status, 'queued', `BUG GỐC V89: sau continuation:true, job PHẢI ở status='queued' để invocation MỚI claim lại được — nếu vẫn 'running', continuation luôn no-op và job kẹt tới khi stale-recovery (180s) mới cứu, tốn oan 1 attempt/lần (ĐÚNG nguyên nhân "mất heartbeat" dù dữ liệu bình thường, dataset nhỏ)`);
+      assert.strictEqual(rowAfterContinuation.rows[0].has_payload, true, 'training_payload phải còn nguyên để invocation mới resume, không load/validate lại từ đầu');
+
+      // Mô phỏng ĐÚNG cơ chế thật: api/index.js tự kích hoạt lại /worker ngay khi thấy continuation:
+      // true — ở đây gọi thẳng claimQueuedJob() lần 2 (không qua HTTP, giống style cả file test này).
+      const claimedAgain = await optimizerWithTinyBudget.claimQueuedJob(jobBudget.job.id, TEST_USER);
+      assert.ok(claimedAgain, 'invocation MỚI PHẢI claim lại được job (status đã đúng \'queued\') — trước khi sửa bug, đây sẽ là null (no-op hoàn toàn, đúng bug đã báo cáo)');
+      assert.strictEqual(claimedAgain.stage, 'prepared', 'claim lại đúng vào stage \'prepared\' (đã có training_payload) — KHÔNG load/validate lại từ đầu');
+      assert.strictEqual(claimedAgain.attempt, 1, 'attempt KHÔNG được tăng chỉ vì continuation bình thường (khác nhánh lỗi trong failOrRequeue) — đây là chuyển tiếp trong CÙNG 1 attempt, không phải 1 lần thử lại mới do lỗi');
+      console.log('  ✅ Budget-guard continuation: status reset đúng về \'queued\', invocation mới claim lại thành công NGAY, KHÔNG tốn oan attempt (BUG GỐC V89 đã sửa)');
+    } finally {
+      if (prevBudgetEnv === undefined) delete process.env.FSRS_OPTIMIZER_WORKER_BUDGET_MS; else process.env.FSRS_OPTIMIZER_WORKER_BUDGET_MS = prevBudgetEnv;
+      if (prevMinTrainEnv === undefined) delete process.env.FSRS_OPTIMIZER_MIN_TRAIN_BUDGET_MS; else process.env.FSRS_OPTIMIZER_MIN_TRAIN_BUDGET_MS = prevMinTrainEnv;
+      delete require.cache[optimizerModulePathBudget]; // dọn cache — module gốc `optimizer` (budget mặc định 50s) không bị ảnh hưởng
+    }
+
     console.log('\n════════════════════════════════════════════════════');
     console.log('\n[V87 (Postgres thật) — GET /status vẫn trả JSON hợp lệ, KHÔNG throw, KHÔNG chạm native optimizer, dù package @open-spaced-repetition/binding có cài được trên máy chạy test hay không]');
     // Đây là bản THỰC THI ĐẦY ĐỦ (có DB thật) của Test bắt buộc ở Phần XVI — khác bản trong

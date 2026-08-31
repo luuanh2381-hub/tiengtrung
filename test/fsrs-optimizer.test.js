@@ -323,15 +323,38 @@ test('mapJobRow(null) → null, không throw', () => {
 });
 
 test('OPTIMIZER_MIN_TRAIN_BUDGET_MS có biên an toàn phía trên OPTIMIZER_COMPUTE_TIMEOUT_MS mặc định (Phần VIII — mỗi timeout phải có lý do, không phải số tuỳ tiện)', () => {
-  // 45s (timeout compute mặc định) + margin cho evaluate/save — xem comment tại khai báo hằng số này
-  // trong lib/fsrs/optimizer.js. Test này CHỈ xác nhận quan hệ giữa 2 hằng số, không hard-code lại
-  // số cụ thể (để không vỡ nếu sau này chỉnh OPTIMIZER_COMPUTE_TIMEOUT_MS qua biến môi trường).
-  assert.ok(optimizer.OPTIMIZER_MIN_TRAIN_BUDGET_MS >= 45_000, 'phải đủ chỗ cho ít nhất 1 lượt compute-timeout mặc định (45s) trọn vẹn');
+  // So sánh ĐỘNG với chính hằng số kia (không hard-code lại số cụ thể — nếu không, test này sẽ vỡ mỗi
+  // khi OPTIMIZER_COMPUTE_TIMEOUT_MS được tinh chỉnh, dù quan hệ giữa 2 hằng số vẫn đúng).
+  assert.ok(
+    optimizer.OPTIMIZER_MIN_TRAIN_BUDGET_MS >= optimizer.OPTIMIZER_COMPUTE_TIMEOUT_MS,
+    `MIN_TRAIN_BUDGET (${optimizer.OPTIMIZER_MIN_TRAIN_BUDGET_MS}ms) phải >= COMPUTE_TIMEOUT (${optimizer.OPTIMIZER_COMPUTE_TIMEOUT_MS}ms) — nếu không, guard sẽ luôn cho phép bắt đầu train dù không đủ thời gian cho 1 lượt compute-timeout trọn vẹn + evaluate/save`
+  );
 });
 
-test('OPTIMIZER_WORKER_BUDGET_MS < 300.000ms (maxDuration khai trong vercel.json) — để lại margin an toàn, không dùng sát nút', () => {
-  assert.ok(optimizer.OPTIMIZER_WORKER_BUDGET_MS < 300_000);
-  assert.ok(optimizer.OPTIMIZER_WORKER_BUDGET_MS > optimizer.OPTIMIZER_MIN_TRAIN_BUDGET_MS, 'ngân sách tổng phải lớn hơn mức tối thiểu cần riêng cho train, nếu không mọi lượt chạy đều fail ngay ở guard');
+test('V89 — OPTIMIZER_WORKER_BUDGET_MS mặc định phải AN TOÀN dưới ngưỡng THẬT của Vercel Hobby (60s cứng, đã tra cứu xác nhận — KHÔNG phải giả định), không chỉ dưới con số 300s khai trong vercel.json (con số đó bị Hobby bỏ qua hoàn toàn)', () => {
+  const REAL_HOBBY_HARD_CAP_MS = 60_000; // đã tra cứu xác nhận (2026) — xem AUDIT-REPORT-V89-CONTINUATION-CLAIM-BUG.md
+  assert.ok(
+    optimizer.OPTIMIZER_WORKER_BUDGET_MS < REAL_HOBBY_HARD_CAP_MS,
+    `OPTIMIZER_WORKER_BUDGET_MS (${optimizer.OPTIMIZER_WORKER_BUDGET_MS}ms) PHẢI nhỏ hơn ngưỡng cứng THẬT của Hobby (${REAL_HOBBY_HARD_CAP_MS}ms) — nếu không, platform sẽ SIGKILL trước khi guard tự áp của code kịp can thiệp, đúng nguyên nhân gốc bug "mất heartbeat"`
+  );
+  assert.ok(optimizer.OPTIMIZER_WORKER_BUDGET_MS > optimizer.OPTIMIZER_MIN_TRAIN_BUDGET_MS, 'ngân sách tổng phải lớn hơn mức tối thiểu cần riêng cho train, nếu không mọi lượt chạy đều bị guard chặn ngay từ đầu, không bao giờ train được (bug MỚI nếu tinh chỉnh 2 hằng số không đồng bộ)');
+});
+
+console.log('\n[V89 — BUG GỐC "mất heartbeat" — budget-guard continuation phải reset status trước khi return]');
+
+test('runOptimizerJob(): nhánh budget-guard continuation (checkpoint \'prepared\') PHẢI UPDATE status=\'queued\' TRƯỚC dòng "return { continuation: true }" — kiểm tra TĨNH trên chính source thật để chặn tái phát bug đã tìm ra (xem AUDIT-REPORT-V89-CONTINUATION-CLAIM-BUG.md)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'fsrs', 'optimizer.js'), 'utf8');
+  const body = stripLineComments(extractFunctionBody(src, /async function runOptimizerJob\s*\(/));
+  // Định vị ĐÚNG đoạn "hết ngân sách sau prepare" (nhãn log JOB_RETRY duy nhất gắn với budget-guard,
+  // phân biệt với nhánh requeue-do-lỗi trong failOrRequeue() — nhãn đó dùng note khác).
+  const marker = "note: 'hết ngân sách sau prepare";
+  const markerIdx = body.indexOf(marker);
+  assert.ok(markerIdx !== -1, 'không tìm thấy đoạn budget-guard continuation trong runOptimizerJob() — có thể đã bị đổi tên/di chuyển, cần cập nhật lại test này');
+  const returnIdx = body.indexOf('return { continuation: true }', markerIdx);
+  assert.ok(returnIdx !== -1 && returnIdx - markerIdx < 2000, 'không tìm thấy "return { continuation: true }" ngay sau đoạn budget-guard — cần cập nhật lại test này nếu cấu trúc code đã đổi');
+  const between = body.slice(markerIdx, returnIdx);
+  assert.ok(/status\s*=\s*'queued'/.test(between), 'BUG GỐC V89: phải có UPDATE ... SET status=\'queued\' GIỮA đoạn log budget-guard và dòng return continuation:true — thiếu dòng này khiến invocation kế tiếp không claim lại được job (claimQueuedJob() đòi status=\'queued\'), continuation luôn no-op, job kẹt tới khi stale-recovery (180s) mới cứu, tốn oan attempt mỗi lần');
+  assert.ok(/WHERE id = \$1 AND status = 'running'/.test(between), 'UPDATE reset status phải có điều kiện WHERE status=\'running\' (đúng job này claim, không ghi đè job đã bị worker/lượt khác xử lý trước — an toàn concurrency)');
 });
 
 console.log('\n[V88 — Phần 5 audit "API Error Leak" — PublicError/publicErrorMessage()]');
