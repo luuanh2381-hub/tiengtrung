@@ -1160,6 +1160,12 @@ app.post('/api/fsrs-optimizer/run', async (req, res) => {
 // invocation mới sẽ claim lại (thấy training_payload đã lưu), nhảy thẳng vào train với ngân sách MỚI
 // TINH, không phải chia sẻ với phần load/validate đã xong ở invocation này.
 app.post('/api/fsrs-optimizer/worker', async (req, res) => {
+  // V90-FIX-3 — mốc THỜI GIAN THẬT của invocation này, lấy NGAY DÒNG ĐẦU TIÊN của handler, TRƯỚC CẢ
+  // requireAuth() (có query DB để xác thực session, có thể chậm nếu Neon đang cold-start) — xem giải
+  // thích đầy đủ ở runOptimizerJob() trong lib/fsrs/optimizer.js. Đây là mốc GẦN NHẤT có thể lấy được
+  // với thời điểm Vercel thật sự bắt đầu tính giờ maxDuration cho invocation này — phần trước đó (cold
+  // start container) nằm ngoài tầm với của code ứng dụng.
+  const invocationStartedAt = Date.now();
   const authed = await requireAuth(req, res);
   if (!authed) return;
   const jobId = Number(req.body && req.body.jobId);
@@ -1167,7 +1173,7 @@ app.post('/api/fsrs-optimizer/worker', async (req, res) => {
   // Đăng ký việc chạy nền TRƯỚC khi trả response — đảm bảo waitUntil (bên trong runInBackground) giữ
   // ĐÚNG invocation này sống tới khi runOptimizerJob() xong, không phụ thuộc thứ tự I/O của res.json().
   runInBackground(async () => {
-    const result = await fsrsOptimizer.runOptimizerJob(jobId, authed.username);
+    const result = await fsrsOptimizer.runOptimizerJob(jobId, authed.username, { invocationStartedAt });
     if (result && result.continuation) {
       // ĐÃ ở trong background task này rồi (waitUntil ngoài cùng đã bao trọn cả runOptimizerJob() lẫn
       // lời gọi tiếp theo đây) — dùng fetchOptimizerWorker() trực tiếp, KHÔNG bọc thêm waitUntil lồng.
