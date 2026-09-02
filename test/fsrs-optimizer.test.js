@@ -291,6 +291,33 @@ test('classifyOptimizerError(): lỗi lập trình lạ/không rõ nguyên nhân
   assert.strictEqual(optimizer.classifyOptimizerError(e), 'NON_RETRYABLE');
 });
 
+console.log('\n[V90-FIX-2 — cờ optimizerAborted (cấu trúc) phải THẮNG so khớp text — audit lại vì binding có');
+console.log('thể REJECT hoặc RESOLVE-hình-dạng-sai sau khi app tự abort, không có tài liệu công khai xác');
+console.log('nhận cái nào — code phải đúng ở CẢ 2 khả năng, không suy đoán]');
+
+test('classifyOptimizerError(): optimizerAborted=true PHẢI THẮNG dù message trùng hệt marker NON_RETRYABLE ("weights không hợp lệ") — đây là điểm audit lại phát hiện: binding có thể RESOLVE (không reject) sau khi app abort, khiến nhánh validate hình dạng weights vô tình ném đúng câu chữ marker đó', () => {
+  const e = new optimizer.OptimizerDependencyError('Optimizer chính thức trả về weights không hợp lệ (cần đúng 21 số hữu hạn). Nhận được: {"partial":true}');
+  e.optimizerAborted = true; // gắn bởi trainWithOfficialOptimizer khi progress callback tự abort vì hết ngân sách
+  assert.strictEqual(optimizer.classifyOptimizerError(e), 'RETRYABLE', 'abort có chủ đích PHẢI luôn retryable, bất kể message trông giống lỗi dữ liệu deterministic đến đâu');
+});
+
+test('classifyOptimizerError(): optimizerAborted=true THẮNG cả 2 marker NON_RETRYABLE còn lại (không phải chỉ marker "weights không hợp lệ")', () => {
+  const e1 = new optimizer.OptimizerDependencyError('... KHÔNG load được trên môi trường hiện tại ...');
+  e1.optimizerAborted = true;
+  assert.strictEqual(optimizer.classifyOptimizerError(e1), 'RETRYABLE');
+  const e2 = new optimizer.OptimizerDependencyError('... KHÔNG export đúng ...');
+  e2.optimizerAborted = true;
+  assert.strictEqual(optimizer.classifyOptimizerError(e2), 'RETRYABLE');
+});
+
+test('classifyOptimizerError(): optimizerAborted không có (undefined)/false → hành vi CŨ giữ nguyên, không đổi (không có cờ thì vẫn so khớp text như trước)', () => {
+  const withoutFlag = new optimizer.OptimizerDependencyError('Optimizer chính thức trả về weights không hợp lệ (cần đúng 21 số hữu hạn). Nhận được: null');
+  assert.strictEqual(optimizer.classifyOptimizerError(withoutFlag), 'NON_RETRYABLE');
+  const explicitFalse = new optimizer.OptimizerDependencyError('Optimizer chính thức trả về weights không hợp lệ. Nhận được: null');
+  explicitFalse.optimizerAborted = false;
+  assert.strictEqual(optimizer.classifyOptimizerError(explicitFalse), 'NON_RETRYABLE');
+});
+
 test('mapJobRow(): user thường KHÔNG thấy errorMessage/workerId — chỉ admin (Phần ERROR SECURITY, vẫn giữ nguyên nguyên tắc V85)', () => {
   const row = {
     id: 42, status: 'failed', stage: 'failed', attempt: 2, max_attempts: 3, error_retryable: false,
@@ -545,6 +572,66 @@ test('sanitizeEngineStatusForUser(): chỉ giữ available/engine/packageVersion
   assert.strictEqual(sanitized.nativeBinary, undefined);
 });
 
+console.log('\n[Audit lại (bản prompt mới, đầy đủ hơn) — V90-FIX-2 (phân loại abort) + V90-FIX-3 (mốc thời');
+console.log('gian ngân sách chính xác hơn) — kiểm tra TĨNH trên chính source thật, cùng phong cách với các');
+console.log('test V89/V90 phía trên]');
+
+test('trainWithOfficialOptimizer(): CẢ 2 nhánh báo lỗi abort (catch của computeParameters, VÀ nhánh validate hình dạng weights) đều PHẢI gắn err.optimizerAborted = true — không được chỉ sửa 1 trong 2 nhánh', () => {
+  const body = stripLineComments(extractFunctionBody(OPTIMIZER_SRC, /async function trainWithOfficialOptimizer\s*\(/));
+  const occurrences = body.split('optimizerAborted = true').length - 1;
+  assert.strictEqual(occurrences, 2, `phải có ĐÚNG 2 chỗ gắn optimizerAborted=true (1 ở catch, 1 ở validate hình dạng) — tìm thấy ${occurrences}. Nếu cấu trúc hàm đã đổi, cập nhật lại test này thay vì xoá.`);
+  assert.ok(/let wasAbortedByBudget = false/.test(body), 'phải có biến cờ nội bộ đánh dấu abort NGAY tại progress callback (nguồn duy nhất biết CHẮC đây là abort do budget, không phải lỗi khác)');
+});
+
+test('classifyOptimizerError(): phải kiểm tra e.optimizerAborted TRƯỚC (return sớm) rồi mới tới so khớp text — thứ tự sai sẽ khiến cờ cấu trúc vô nghĩa với 1 số loại error', () => {
+  const body = stripLineComments(extractFunctionBody(OPTIMIZER_SRC, /function classifyOptimizerError\s*\(/));
+  const flagCheckIdx = body.indexOf('e.optimizerAborted');
+  const firstMarkerCheckIdx = body.indexOf('NON_RETRYABLE_ERROR_MARKERS');
+  assert.ok(flagCheckIdx !== -1, 'không tìm thấy kiểm tra e.optimizerAborted trong classifyOptimizerError()');
+  assert.ok(firstMarkerCheckIdx === -1 || flagCheckIdx < firstMarkerCheckIdx, 'kiểm tra optimizerAborted phải nằm TRƯỚC (return sớm) phần so khớp NON_RETRYABLE_ERROR_MARKERS bằng text');
+});
+
+test('runOptimizerJob(): mốc workerStartedAt PHẢI ưu tiên invocationStartedAt truyền vào (đo TRƯỚC requireAuth() ở api/index.js) thay vì Date.now() đo muộn hơn — audit lại phát hiện thời gian auth+claim (round-trip Postgres, có thể chậm nếu Neon cold-start) trước đây không bị tính vào ngân sách 50s tự áp', () => {
+  const body = stripLineComments(extractFunctionBody(OPTIMIZER_SRC, /async function runOptimizerJob\s*\(/));
+  assert.ok(/invocationStartedAt/.test(body), 'runOptimizerJob() phải nhận invocationStartedAt (qua options thứ 3)');
+  assert.ok(
+    /workerStartedAt\s*=\s*Number\.isFinite\(invocationStartedAt\)\s*\?\s*invocationStartedAt\s*:\s*Date\.now\(\)/.test(body.replace(/\s+/g, ' ')),
+    'workerStartedAt phải ưu tiên invocationStartedAt hợp lệ, fallback Date.now() để không phá tương thích ngược với caller cũ/test cũ gọi 2 tham số'
+  );
+});
+
+test('api/index.js: route POST /worker phải đo invocationStartedAt = Date.now() Ở DÒNG ĐẦU TIÊN, TRƯỚC requireAuth(), rồi truyền { invocationStartedAt } cho runOptimizerJob() — đo SAU requireAuth() sẽ làm mất đúng phần thời gian audit lại muốn tính vào ngân sách', () => {
+  const workerRouteIdx = API_SRC.indexOf("app.post('/api/fsrs-optimizer/worker'");
+  assert.ok(workerRouteIdx !== -1, 'không tìm thấy route POST /worker — có thể đã đổi tên/di chuyển, cần cập nhật lại test này');
+  const routeSlice = stripLineComments(API_SRC.slice(workerRouteIdx, workerRouteIdx + 1200));
+  const invocationIdx = routeSlice.indexOf('const invocationStartedAt = Date.now()');
+  const authIdx = routeSlice.indexOf('requireAuth(req, res)');
+  const passthroughIdx = routeSlice.indexOf('runOptimizerJob(jobId, authed.username, { invocationStartedAt }');
+  assert.ok(invocationIdx !== -1, 'thiếu "const invocationStartedAt = Date.now()" trong route /worker');
+  assert.ok(authIdx !== -1, 'không tìm thấy lời gọi requireAuth() trong route /worker (route có thể đã đổi cấu trúc)');
+  assert.ok(invocationIdx < authIdx, 'invocationStartedAt phải được đo TRƯỚC requireAuth(), không phải sau');
+  assert.ok(passthroughIdx !== -1 && passthroughIdx > authIdx, 'phải truyền { invocationStartedAt } vào runOptimizerJob() SAU khi auth xong');
+});
+
+test('runOptimizerJob(): candidate_meta của lần train THÀNH CÔNG phải lưu optimizerEngine (native/wasi) — audit lại phát hiện trước đây thông tin engine chỉ có ở console.log tạm thời lúc train, mất ngay sau khi hết phiên xem Vercel Function Logs', () => {
+  const body = stripLineComments(extractFunctionBody(OPTIMIZER_SRC, /async function runOptimizerJob\s*\(/));
+  const metaIdx = body.indexOf('optimizerVersion: getOptimizerBindingVersion()');
+  assert.ok(metaIdx !== -1, 'không tìm thấy object meta lưu candidate — có thể đã đổi tên field, cần cập nhật lại test này');
+  const metaSlice = body.slice(metaIdx, metaIdx + 400);
+  assert.ok(/optimizerEngine\s*:\s*loadOfficialOptimizer\(\)\.engine/.test(metaSlice), 'object meta phải có optimizerEngine lấy từ loadOfficialOptimizer().engine (đã cache, không tốn thêm lệnh gọi native)');
+});
+
+test('runOptimizerJob(): khi train bị optimizerAborted, PHẢI có 1 dòng log CÓ CẤU TRÚC riêng (log(\'OPTIMIZER_ABORTED\', ...)) TRƯỚC khi gọi failOrRequeue() — Phần XI LOGGING, để grep được trên Vercel Function Logs mà không cần đoán từ message tự do', () => {
+  const body = stripLineComments(extractFunctionBody(OPTIMIZER_SRC, /async function runOptimizerJob\s*\(/));
+  const trainCallIdx = body.indexOf('trainWithOfficialOptimizer(train');
+  assert.ok(trainCallIdx !== -1, 'không tìm thấy lời gọi trainWithOfficialOptimizer(train...) — có thể đã đổi tên biến, cần cập nhật lại test này');
+  const afterTrainCall = body.slice(trainCallIdx, trainCallIdx + 1500);
+  const abortedLogIdx = afterTrainCall.indexOf("log('OPTIMIZER_ABORTED'");
+  const failOrRequeueIdx = afterTrainCall.indexOf("failOrRequeue(e, 'training')");
+  assert.ok(abortedLogIdx !== -1, "thiếu log('OPTIMIZER_ABORTED', ...) trong catch quanh trainWithOfficialOptimizer()");
+  assert.ok(failOrRequeueIdx !== -1 && abortedLogIdx < failOrRequeueIdx, "log('OPTIMIZER_ABORTED', ...) phải chạy TRƯỚC failOrRequeue() trong cùng catch");
+});
+
 console.log('\n[lib/fsrs/optimizer.js — trainWithOfficialOptimizer() (Phần 3/21 — KHÔNG fallback tự viết optimizer)]');
 
 // CommonJS không có top-level await — bọc phần async (chỉ 1 test duy nhất cần async) trong 1 IIFE
@@ -569,6 +656,88 @@ console.log('\n[lib/fsrs/optimizer.js — trainWithOfficialOptimizer() (Phần 3
       assert.ok(require(path.join(__dirname, '..', 'lib', 'fsrs')).isValidWeightsArray(w));
     }
   });
+
+  console.log('\n[Audit lại — V90-FIX-2: trainWithOfficialOptimizer() phải xử lý ĐÚNG ở CẢ 2 khả năng hành vi');
+  console.log('thật của binding sau khi app tự abort (reject HAY resolve-hình-dạng-sai) — tài liệu công khai');
+  console.log('không xác nhận rõ cái nào là đúng, nên mô phỏng cả 2 qua require.cache tạm thời]');
+
+  // Mô phỏng binding bằng require.cache TẠM THỜI (khôi phục ngay trong finally) — hoạt động DÙ package
+  // thật đã cài hay chưa, miễn require.resolve() ra được 1 đường dẫn để ghi đè cache tại đó. Nếu gói
+  // chưa từng được liệt kê/cài đặt (require.resolve tự nó throw), SKIP rõ ràng thay vì báo lỗi sai chỗ.
+  let bindingResolvedPath = null;
+  try { bindingResolvedPath = require.resolve('@open-spaced-repetition/binding'); } catch { /* xem nhánh SKIP ngay dưới */ }
+
+  if (!bindingResolvedPath) {
+    console.log('  ℹ️  SKIP nhóm test "mô phỏng abort qua require.cache" — @open-spaced-repetition/binding không resolve được trong môi trường này.');
+  } else {
+    const withFakeBinding = (fakeExports, fn) => {
+      const previous = require.cache[bindingResolvedPath];
+      require.cache[bindingResolvedPath] = { id: bindingResolvedPath, filename: bindingResolvedPath, loaded: true, exports: fakeExports };
+      optimizer.resetOptimizerEngineCache();
+      return Promise.resolve().then(fn).finally(() => {
+        if (previous) require.cache[bindingResolvedPath] = previous; else delete require.cache[bindingResolvedPath];
+        optimizer.resetOptimizerEngineCache();
+      });
+    };
+    const makeFakeBinding = (mode) => {
+      class FSRSBindingItem { constructor(reviews) { this.reviews = reviews; } }
+      class FSRSBindingReview { constructor(rating, deltaT) { this.rating = rating; this.deltaT = deltaT; } }
+      async function computeParameters(_items, opts) {
+        for (let i = 1; i <= 20; i++) {
+          const end = Date.now() + 3; // busy-wait ngắn CÓ CHỦ ĐÍCH — progress callback bắt buộc đồng bộ
+          while (Date.now() < end) { /* nhường đủ thời gian thật trôi qua để elapsedMs vượt abortAfterMs nhỏ trong test */ }
+          const cont = typeof opts.progress === 'function' ? opts.progress(i, 20) : undefined;
+          if (cont === false) {
+            if (mode === 'reject') throw new Error('fake binding: cancelled (reject)');
+            if (mode === 'resolve-invalid') return { partial: true };
+          }
+        }
+        return new Array(21).fill(0).map((_, i) => i * 0.1);
+      }
+      return { computeParameters, FSRSBindingItem, FSRSBindingReview };
+    };
+
+    await testAsync('trainWithOfficialOptimizer(): binding REJECT khi progress trả false (1 trong 2 khả năng hành vi thật có thể xảy ra) → optimizerAborted=true + classifyOptimizerError()=RETRYABLE', async () => {
+      await withFakeBinding(makeFakeBinding('reject'), async () => {
+        await assert.rejects(
+          () => optimizer.trainWithOfficialOptimizer([{ reviews: [{ rating: 3, deltaT: 1 }] }], { abortAfterMs: 10 }),
+          (err) => {
+            assert.strictEqual(err.optimizerAborted, true, 'phải gắn optimizerAborted=true');
+            assert.strictEqual(optimizer.classifyOptimizerError(err), 'RETRYABLE');
+            return true;
+          }
+        );
+      });
+    });
+
+    await testAsync('trainWithOfficialOptimizer(): binding RESOLVE với hình dạng KHÔNG hợp lệ khi progress trả false (khả năng hành vi thật còn lại) → VẪN optimizerAborted=true + RETRYABLE, KHÔNG bị lẫn với lỗi "weights không hợp lệ" thật (NON_RETRYABLE)', async () => {
+      await withFakeBinding(makeFakeBinding('resolve-invalid'), async () => {
+        await assert.rejects(
+          () => optimizer.trainWithOfficialOptimizer([{ reviews: [{ rating: 3, deltaT: 1 }] }], { abortAfterMs: 10 }),
+          (err) => {
+            assert.strictEqual(err.optimizerAborted, true, 'phải gắn optimizerAborted=true dù binding RESOLVE thay vì reject');
+            assert.strictEqual(optimizer.classifyOptimizerError(err), 'RETRYABLE');
+            return true;
+          }
+        );
+      });
+    });
+
+    await testAsync('trainWithOfficialOptimizer(): lỗi KHÔNG liên quan tới abort (lỗi dependency/train thật) không bị gắn nhầm optimizerAborted', async () => {
+      class FSRSBindingItem { constructor(reviews) { this.reviews = reviews; } }
+      class FSRSBindingReview { constructor(rating, deltaT) { this.rating = rating; this.deltaT = deltaT; } }
+      async function computeParameters() { throw new Error('fake binding: lỗi thật không liên quan abort'); }
+      await withFakeBinding({ computeParameters, FSRSBindingItem, FSRSBindingReview }, async () => {
+        await assert.rejects(
+          () => optimizer.trainWithOfficialOptimizer([{ reviews: [{ rating: 3, deltaT: 1 }] }], { abortAfterMs: 60_000 }),
+          (err) => {
+            assert.notStrictEqual(err.optimizerAborted, true, 'lỗi không liên quan abort không được gắn optimizerAborted');
+            return true;
+          }
+        );
+      });
+    });
+  }
 
   console.log('\n════════════════════════════════════════════════════');
   console.log(`Kết quả: ${passed} PASS, ${failed} FAIL`);
