@@ -19,6 +19,16 @@ let _optimizerPollTimer = null;
 let _optimizerConsecutiveErrors = 0; // Phần 3 — chặn tự thử lại VÔ HẠN nếu lỗi hạ tầng KHÔNG PHẢI tạm thời (vd cấu hình sai vĩnh viễn), tránh dội tải DB/server không cần thiết
 const OPTIMIZER_MAX_CONSECUTIVE_ERRORS = 5; // ~10s tự thử lại liên tục (5 × 2s) trước khi cần user chủ động bấm lại
 const OPTIMIZER_POLL_MS = 2000;
+// ── Audit lại "AUDIT V91 – FIX FSRS OPTIMIZER DỨT ĐIỂM" — computeParameters() giờ chạy TRONG
+//     TRÌNH DUYỆT qua Web Worker (Phần I/II/V), KHÔNG còn trong Vercel Function nữa. State module-
+//     scope này theo dõi Worker của CHÍNH TAB này — sống độc lập với việc modal đang mở hay đóng
+//     (đóng modal KHÔNG dừng Worker, giống hệt tinh thần "đóng modal không huỷ job" ở bản server cũ —
+//     chỉ có source của việc train là đổi từ server sang tab này). Reload/đóng hẳn tab MỚI thật sự
+//     dừng Worker (trình duyệt tự huỷ) — server nhận ra qua mất keepalive (Phần VI/VII).
+let _optimizerBrowserWorker = null;
+let _optimizerBrowserJobId = null;
+let _optimizerKeepaliveTimer = null;
+const OPTIMIZER_KEEPALIVE_MS = 15000; // rõ ràng ngắn hơn nhiều so với ngưỡng stale phía server (mặc định 180s) — vài lần lỡ nhịp (tab bị trình duyệt tạm ngưng ở nền) vẫn không bị đánh stale oan
 
 function openOptimizerModal() {
   if (!isLoggedIn()) return;
@@ -87,6 +97,7 @@ const OPTIMIZER_STAGE_LABEL = {
   saving: '💾 Đang lưu kết quả...',
   completed: '✅ Hoàn tất',
   failed: '⚠️ Thất bại',
+  cancelled: '🚫 Đã hủy',
 };
 
 // V87 (Phần IV) — GET /diagnostics chỉ gọi khi ADMIN CHỦ ĐỘNG bấm nút (KHÔNG BAO GIỜ tự động/định kỳ
@@ -238,12 +249,13 @@ function renderOptimizerBody(s) {
     const pct = (prog && Number.isFinite(prog.current) && Number.isFinite(prog.total) && prog.total > 0)
       ? Math.min(100, Math.round((prog.current / prog.total) * 100)) : (isQueued ? 5 : null);
     html += `<div style="background:var(--paper);border-radius:12px;padding:12px 14px;margin-bottom:12px;">
-      <div style="font-weight:800;font-size:.85rem;text-align:center;margin-bottom:8px;">${stageLabel}${progText}</div>
+      <div id="optimizer-progress-label" style="font-weight:800;font-size:.85rem;text-align:center;margin-bottom:8px;">${stageLabel}${progText}</div>
       <div style="height:8px;border-radius:6px;background:rgba(0,0,0,.08);overflow:hidden;">
-        <div style="height:100%;border-radius:6px;background:var(--ok);transition:width .4s;width:${pct === null ? '35' : pct}%;${pct === null ? 'animation:optimizer-indeterminate 1.4s ease-in-out infinite;' : ''}"></div>
+        <div id="optimizer-progress-bar" style="height:100%;border-radius:6px;background:var(--ok);transition:width .4s;width:${pct === null ? '35' : pct}%;${pct === null ? 'animation:optimizer-indeterminate 1.4s ease-in-out infinite;' : ''}"></div>
       </div>
       ${retryNote}
       <div style="color:var(--muted);font-size:.68rem;text-align:center;margin-top:8px;">Bạn có thể đóng cửa sổ này — job vẫn tiếp tục chạy, mở lại để xem tiếp.</div>
+      ${isRunning ? `<button type="button" style="margin-top:8px;width:100%;font-size:.72rem;color:var(--fail);background:none;border:1px solid var(--fail);border-radius:8px;padding:5px;cursor:pointer;" onclick="cancelOptimizerRun(${s.job.id})">🚫 Hủy</button>` : ''}
     </div>
     <style>@keyframes optimizer-indeterminate{0%{margin-left:0%;}50%{margin-left:55%;}100%{margin-left:0%;}}</style>`;
   }
@@ -332,43 +344,186 @@ function showOptimizerError(msg) {
   errEl.classList.add('show');
 }
 
-// V85 — runOptimizerNow() giờ CHỈ tạo job (POST /run trả về NGAY, 202) rồi bắt đầu poll trạng thái
-// THẬT qua loadOptimizerStatus()/ensureOptimizerPolling() — KHÔNG còn đợi cả pipeline train chạy
-// xong trong 1 lần fetch() như trước (đó chính là nguyên nhân UI treo ở "Đang chạy..." khi request
-// dài bị Vercel timeout). "Đang chạy..." giờ luôn được XÁC NHẬN LẠI mỗi 2 giây qua poll — nếu job
-// chết giữa chừng, server tự chuyển 'failed' (heartbeat/stale-job recovery) và lần poll kế tiếp sẽ
-// hiện đúng trạng thái đó + nút "Thử lại", không bao giờ kẹt vĩnh viễn.
-//
-// Giữ nguyên cách xử lý response KHÔNG PHẢI JSON (Phần "ERROR SECURITY"/hạ tầng) từ bản trước — vẫn
-// hữu ích vì request TẠO JOB (nhẹ) vẫn có thể gặp lỗi hạ tầng dù hiếm hơn nhiều so với trước đây.
+// V91-BROWSER (audit lại "AUDIT V91 – FIX FSRS OPTIMIZER DỨT ĐIỂM") — runOptimizerNow() giờ:
+//   1. POST /browser/prepare — server CHỈ chuẩn bị dữ liệu (nhanh, không phải phần từng gây timeout),
+//      trả về NGAY train/validation/defaultWeights + URL asset WASM (Phần III bước 1-3).
+//   2. Tạo Web Worker (js/fsrs-optimizer-worker.js) TỰ TRAIN trong trình duyệt — KHÔNG còn request
+//      HTTP nào "đợi cả pipeline train chạy xong" nữa (đó là NGUỒN GỐC của bug timeout xuyên suốt
+//      V83→V90→V91 — dời hẳn việc train ra khỏi request/response HTTP nào cả, kể cả bất đồng bộ).
+//   3. Trong lúc Worker chạy: gửi keepalive định kỳ (Phần VII) + cập nhật tiến độ TRỰC TIẾP từ message
+//      của Worker (phản hồi nhanh hơn round-trip GET /status, nhưng /status vẫn đúng nếu poll trúng).
+//   4. Worker xong → POST /browser/commit gửi weights lên, server tự tính lại điểm số + lưu candidate.
+// KHÔNG còn gọi /api/fsrs-optimizer/run hay /worker nữa — 2 route đó vẫn tồn tại (tương thích ngược)
+// nhưng không nơi nào trong sản phẩm còn kích hoạt (Phần V "không để 2 optimizer chạy song song").
 async function runOptimizerNow() {
-  if (_optimizerBusy) return;
+  if (_optimizerBusy || _optimizerBrowserWorker) return;
   _optimizerBusy = true;
   const btn = document.getElementById('optimizer-run-btn');
-  if (btn) { btn.disabled = true; btn.textContent = '🕓 Đang tạo job...'; }
+  if (btn) { btn.disabled = true; btn.textContent = '🕓 Đang chuẩn bị dữ liệu...'; }
   let errorMsg = null;
   try {
-    const res = await fetch('/api/fsrs-optimizer/run', { method: 'POST', headers: authHeaders() });
+    const res = await fetch('/api/fsrs-optimizer/browser/prepare', { method: 'POST', headers: authHeaders() });
     const raw = await res.text();
     let data = null;
     try { data = JSON.parse(raw); } catch { /* xử lý bên dưới */ }
     if (!data) {
       errorMsg = (res.ok ? '' : `Server trả về lỗi HTTP ${res.status}, `) +
-        'phản hồi không đúng định dạng JSON — thường do function bị timeout hoặc crash ở tầng hạ ' +
-        'tầng (Vercel), không phải lỗi ứng dụng có thể xử lý bình thường. Vào Vercel Dashboard → ' +
+        'phản hồi không đúng định dạng JSON — thường do lỗi hạ tầng tạm thời. Vào Vercel Dashboard → ' +
         'Deployments → (bản mới nhất) → Logs để xem nguyên nhân thật.' +
         (raw ? ` [Đầu phản hồi: "${raw.slice(0, 100)}"]` : '');
     } else if (!data.ok) {
       errorMsg = data.error || 'Có lỗi xảy ra';
+    } else if (data.trainingPayload && data.job && data.job.status === 'running') {
+      // Có dữ liệu train + job mới tạo/đang chờ → bắt đầu Worker NGAY (Phần III bước 4-9). Nếu thiếu
+      // assetUrls (package WASM chưa sẵn sàng trên server — Phần VIII), KHÔNG cố tải 1 URL đoán mò:
+      // báo lỗi rõ ràng + tự huỷ job vừa tạo (tránh để lại job "running" không ai train, phải chờ hết
+      // hạn stale mới dọn — Phần VI).
+      if (!data.assetUrls) {
+        errorMsg = 'Optimizer (bản chạy trong trình duyệt) chưa sẵn sàng trên server — thiếu gói WASM. Vui lòng báo cho quản trị viên kiểm tra Vercel Function Logs.';
+        fetch('/api/fsrs-optimizer/browser/cancel', {
+          method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jobId: data.job.id, reason: 'assetUrls null lúc prepare — WASM package chưa sẵn sàng trên server' }),
+        }).catch(() => {});
+      } else {
+        runBrowserOptimizerWorker(data.job.id, data.trainingPayload, data.assetUrls);
+      }
     }
+    // else: data.job tồn tại nhưng KHÔNG có trainingPayload (NOT_READY, hoặc job active từ trước không
+    // phải browser-training mới) — không cần làm gì thêm, loadOptimizerStatus() bên dưới tự render đúng.
   } catch (e) {
-    // fetch() tự nó throw (mất mạng hoàn toàn...) — khác "có response nhưng không phải JSON" ở trên.
     errorMsg = 'Lỗi kết nối: ' + e.message;
   } finally {
     _optimizerBusy = false;
-    await loadOptimizerStatus(); // Job đã queued (hoặc đang có job active từ trước) → tự bắt đầu poll.
+    await loadOptimizerStatus();
     if (errorMsg) showOptimizerError(errorMsg);
   }
+}
+
+// Tạo Worker THẬT, gửi dữ liệu train, lắng nghe progress/done/error — KHÔNG tính toán gì ở luồng
+// chính (main thread không bị chặn — Phần IX "MOBILE" "không block UI/main thread").
+function runBrowserOptimizerWorker(jobId, trainingPayload, assetUrls) {
+  _optimizerBrowserJobId = jobId;
+  let worker;
+  try {
+    worker = new Worker('/js/fsrs-optimizer-worker.js', { type: 'module' });
+  } catch (e) {
+    showOptimizerError('Trình duyệt này không hỗ trợ Web Worker kiểu module — không thể chạy Optimizer. (' + (e && e.message) + ')');
+    fetch('/api/fsrs-optimizer/browser/cancel', {
+      method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId, reason: 'trình duyệt không hỗ trợ Worker module: ' + (e && e.message) }),
+    }).catch(() => {});
+    return;
+  }
+  _optimizerBrowserWorker = worker;
+
+  _optimizerKeepaliveTimer = setInterval(() => {
+    fetch('/api/fsrs-optimizer/browser/heartbeat', {
+      method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId }),
+    }).then((r) => r.json()).then((d) => {
+      // ok:false — server đã coi job này KHÔNG CÒN active nữa (vd bị huỷ từ tab/thiết bị khác) —
+      // dừng Worker của tab NÀY luôn, không tiếp tục train vô ích cho 1 job đã chết (Phần VII).
+      if (d && d.ok === false) stopBrowserOptimizerWorker({ terminate: true });
+    }).catch(() => { /* lỗi mạng tạm thời khi gửi keepalive — bỏ qua, lần sau thử lại; job tự stale nếu mất mạng thật lâu */ });
+  }, OPTIMIZER_KEEPALIVE_MS);
+
+  worker.onmessage = async (ev) => {
+    const msg = ev.data || {};
+    if (msg.jobId !== jobId) return; // phòng trường hợp hiếm message trễ từ 1 Worker cũ đã bị thay
+    if (msg.type === 'progress') {
+      updateOptimizerLiveProgress(msg.current, msg.total);
+      return;
+    }
+    if (msg.type === 'done') {
+      stopOptimizerKeepaliveOnly();
+      try {
+        const res = await fetch('/api/fsrs-optimizer/browser/commit', {
+          method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jobId, weights: msg.weights }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!data || !data.ok) showOptimizerError((data && data.error) || `Lưu kết quả thất bại (mã ${res.status}).`);
+      } catch (e) {
+        showOptimizerError('Train xong nhưng gửi kết quả lên server thất bại (lỗi mạng): ' + e.message + ' — có thể bấm Thử lại.');
+      } finally {
+        stopBrowserOptimizerWorker({ terminate: false }); // Worker đã tự kết thúc việc của nó, không cần terminate cưỡng bức
+        await loadOptimizerStatus();
+      }
+      return;
+    }
+    if (msg.type === 'error') {
+      showOptimizerError('Optimizer lỗi trong trình duyệt: ' + msg.message);
+      fetch('/api/fsrs-optimizer/browser/cancel', {
+        method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId, reason: msg.message }),
+      }).catch(() => {}).finally(async () => {
+        stopBrowserOptimizerWorker({ terminate: false });
+        await loadOptimizerStatus();
+      });
+    }
+  };
+  worker.onerror = (e) => {
+    // Lỗi Ở TẦNG WORKER (vd script không load được — 404/lỗi mạng khi tải chính file .js Worker) —
+    // KHÁC message {type:'error'} do CHÍNH worker tự báo (đã bắt trong try/catch của nó) — trường hợp
+    // này worker CHẾT hẳn, không kịp tự báo gì cả.
+    showOptimizerError('Không khởi động được Worker chạy Optimizer: ' + (e && e.message ? e.message : 'lỗi không rõ'));
+    fetch('/api/fsrs-optimizer/browser/cancel', {
+      method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId, reason: 'Worker onerror: ' + (e && e.message) }),
+    }).catch(() => {}).finally(async () => {
+      stopBrowserOptimizerWorker({ terminate: false });
+      await loadOptimizerStatus();
+    });
+  };
+
+  worker.postMessage({
+    type: 'start', jobId, assetUrls,
+    trainItems: trainingPayload.train,
+    enableShortTerm: true,
+  });
+  loadOptimizerStatus(); // render ngay trạng thái "training" (job đã running phía server) thay vì chờ tới lượt poll đầu tiên
+}
+
+function stopOptimizerKeepaliveOnly() {
+  if (_optimizerKeepaliveTimer) { clearInterval(_optimizerKeepaliveTimer); _optimizerKeepaliveTimer = null; }
+}
+function stopBrowserOptimizerWorker({ terminate }) {
+  stopOptimizerKeepaliveOnly();
+  if (_optimizerBrowserWorker && terminate) { try { _optimizerBrowserWorker.terminate(); } catch { /* ignore */ } }
+  _optimizerBrowserWorker = null;
+  _optimizerBrowserJobId = null;
+}
+
+// Hiện tiến độ NGAY từ message của Worker (nhanh hơn round-trip GET /status) — chỉ cập nhật phần
+// TRONG khối tiến độ đã render sẵn bởi renderOptimizerBody(), không render lại toàn bộ modal (đỡ
+// giật/mất focus nếu user đang xem).
+function updateOptimizerLiveProgress(current, total) {
+  const label = document.getElementById('optimizer-progress-label');
+  const bar = document.getElementById('optimizer-progress-bar');
+  if (label && Number.isFinite(current) && Number.isFinite(total) && total > 0) {
+    label.textContent = `🧠 Đang train (optimizer chính thức)... (${current}/${total})`;
+  }
+  if (bar && Number.isFinite(current) && Number.isFinite(total) && total > 0) {
+    bar.style.width = Math.min(100, Math.round((current / total) * 100)) + '%';
+    bar.style.animation = 'none';
+  }
+}
+
+// Phần VII "BROWSER CANCELLATION" — user chủ động bấm Hủy trong lúc đang train. Nhận jobId từ
+// THAM SỐ (lấy từ đúng job đang render, s.job.id) thay vì chỉ dựa vào _optimizerBrowserJobId — vẫn
+// hủy được ở SERVER ngay cả khi trang này vừa được tải lại (không còn Worker cục bộ nào để dừng,
+// nhưng vẫn nên báo server dừng NGAY thay vì để job tự rơi vào diện stale sau cả phút chờ).
+async function cancelOptimizerRun(jobId) {
+  if (!jobId) return;
+  if (!confirm('Hủy lượt train đang chạy?')) return;
+  if (_optimizerBrowserJobId === jobId) stopBrowserOptimizerWorker({ terminate: true }); // có Worker cục bộ đúng job này → dừng NGAY ở tab này trước
+  try {
+    await fetch('/api/fsrs-optimizer/browser/cancel', {
+      method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId, reason: 'user bấm Hủy' }),
+    });
+  } catch { /* mất mạng lúc hủy — job sẽ tự stale sau ít lâu nếu request này không tới nơi, không sao */ }
+  await loadOptimizerStatus();
 }
 
 async function applyOptimizerWeights() {
