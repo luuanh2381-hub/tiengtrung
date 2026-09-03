@@ -128,8 +128,21 @@ async function checkOptimizerEngineDiagnostics() {
     : d.engine === 'native' ? 'Native ✅'
     : d.engine === 'wasi' ? 'WASI ✅'
     : 'sẵn sàng (không rõ engine)';
-  el.innerHTML = `Engine: <b>${state}</b> · package=${d.packageVersion || '—'} (resolvable=${d.packageResolvable}) · node=${d.node} ${d.platform}/${d.arch}${d.glibc ? ' glibc=' + d.glibc : ''}` +
+  let html = `Engine (server): <b>${state}</b> · package=${d.packageVersion || '—'} (resolvable=${d.packageResolvable}) · node=${d.node} ${d.platform}/${d.arch}${d.glibc ? ' glibc=' + d.glibc : ''}` +
     (d.loadError ? `<br><span style="color:var(--fail);">${String(d.loadError).slice(0, 300)}</span>` : '');
+  // V92 — chẩn đoán riêng cho optimizer BẢN CHẠY TRONG TRÌNH DUYỆT (khác hẳn phần "Engine (server)" ở
+  // trên, vốn nói về đường server-training CŨ không còn dùng nữa). Hiện NGAY tại đây thay vì bắt user
+  // (không biết code) phải tự vào Vercel Function Logs.
+  const bt = d.browserTraining;
+  if (bt) {
+    html += `<hr style="margin:8px 0;border-color:rgba(0,0,0,.08);">Optimizer (trình duyệt): ` +
+      (bt.ok
+        ? `<b style="color:var(--ok);">✅ Sẵn sàng</b> — dynamic-wasi=${bt.urls.dynamicWasiEntryUrl} · wasm=${bt.urls.wasmAssetUrl} · worker=${bt.urls.workerScriptUrl}`
+        : `<b style="color:var(--fail);">⚠️ CHƯA sẵn sàng</b> — dừng ở bước: <code>${bt.diag.failedAt}</code>` +
+          (bt.diag.hint ? `<br>${bt.diag.hint}` : '') +
+          `<br><span style="font-size:.62rem;opacity:.8;">${JSON.stringify(bt.diag).slice(0, 500)}</span>`);
+  }
+  el.innerHTML = html;
 }
 
 async function loadOptimizerStatus({ isAutoPoll = false } = {}) {
