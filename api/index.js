@@ -1081,6 +1081,11 @@ app.get('/api/fsrs-optimizer/diagnostics', async (req, res) => {
   try {
     const probe = req.query.probe === '1' || req.query.probe === 'true';
     const diag = fsrsOptimizer.getOptimizerDiagnostics({ probe });
+    if (isAdmin) {
+      // V92 — cùng gói vào đây thay vì route riêng, để admin chỉ cần nhớ 1 địa chỉ duy nhất
+      // (/api/fsrs-optimizer/diagnostics) cho MỌI thứ liên quan tới optimizer, kể cả bản browser mới.
+      diag.browserTraining = computeBrowserOptimizerAssetUrlsDetailed();
+    }
     res.json({ ok: true, diagnostics: isAdmin ? diag : fsrsOptimizer.sanitizeEngineStatusForUser(diag) });
   } catch (e) { fail(res, e); }
 });
@@ -1298,22 +1303,77 @@ function resolveBrowserOptimizerPkgRoot(pkgKey) {
 // (tôn trọng "exports" map thật của package), KHÔNG đoán tên file, nên luôn đúng bất kể cấu trúc nội
 // bộ của package là gì. Trả null nếu bất kỳ phần nào không resolve được trên server này (Phần VIII —
 // FE phải coi null là "chưa sẵn sàng", không thử tải URL đoán mò).
-function computeBrowserOptimizerAssetUrls() {
+// Quét thư mục (tối đa 1 tầng con — đủ cho cấu trúc phổ biến kiểu package/dist/... mà KHÔNG quét
+// nhầm sang thứ không liên quan) tìm file khớp điều kiện — thay vì ĐOÁN đúng tên file cố định. Lý do:
+// môi trường sửa code không có mạng để tự cài + soi trực tiếp package thật, nên tên file chính xác
+// bên trong @open-spaced-repetition/binding-wasm32-wasi CHỈ dựa vào 1 ví dụ đọc được trên mạng — nếu
+// version thật khác đi (đổi tên file, đổi cấu trúc thư mục), hardcode tên sẽ luôn thất bại im lặng.
+function findFileInPkg(root, matcher) {
+  let entries;
+  try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return null; }
+  for (const e of entries) if (e.isFile() && matcher(e.name)) return path.join(root, e.name);
+  for (const e of entries) {
+    if (e.isDirectory() && e.name !== 'node_modules') {
+      let sub;
+      try { sub = fs.readdirSync(path.join(root, e.name), { withFileTypes: true }); } catch { continue; }
+      for (const se of sub) if (se.isFile() && matcher(se.name)) return path.join(root, e.name, se.name);
+    }
+  }
+  return null;
+}
+
+function computeBrowserOptimizerAssetUrlsDetailed() {
+  const diag = {};
   const bindingRoot = resolveBrowserOptimizerPkgRoot('binding');
   const wasmRoot = resolveBrowserOptimizerPkgRoot('binding-wasm32-wasi');
-  if (!bindingRoot || !wasmRoot) return null;
+  diag.bindingRoot = bindingRoot;
+  diag.wasmRoot = wasmRoot;
+  if (!bindingRoot || !wasmRoot) {
+    diag.failedAt = 'package_resolve';
+    diag.hint = 'npm install có thể đã bỏ qua optionalDependency này trên Vercel — kiểm tra Build Logs.';
+    return { ok: false, diag };
+  }
+
   let dynamicWasiEntry = null;
-  try { dynamicWasiEntry = require.resolve('@open-spaced-repetition/binding/dynamic-wasi'); } catch { dynamicWasiEntry = null; }
-  if (!dynamicWasiEntry || !fs.existsSync(dynamicWasiEntry)) return null;
-  const wasmFile = path.join(wasmRoot, 'fsrs-binding.wasm32-wasi.wasm');
-  const workerFile = path.join(wasmRoot, 'wasi-worker-browser.mjs');
-  if (!fs.existsSync(wasmFile) || !fs.existsSync(workerFile)) return null;
+  try { dynamicWasiEntry = require.resolve('@open-spaced-repetition/binding/dynamic-wasi'); }
+  catch (e) { diag.dynamicWasiResolveError = e && e.message; }
+  diag.dynamicWasiEntry = dynamicWasiEntry;
+  if (!dynamicWasiEntry || !fs.existsSync(dynamicWasiEntry)) {
+    diag.failedAt = 'dynamic_wasi_subpath';
+    diag.hint = 'Package không có export "dynamic-wasi" ở version đang cài, hoặc version quá cũ/mới so với tài liệu đã tra cứu.';
+    return { ok: false, diag };
+  }
+
+  const wasmFile = findFileInPkg(wasmRoot, (name) => name.endsWith('.wasm'));
+  const workerFile = findFileInPkg(wasmRoot, (name) => /worker.*browser.*\.m?js$/i.test(name) || /wasi.*worker.*\.m?js$/i.test(name));
+  diag.wasmFile = wasmFile;
+  diag.workerFile = workerFile;
+  if (!wasmFile || !workerFile) {
+    diag.failedAt = 'asset_files_not_found';
+    try { diag.wasmRootListing = fs.readdirSync(wasmRoot); } catch { /* ignore */ }
+    return { ok: false, diag };
+  }
+
   const dynamicWasiRelPath = path.relative(bindingRoot, dynamicWasiEntry).split(path.sep).join('/');
+  const wasmRelPath = path.relative(wasmRoot, wasmFile).split(path.sep).join('/');
+  const workerRelPath = path.relative(wasmRoot, workerFile).split(path.sep).join('/');
   return {
-    dynamicWasiEntryUrl: `/api/fsrs-optimizer/browser/pkg/binding/${dynamicWasiRelPath}`,
-    wasmAssetUrl: '/api/fsrs-optimizer/browser/pkg/binding-wasm32-wasi/fsrs-binding.wasm32-wasi.wasm',
-    workerScriptUrl: '/api/fsrs-optimizer/browser/pkg/binding-wasm32-wasi/wasi-worker-browser.mjs',
+    ok: true,
+    urls: {
+      dynamicWasiEntryUrl: `/api/fsrs-optimizer/browser/pkg/binding/${dynamicWasiRelPath}`,
+      wasmAssetUrl: `/api/fsrs-optimizer/browser/pkg/binding-wasm32-wasi/${wasmRelPath}`,
+      workerScriptUrl: `/api/fsrs-optimizer/browser/pkg/binding-wasm32-wasi/${workerRelPath}`,
+    },
   };
+}
+
+function computeBrowserOptimizerAssetUrls() {
+  const result = computeBrowserOptimizerAssetUrlsDetailed();
+  if (!result.ok) {
+    console.error('[fsrs-optimizer/browser] computeBrowserOptimizerAssetUrls() thất bại — xem chi tiết ở GET /api/fsrs-optimizer/diagnostics (admin) hoặc log dưới đây:', JSON.stringify(result.diag));
+    return null;
+  }
+  return result.urls;
 }
 
 function serveBrowserOptimizerPackageFile(pkgKey) {
