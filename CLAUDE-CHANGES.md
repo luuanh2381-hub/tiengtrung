@@ -54,3 +54,22 @@ Chi tiết đầy đủ: `AUDIT-REPORT-V92-BROWSER-TRAINING-MIGRATION.md`.
 **Chưa xác minh được (cần bạn tự test sau khi deploy, xem mục VI/VII của audit report)**: WASM có load
 được thật trong trình duyệt không, Worker lồng Worker có chạy đúng không, header COOP/COEP có làm hỏng
 font/xlsx không, hiệu năng trên Android Chrome với dữ liệu thật.
+
+---
+
+# VÒNG 3 (V92.1) — SỬA "thiếu gói WASM" SAU KHI DEPLOY THẬT
+
+Bạn gửi ảnh chụp lỗi thật trên production: "Optimizer (bản chạy trong trình duyệt) chưa sẵn sàng trên
+server — thiếu gói WASM." — đúng như đã cảnh báo ở mục VI của V92, đây là điều tôi không thể tự kiểm
+tra trong sandbox. Không có log Vercel thật nên KHÔNG đoán mù — thay vào đó:
+
+- `api/index.js`: `computeBrowserOptimizerAssetUrls()` trước đây ĐOÁN cứng tên file
+  (`fsrs-binding.wasm32-wasi.wasm`, `wasi-worker-browser.mjs`) — giờ QUÉT thư mục package thật tìm file
+  khớp mẫu (`*.wasm`, file có "worker"+"browser" trong tên) thay vì đoán, để không phụ thuộc việc tôi
+  đoán đúng tên file phiên bản thật hay không.
+- Thêm chẩn đoán chi tiết vào ĐÚNG nút bạn đã thấy sẵn trong app: "🔎 [Admin] Kiểm tra engine
+  native/WASI" — giờ bấm nút đó sẽ hiện thêm 1 mục "Optimizer (trình duyệt)" nói rõ ĐANG kẹt ở bước nào
+  (thiếu package / thiếu export dynamic-wasi / thiếu file wasm-worker) — không cần vào Vercel Logs nữa.
+
+**Bước tiếp theo**: deploy lại, bấm Run Optimizer thử lại. Nếu vẫn lỗi, bấm nút "🔎 [Admin] Kiểm tra
+engine native/WASI" và gửi tôi xem đúng dòng "Optimizer (trình duyệt)" hiện gì.
