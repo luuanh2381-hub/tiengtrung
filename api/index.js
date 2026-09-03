@@ -8,6 +8,8 @@ const express = require('express');
 const compression = require('compression');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
+const fs = require('fs');
+const path = require('path');
 const { readDB, updateDB, updateDBWithFsrsCleanup, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson,
   getVocabWordsByLesson, updateVocabWord, deleteVocabWord,
   getAllVocabWords, updateVocabHanviet, getWordExampleCounts, insertWordExamples, getWordExamplesForLessons,
@@ -1182,6 +1184,163 @@ app.post('/api/fsrs-optimizer/worker', async (req, res) => {
   });
   res.status(202).json({ ok: true, accepted: true, jobId });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// BROWSER-SIDE TRAINING (audit lại "AUDIT V91 – FIX FSRS OPTIMIZER DỨT ĐIỂM", Phần I-X)
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// computeParameters() dời hẳn sang trình duyệt — KHÔNG route nào dưới đây gọi nó (xem test tĩnh ở
+// test/fsrs-optimizer.test.js xác nhận điều này trên chính source thật). 2 route /run và /worker phía
+// TRÊN GIỮ NGUYÊN không đụng (tương thích ngược, Phần V) nhưng js/fsrs-optimizer.js (frontend) không
+// còn gọi tới nữa — "không để 2 optimizer chạy song song" nhờ vậy mà đúng trong THỰC TẾ sản phẩm.
+
+app.post('/api/fsrs-optimizer/browser/prepare', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const { desiredRetention } = await reviewService.getUserSettings(authed.username);
+    const result = await fsrsOptimizer.createBrowserOptimizerJob(authed.username, { desiredRetention });
+    if (result.created && result.job.status === 'running') {
+      logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'fsrs-optimizer', `Tạo optimizer job #${result.job.id} (browser training)`);
+    }
+    res.status(200).json({
+      ok: true,
+      job: result.job,
+      alreadyRunning: !result.created,
+      trainingPayload: result.trainingPayload || null,
+      // Phần VIII — FE PHẢI dùng ĐÚNG các URL này (tính TOÀN BỘ bằng require.resolve() thật trên
+      // server lúc trả lời, KHÔNG hardcode ở phía JS) — nếu null, package chưa cài/chưa bundle đúng
+      // trên server, FE hiện thông báo rõ ràng NGAY thay vì thử tải 1 URL đoán mò rồi lỗi khó hiểu.
+      assetUrls: computeBrowserOptimizerAssetUrls(),
+    });
+  } catch (e) { fail(res, e); }
+});
+
+app.post('/api/fsrs-optimizer/browser/heartbeat', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const jobId = Number(req.body && req.body.jobId);
+    if (!Number.isFinite(jobId)) { res.status(400).json({ ok: false, error: 'Thiếu jobId hợp lệ' }); return; }
+    const progressCurrent = Number(req.body && req.body.progressCurrent);
+    const progressTotal = Number(req.body && req.body.progressTotal);
+    const ok = await fsrsOptimizer.updateBrowserJobHeartbeat(jobId, authed.username, {
+      stage: 'training',
+      progressCurrent: Number.isFinite(progressCurrent) ? progressCurrent : undefined,
+      progressTotal: Number.isFinite(progressTotal) ? progressTotal : undefined,
+    });
+    // ok:false ở đây KHÔNG phải lỗi đáng báo động — nghĩa là job đã kết thúc/hủy/thuộc người khác từ
+    // phía server RỒI (vd user bấm Hủy ở tab khác) — FE nên dừng Worker của mình khi thấy ok:false.
+    res.status(200).json({ ok });
+  } catch (e) { fail(res, e); }
+});
+
+app.post('/api/fsrs-optimizer/browser/cancel', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const jobId = Number(req.body && req.body.jobId);
+    if (!Number.isFinite(jobId)) { res.status(400).json({ ok: false, error: 'Thiếu jobId hợp lệ' }); return; }
+    const reason = (req.body && typeof req.body.reason === 'string') ? req.body.reason : undefined;
+    const ok = await fsrsOptimizer.cancelBrowserJob(jobId, authed.username, { reason });
+    res.status(200).json({ ok });
+  } catch (e) { fail(res, e); }
+});
+
+app.post('/api/fsrs-optimizer/browser/commit', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const jobId = Number(req.body && req.body.jobId);
+    const weights = req.body && req.body.weights;
+    if (!Number.isFinite(jobId)) { res.status(400).json({ ok: false, error: 'Thiếu jobId hợp lệ' }); return; }
+    const result = await fsrsOptimizer.commitBrowserOptimizerResult(jobId, authed.username, { weights });
+    logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'fsrs-optimizer', `Job #${jobId} train xong trong trình duyệt (recommend=${result.recommend})`);
+    res.status(200).json({ ok: true, recommend: result.recommend, improvement: result.improvement });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Serve file WASM + JS glue code của optimizer TRỰC TIẾP từ node_modules (đã được Vercel bundle
+//     theo đúng "includeFiles": "node_modules/@open-spaced-repetition/**" có sẵn trong vercel.json —
+//     Phần VIII). Project này KHÔNG có bundler (Vite/webpack) nên KHÔNG dùng được cú pháp `?url`/
+//     `?worker` trong ví dụ chính thức của package — đọc file thật qua route Express là cách thay thế
+//     tương đương, không cần thêm build step mới.
+//
+//     Đường dẫn CHÍNH XÁC bên trong package (tên file dynamic-wasi thật, có import quan hệ tới file
+//     nào khác hay không) KHÔNG được tài liệu công khai xác nhận rõ — thay vì đoán, route bên dưới
+//     mirror TOÀN BỘ cấu trúc thư mục thật của 2 package (qua require.resolve() chạy NGAY trên server
+//     lúc request tới, không phải lúc code này được viết) dưới 1 tiền tố URL, để BẤT KỲ import tương
+//     đối nào bên trong dynamic-wasi cũng tự động resolve đúng qua module resolution chuẩn của trình
+//     duyệt (import tương đối lấy theo URL của chính file đang import, không phải URL trang) — không
+//     cần biết trước file đó có bao nhiêu import phụ. An toàn path-traversal: resolve() rồi so khớp
+//     tiền tố thư mục gốc trước khi đọc.
+const BROWSER_OPTIMIZER_PACKAGES = {
+  binding: '@open-spaced-repetition/binding',
+  'binding-wasm32-wasi': '@open-spaced-repetition/binding-wasm32-wasi',
+};
+const BROWSER_OPTIMIZER_CONTENT_TYPES = {
+  '.wasm': 'application/wasm',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.cjs': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+};
+const _browserOptimizerPkgRootCache = {};
+function resolveBrowserOptimizerPkgRoot(pkgKey) {
+  if (pkgKey in _browserOptimizerPkgRootCache) return _browserOptimizerPkgRootCache[pkgKey];
+  const pkgName = BROWSER_OPTIMIZER_PACKAGES[pkgKey];
+  let root = null;
+  try { root = path.dirname(require.resolve(`${pkgName}/package.json`)); } catch { root = null; }
+  _browserOptimizerPkgRootCache[pkgKey] = root;
+  return root;
+}
+
+// Tính URL thật cho FE dùng — dynamic-wasi entry được định vị bằng CHÍNH require.resolve() của Node
+// (tôn trọng "exports" map thật của package), KHÔNG đoán tên file, nên luôn đúng bất kể cấu trúc nội
+// bộ của package là gì. Trả null nếu bất kỳ phần nào không resolve được trên server này (Phần VIII —
+// FE phải coi null là "chưa sẵn sàng", không thử tải URL đoán mò).
+function computeBrowserOptimizerAssetUrls() {
+  const bindingRoot = resolveBrowserOptimizerPkgRoot('binding');
+  const wasmRoot = resolveBrowserOptimizerPkgRoot('binding-wasm32-wasi');
+  if (!bindingRoot || !wasmRoot) return null;
+  let dynamicWasiEntry = null;
+  try { dynamicWasiEntry = require.resolve('@open-spaced-repetition/binding/dynamic-wasi'); } catch { dynamicWasiEntry = null; }
+  if (!dynamicWasiEntry || !fs.existsSync(dynamicWasiEntry)) return null;
+  const wasmFile = path.join(wasmRoot, 'fsrs-binding.wasm32-wasi.wasm');
+  const workerFile = path.join(wasmRoot, 'wasi-worker-browser.mjs');
+  if (!fs.existsSync(wasmFile) || !fs.existsSync(workerFile)) return null;
+  const dynamicWasiRelPath = path.relative(bindingRoot, dynamicWasiEntry).split(path.sep).join('/');
+  return {
+    dynamicWasiEntryUrl: `/api/fsrs-optimizer/browser/pkg/binding/${dynamicWasiRelPath}`,
+    wasmAssetUrl: '/api/fsrs-optimizer/browser/pkg/binding-wasm32-wasi/fsrs-binding.wasm32-wasi.wasm',
+    workerScriptUrl: '/api/fsrs-optimizer/browser/pkg/binding-wasm32-wasi/wasi-worker-browser.mjs',
+  };
+}
+
+function serveBrowserOptimizerPackageFile(pkgKey) {
+  return (req, res) => {
+    const root = resolveBrowserOptimizerPkgRoot(pkgKey);
+    if (!root) {
+      console.error(`[fsrs-optimizer/browser] Package "${BROWSER_OPTIMIZER_PACKAGES[pkgKey]}" không resolve được trên server — kiểm tra đã cài + includeFiles (vercel.json) đã bundle đúng chưa.`);
+      res.status(503).json({ ok: false, error: 'Optimizer chưa sẵn sàng trên server (thiếu package) — xem Vercel Function Logs.' });
+      return;
+    }
+    const relPath = (req.params[0] || '').replace(/\\/g, '/');
+    const filePath = path.resolve(root, relPath);
+    if (filePath !== root && !filePath.startsWith(root + path.sep)) {
+      res.status(400).json({ ok: false, error: 'Đường dẫn không hợp lệ.' });
+      return;
+    }
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      res.status(404).json({ ok: false, error: `Không tìm thấy file trong package: ${relPath}` });
+      return;
+    }
+    res.setHeader('Content-Type', BROWSER_OPTIMIZER_CONTENT_TYPES[path.extname(filePath)] || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // asset gắn version cố định trong tên package, cache dài hạn an toàn
+    fs.createReadStream(filePath).pipe(res);
+  };
+}
+app.get('/api/fsrs-optimizer/browser/pkg/binding/*', serveBrowserOptimizerPackageFile('binding'));
+app.get('/api/fsrs-optimizer/browser/pkg/binding-wasm32-wasi/*', serveBrowserOptimizerPackageFile('binding-wasm32-wasi'));
 
 // POST apply / rollback / reset: lỗi ở đây là lỗi NGHIỆP VỤ (vd bấm Apply khi chưa Run) — trả
 // ok:false/200 thay vì 500, đúng convention của /api/settings/retention.
