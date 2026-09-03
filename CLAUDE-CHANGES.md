@@ -30,3 +30,27 @@ nguyên 100%, không đụng tới.
 
 ## Database
 Không cần migration. Không có bảng/cột mới. Chỉ thêm 1 khoá vào 1 cột JSON đã có sẵn.
+
+---
+
+# VÒNG 2 (V92) — DI DỜI TRAINING SANG TRÌNH DUYỆT
+
+Yêu cầu mới: "AUDIT V91 – FIX FSRS OPTIMIZER DỨT ĐIỂM" — lỗi vẫn tái diễn trên dữ liệu thật (5121
+review/893 card) dù đã sửa V91. Root cause: heartbeat/retry chỉ dừng SẠCH, không tạo thêm THỜI GIAN
+THẬT để train xong trong giới hạn cứng của Vercel — cần dời hẳn `computeParameters()` sang trình duyệt.
+Chi tiết đầy đủ: `AUDIT-REPORT-V92-BROWSER-TRAINING-MIGRATION.md`.
+
+- `lib/fsrs/optimizer.js`: +5 hàm mới cho browser-training (prepare/create job/heartbeat/cancel/commit),
+  sửa `recoverStaleJobsForUser()` thêm nhánh riêng cho job browser. KHÔNG sửa đường server-training cũ.
+- `api/index.js`: +4 route hành động + 2 route serve file WASM/JS từ node_modules (không có bundler nên
+  không dùng được `?url`/`?worker` như ví dụ chính thức — đọc file thật qua Express thay thế).
+- `js/fsrs-optimizer.js`: viết lại luồng Run để dùng Worker thay vì poll server-training.
+- `js/fsrs-optimizer-worker.js` (MỚI): Web Worker chạy `computeParameters()` thật qua WASM/WASI.
+- `vercel.json`: thêm header COOP/COEP (bắt buộc theo tài liệu chính thức của package) — **rủi ro cần
+  tự kiểm tra**: áp dụng toàn site, có thể ảnh hưởng Google Fonts/script cdnjs đang dùng (đã thêm
+  `crossorigin` phòng ngừa trong `index.html`, nhưng chưa tự xác nhận được trên trình duyệt thật).
+- Test: +8 (unit) / +7 (integration, cần bạn tự chạy) / +3 (frontend smoke).
+
+**Chưa xác minh được (cần bạn tự test sau khi deploy, xem mục VI/VII của audit report)**: WASM có load
+được thật trong trình duyệt không, Worker lồng Worker có chạy đúng không, header COOP/COEP có làm hỏng
+font/xlsx không, hiệu năng trên Android Chrome với dữ liệu thật.
