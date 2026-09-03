@@ -448,11 +448,13 @@ test('lib/fsrs/optimizer.js: 6 thông điệp Apply/Rollback/Reset "đang chạy
 
 test('lib/fsrs/optimizer.js: các lỗi NỘI BỘ thật (data.js config/version-conflict/card row thiếu field) KHÔNG bị đổi sang PublicError (đúng — không nên hiện chi tiết đó cho user)', () => {
   // Đối chứng: xác nhận KHÔNG lỡ tay convert lan sang mọi throw new Error(...) trong file — chỉ đúng
-  // 6 chỗ nêu trên. Đếm tổng throw new PublicError trong optimizer.js phải khớp CHÍNH XÁC 6 (không
-  // nhiều hơn, không ít hơn) — nếu số này đổi trong tương lai, cần cập nhật lại test để soát chủ đích.
+  // 10 chỗ nêu trên (6 gốc + 4 mới của commitBrowserOptimizerResult — audit lại "AUDIT V91" Phần III
+  // bước 11, browser-training). Đếm tổng throw new PublicError trong optimizer.js phải khớp CHÍNH XÁC
+  // 10 (không nhiều hơn, không ít hơn) — nếu số này đổi trong tương lai, cần cập nhật lại test để soát
+  // chủ đích.
   const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'fsrs', 'optimizer.js'), 'utf8');
   const count = (src.match(/throw new PublicError\(/g) || []).length;
-  assert.strictEqual(count, 6, `kỳ vọng đúng 6 throw new PublicError() trong optimizer.js (Apply×3/Rollback×2/Reset×1), thấy ${count} — nếu có thay đổi chủ đích, cập nhật lại test này`);
+  assert.strictEqual(count, 10, `kỳ vọng đúng 10 throw new PublicError() trong optimizer.js (Apply×3/Rollback×2/Reset×1/commitBrowserOptimizerResult×4), thấy ${count} — nếu có thay đổi chủ đích, cập nhật lại test này`);
 });
 
 
@@ -738,6 +740,88 @@ console.log('\n[lib/fsrs/optimizer.js — trainWithOfficialOptimizer() (Phần 3
       });
     });
   }
+
+  console.log('\n[AUDIT V91 – FIX FSRS OPTIMIZER DỨT ĐIỂM — browser-side training: phần kiểm được KHÔNG cần');
+  console.log('Postgres thật (validate sớm, trước khi chạm DB). Phần cần Postgres thật xem thêm ở');
+  console.log('test/fsrs-optimizer.integration.test.js.]');
+
+  await testAsync('commitBrowserOptimizerResult(): weights sai hình dạng bị chặn NGAY (PublicError), TRƯỚC KHI chạm DB — validate ĐẦU TIÊN trong hàm, đúng thứ tự Phần III bước 11', async () => {
+    await assert.rejects(
+      () => optimizer.commitBrowserOptimizerResult(1, 'someone', { weights: [1, 2, 3] }), // sai độ dài, không phải 21 số
+      (err) => {
+        assert.ok(err instanceof optimizer.OptimizerDependencyError === false, 'phải là PublicError, không phải OptimizerDependencyError');
+        assert.ok(/không hợp lệ/.test(err.message));
+        return true;
+      }
+    );
+  });
+
+  await testAsync('commitBrowserOptimizerResult(): weights chứa NaN/Infinity cũng bị chặn NGAY, TRƯỚC KHI chạm DB (giống test trên, dữ liệu khác)', async () => {
+    const badWeights = new Array(21).fill(0.1);
+    badWeights[5] = NaN;
+    await assert.rejects(() => optimizer.commitBrowserOptimizerResult(1, 'someone', { weights: badWeights }));
+  });
+
+  console.log('\n[AUDIT V91 — kiểm tra TĨNH trên source thật, cùng phong cách với test V89/V90 phía trên]');
+
+  test('lib/fsrs/optimizer.js: 5 hàm browser-training mới đều được export đúng tên (prepareOptimizerData/createBrowserOptimizerJob/updateBrowserJobHeartbeat/cancelBrowserJob/commitBrowserOptimizerResult) + BROWSER_WORKER_SENTINEL', () => {
+    for (const k of ['prepareOptimizerData', 'createBrowserOptimizerJob', 'updateBrowserJobHeartbeat', 'cancelBrowserJob', 'commitBrowserOptimizerResult', 'BROWSER_WORKER_SENTINEL']) {
+      assert.ok(k in optimizer, `thiếu export: ${k}`);
+    }
+    assert.strictEqual(typeof optimizer.BROWSER_WORKER_SENTINEL, 'string');
+  });
+
+  test('lib/fsrs/optimizer.js: KHÔNG có dòng nào trong 5 hàm browser-training mới gọi trainWithOfficialOptimizer()/computeParameters — Phần V "server không còn train nữa" cho đường browser', () => {
+    const names = ['prepareOptimizerData', 'createBrowserOptimizerJob', 'updateBrowserJobHeartbeat', 'cancelBrowserJob', 'commitBrowserOptimizerResult'];
+    const declRegexes = [
+      /async function prepareOptimizerData\s*\(/,
+      /async function createBrowserOptimizerJob\s*\(/,
+      /async function updateBrowserJobHeartbeat\s*\(/,
+      /async function cancelBrowserJob\s*\(/,
+      /async function commitBrowserOptimizerResult\s*\(/,
+    ];
+    names.forEach((name, i) => {
+      const body = stripLineComments(extractFunctionBody(OPTIMIZER_SRC, declRegexes[i]));
+      assert.ok(!/trainWithOfficialOptimizer\s*\(/.test(body), `${name}() không được gọi trainWithOfficialOptimizer()`);
+      assert.ok(!/computeParameters/.test(body), `${name}() không được nhắc tới computeParameters`);
+    });
+  });
+
+  test('commitBrowserOptimizerResult(): chỉ nhận { weights } từ tham số thứ 3 — KHÔNG destructure improvement/recommend/score nào từ input (client không thể tự khai điểm số giả, Phần III bước 11)', () => {
+    const body = extractFunctionBody(OPTIMIZER_SRC, /async function commitBrowserOptimizerResult\s*\(/);
+    const signatureLine = body.split('\n')[0] || '';
+    // Chữ ký hàm nằm ngay TRƯỚC { — lấy từ khai báo gốc thay vì body (extractFunctionBody trả về phần
+    // trong {} ), nên kiểm tra ngược lại tại chỗ khai báo trong OPTIMIZER_SRC.
+    const declIdx = OPTIMIZER_SRC.search(/async function commitBrowserOptimizerResult\s*\([^)]*\)/);
+    assert.ok(declIdx !== -1);
+    const declText = OPTIMIZER_SRC.slice(declIdx, declIdx + 200).split(')')[0];
+    assert.ok(/\{\s*weights\s*\}/.test(declText), `chữ ký hàm phải CHỈ destructure { weights }, không nhận thêm improvement/recommend/score từ client — thấy: ${declText}`);
+    assert.ok(/improvement\s*=\s*\(/.test(body) && /evaluateWeights\(/.test(body), 'improvement/scores phải được TÍNH LẠI bên trong hàm (evaluateWeights trên training_payload đã lưu sẵn), không nhận từ input');
+  });
+
+  test('recoverStaleJobsForUser(): nhánh xử lý job browser-training (worker_id=BROWSER_WORKER_SENTINEL) phải chạy TRƯỚC 2 nhánh requeue/failed cũ, và 2 nhánh đó phải LOẠI TRỪ job browser (tránh xử lý trùng theo kiểu server-job)', () => {
+    const body = stripLineComments(extractFunctionBody(OPTIMIZER_SRC, /async function recoverStaleJobsForUser\s*\(/));
+    const browserBranchIdx = body.indexOf('staleBrowserJobs');
+    const requeuedBranchIdx = body.indexOf('const requeued');
+    const failedBranchIdx = body.indexOf('const failed');
+    assert.ok(browserBranchIdx !== -1 && requeuedBranchIdx !== -1 && failedBranchIdx !== -1, 'thiếu 1 trong 3 nhánh — có thể cấu trúc hàm đã đổi, cập nhật lại test này');
+    assert.ok(browserBranchIdx < requeuedBranchIdx && browserBranchIdx < failedBranchIdx, 'nhánh browser-job PHẢI chạy TRƯỚC 2 nhánh server-job cũ');
+    assert.ok(/worker_id IS DISTINCT FROM \$4/.test(body.slice(requeuedBranchIdx, failedBranchIdx)), 'nhánh requeue (server-job) phải loại trừ worker_id=BROWSER_WORKER_SENTINEL');
+    assert.ok(/worker_id IS DISTINCT FROM \$5/.test(body.slice(failedBranchIdx)), 'nhánh failed (server-job) phải loại trừ worker_id=BROWSER_WORKER_SENTINEL');
+  });
+
+  test('updateBrowserJobHeartbeat()/cancelBrowserJob()/commitBrowserOptimizerResult(): CẢ 3 đều kiểm tra user_id NGAY TRONG CÂU SQL (ownership tại tầng DB, không tin jobId client gửi lên) — Test bắt buộc #17/#18', () => {
+    const fns = [
+      ['updateBrowserJobHeartbeat', /async function updateBrowserJobHeartbeat\s*\(/],
+      ['cancelBrowserJob', /async function cancelBrowserJob\s*\(/],
+      ['commitBrowserOptimizerResult', /async function commitBrowserOptimizerResult\s*\(/],
+    ];
+    fns.forEach(([name, re]) => {
+      const body = stripLineComments(extractFunctionBody(OPTIMIZER_SRC, re));
+      assert.ok(/user_id\s*=\s*\$\d/.test(body), `${name}() phải có điều kiện user_id = $N ngay trong SQL`);
+      assert.ok(/worker_id\s*=\s*\$\d/.test(body), `${name}() phải có điều kiện worker_id = $N (= BROWSER_WORKER_SENTINEL) ngay trong SQL — không thao túng job kiểu server cũ qua route mới`);
+    });
+  });
 
   console.log('\n════════════════════════════════════════════════════');
   console.log(`Kết quả: ${passed} PASS, ${failed} FAIL`);

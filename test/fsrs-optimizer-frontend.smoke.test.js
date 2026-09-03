@@ -242,4 +242,31 @@ async function run() {
   if (failed > 0) process.exit(1);
 }
 
+console.log('\n[Audit lại "AUDIT V91 – FIX FSRS OPTIMIZER DỨT ĐIỂM" — browser-side training ở frontend]');
+
+test('renderOptimizerBody(): state "running" phải có nút Hủy (cancelOptimizerRun) + 2 id để cập nhật tiến độ trực tiếp từ Worker (optimizer-progress-label/optimizer-progress-bar)', () => {
+  const sb = makeSandbox({ isAdmin: false });
+  const fixture = STATE_FIXTURES['running (có tiến độ)'];
+  sb.renderOptimizerBody(fixture);
+  const html = sb.__doc.getElementById('optimizer-body').innerHTML;
+  assert.ok(html.includes(`cancelOptimizerRun(${fixture.job.id})`), 'phải có nút Hủy gọi đúng cancelOptimizerRun(jobId) — Phần VII');
+  assert.ok(html.includes('id="optimizer-progress-label"'), 'thiếu id để updateOptimizerLiveProgress() cập nhật trực tiếp không cần render lại toàn bộ');
+  assert.ok(html.includes('id="optimizer-progress-bar"'), 'thiếu id để updateOptimizerLiveProgress() cập nhật trực tiếp không cần render lại toàn bộ');
+});
+
+test('Source: runOptimizerNow() KHÔNG còn gọi /api/fsrs-optimizer/run hay /api/fsrs-optimizer/worker — chỉ /browser/prepare (Phần V "không để 2 optimizer chạy song song")', () => {
+  const startIdx = SRC.indexOf('async function runOptimizerNow');
+  const endIdx = SRC.indexOf('\nfunction runBrowserOptimizerWorker');
+  assert.ok(startIdx !== -1 && endIdx !== -1 && endIdx > startIdx, 'không tìm thấy runOptimizerNow()/runBrowserOptimizerWorker() — cấu trúc file có thể đã đổi, cập nhật lại test này');
+  const body = SRC.slice(startIdx, endIdx);
+  assert.ok(!/'\/api\/fsrs-optimizer\/run'/.test(body), 'KHÔNG được gọi /api/fsrs-optimizer/run nữa từ runOptimizerNow()');
+  assert.ok(!/'\/api\/fsrs-optimizer\/worker'/.test(body), 'KHÔNG được gọi /api/fsrs-optimizer/worker');
+  assert.ok(/\/api\/fsrs-optimizer\/browser\/prepare/.test(body), 'phải gọi đúng /api/fsrs-optimizer/browser/prepare');
+});
+
+test('Source: runBrowserOptimizerWorker() tạo Worker đúng file js/fsrs-optimizer-worker.js với { type: "module" } (bắt buộc để import() ESM động hoạt động trong Worker)', () => {
+  const body = SRC.slice(SRC.indexOf('function runBrowserOptimizerWorker'), SRC.indexOf('function stopOptimizerKeepaliveOnly'));
+  assert.ok(/new Worker\(\s*'\/js\/fsrs-optimizer-worker\.js'\s*,\s*\{\s*type:\s*'module'\s*\}\s*\)/.test(body), 'phải tạo đúng Worker kiểu module, trỏ đúng file');
+});
+
 run();

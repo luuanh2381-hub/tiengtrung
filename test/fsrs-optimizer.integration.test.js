@@ -486,9 +486,74 @@ async function main() {
     assert.strictEqual(diagProbed.available, bindingInstalledForStatusTest, 'kết quả probe=true phải khớp ĐÚNG với thực tế package có cài được hay không trên máy này');
     console.log(`  ✅ getOptimizerDiagnostics: Tầng 1 an toàn (probed=false), Tầng 2 phản ánh đúng thực tế (available=${diagProbed.available})`);
 
-    console.log('════════════════════════════════════════════════════');
-    console.log('Tất cả integration test (FSRS Personal Optimizer) PASS');
-    console.log('════════════════════════════════════════════════════');
+    console.log('\n[AUDIT V91 – FIX FSRS OPTIMIZER DỨT ĐIỂM — browser-side training, full server flow THẬT trên Postgres]');
+    await pool.query(`DELETE FROM fsrs_optimizer_jobs WHERE user_id = $1`, [TEST_USER]);
+    // Dùng LẠI review_history tổng hợp đã insert ở trên (2.400 review/60 thẻ) — prepareOptimizerData()
+    // dùng chung logic đọc/validate với đường server cũ, không cần sinh dữ liệu riêng.
+
+    console.log('\n[Test browser-A — createBrowserOptimizerJob(): tạo job, KHÔNG train, trả về training payload]');
+    const b1 = await optimizer.createBrowserOptimizerJob(TEST_USER, { desiredRetention: 0.9 });
+    assert.strictEqual(b1.created, true);
+    assert.strictEqual(b1.job.status, 'running', 'job browser-training vào thẳng running (không có bước queued riêng — chuẩn bị dữ liệu vốn đã nhanh, Phần III)');
+    assert.ok(b1.trainingPayload && Array.isArray(b1.trainingPayload.train) && Array.isArray(b1.trainingPayload.validation), 'phải trả về train/validation cho FE tự tạo Worker (Phần III bước 3-4)');
+    assert.ok(Array.isArray(b1.trainingPayload.defaultWeights) && b1.trainingPayload.defaultWeights.length === 21);
+    console.log('  ✅ Tạo job browser-training thành công, trả đủ payload cho FE — KHÔNG có lời gọi train nào ở server (xem test tĩnh ở fsrs-optimizer.test.js)');
+
+    console.log('\n[Test browser-B — gọi lại createBrowserOptimizerJob() khi đang có job active → KHÔNG tạo job thứ 2 (Test bắt buộc #14/#15)]');
+    const b2 = await optimizer.createBrowserOptimizerJob(TEST_USER, { desiredRetention: 0.9 });
+    assert.strictEqual(b2.created, false);
+    assert.strictEqual(b2.job.id, b1.job.id);
+    console.log('  ✅ Double-click Run / 2 tab cùng Run → chỉ 1 job, tái sử dụng đúng job đang active');
+
+    console.log('\n[Test browser-C — updateBrowserJobHeartbeat(): đúng chủ mới cập nhật được, sai user_id thì KHÔNG]');
+    const okHeartbeat = await optimizer.updateBrowserJobHeartbeat(b1.job.id, TEST_USER, { stage: 'training', progressCurrent: 5, progressTotal: 20 });
+    assert.strictEqual(okHeartbeat, true);
+    const wrongUserHeartbeat = await optimizer.updateBrowserJobHeartbeat(b1.job.id, '__someone_else__', { stage: 'training' });
+    assert.strictEqual(wrongUserHeartbeat, false, 'user khác KHÔNG được phép cập nhật heartbeat của job này (Test bắt buộc #17)');
+    console.log('  ✅ Keepalive đúng chủ mới thành công; user khác bị chặn ở tầng SQL');
+
+    console.log('\n[Test browser-D — commitBrowserOptimizerResult(): sai chủ bị chặn (Test bắt buộc #18), weights hợp lệ + đúng chủ thì lưu thành công]');
+    const fakeTrainedWeights = Array.from({ length: 21 }, (_, i) => 0.4 + i * 0.03);
+    await assert.rejects(
+      () => optimizer.commitBrowserOptimizerResult(b1.job.id, '__someone_else__', { weights: fakeTrainedWeights }),
+      /không thuộc về bạn|không tồn tại/,
+      'user khác KHÔNG được commit kết quả vào job không phải của mình'
+    );
+    const committed = await optimizer.commitBrowserOptimizerResult(b1.job.id, TEST_USER, { weights: fakeTrainedWeights });
+    assert.ok(committed && typeof committed.improvement !== 'undefined');
+    assert.strictEqual(committed.meta.optimizerEngine, 'browser-wasm', 'meta phải ghi rõ train trong trình duyệt, không phải native/wasi phía server');
+    assert.strictEqual(committed.meta.trainedIn, 'browser');
+    const statusAfterCommit = await optimizer.getOptimizerStatus(TEST_USER);
+    assert.strictEqual(statusAfterCommit.job.status, 'completed');
+    assert.strictEqual(statusAfterCommit.hasCandidate, true, 'candidate phải được lưu sau commit thành công, giống hệt đường server cũ (dùng chung finishJobWithCandidate)');
+    console.log('  ✅ Commit thành công → candidate lưu đúng, đánh dấu rõ trainedIn=browser — Apply/Rollback/Reset ở bước sau KHÔNG cần biết gì khác (dùng lại nguyên vẹn)');
+
+    console.log('\n[Test browser-E — commitBrowserOptimizerResult(): weights sai hình dạng KHÔNG làm hỏng job đang chạy (vẫn running sau khi bị từ chối)]');
+    await pool.query(`DELETE FROM fsrs_optimizer_jobs WHERE user_id = $1`, [TEST_USER]);
+    const b3 = await optimizer.createBrowserOptimizerJob(TEST_USER, { desiredRetention: 0.9 });
+    await assert.rejects(() => optimizer.commitBrowserOptimizerResult(b3.job.id, TEST_USER, { weights: [1, 2, 3] }));
+    const statusAfterBadCommit = await optimizer.getOptimizerStatus(TEST_USER);
+    assert.strictEqual(statusAfterBadCommit.job.status, 'running', 'weights sai hình dạng bị từ chối nhưng job KHÔNG bị đổi trạng thái — FE có thể thử commit lại với kết quả train khác nếu muốn');
+    console.log('  ✅ Commit hỏng không làm hỏng job — vẫn running, có thể thử lại');
+
+    console.log('\n[Test browser-F — cancelBrowserJob(): Hủy khi user đóng modal/bấm Hủy (Phần VII)]');
+    const cancelled = await optimizer.cancelBrowserJob(b3.job.id, TEST_USER);
+    assert.strictEqual(cancelled, true);
+    const statusAfterCancel = await optimizer.getOptimizerStatus(TEST_USER);
+    assert.strictEqual(statusAfterCancel.job.status, 'cancelled');
+    await assert.rejects(() => optimizer.commitBrowserOptimizerResult(b3.job.id, TEST_USER, { weights: fakeTrainedWeights }), /không tồn tại|đã kết thúc/, 'không commit được vào job đã hủy');
+    console.log('  ✅ Hủy đúng cách — job chuyển cancelled, không nhận commit trễ sau đó nữa');
+
+    console.log('\n[Test browser-G — job bị "bỏ rơi" (đóng tab, không còn keepalive) → recoverStaleJobsForUser() đánh FAILED trực tiếp, KHÔNG requeue cho server train (Phần VI)]');
+    await pool.query(`DELETE FROM fsrs_optimizer_jobs WHERE user_id = $1`, [TEST_USER]);
+    const b4 = await optimizer.createBrowserOptimizerJob(TEST_USER, { desiredRetention: 0.9 });
+    // Giả lập "đã lâu không có keepalive" bằng cách lùi heartbeat_at ra sau ngưỡng stale, KHÔNG cần chờ thật.
+    await pool.query(`UPDATE fsrs_optimizer_jobs SET heartbeat_at = now() - interval '1 hour' WHERE id = $1`, [b4.job.id]);
+    await optimizer.hasActiveJob(TEST_USER); // side-effect: gọi recoverStaleJobsForUser() nội bộ
+    const statusAfterAbandoned = await optimizer.getOptimizerStatus(TEST_USER);
+    assert.strictEqual(statusAfterAbandoned.job.status, 'failed', 'job browser bị bỏ rơi PHẢI thành failed trực tiếp — KHÔNG bao giờ quay lại queued (không có server worker nào sẽ claim/train tiếp)');
+    console.log('  ✅ Job trình duyệt bị bỏ rơi → failed rõ ràng ngay, không kẹt vô thời hạn, không tốn oan chu trình requeue (đúng gốc rễ lỗi đã audit)');
+
   } finally {
     await pool.query('DELETE FROM fsrs_cards WHERE user_id = $1', [TEST_USER]);
     await pool.query('DELETE FROM review_history WHERE user_id = $1', [TEST_USER]);
