@@ -34,13 +34,20 @@ function buildFakeNodeModules(root) {
   fs.mkdirSync(path.join(scopeDir, 'binding-wasm32-wasi'), { recursive: true });
 
   // Package chính — "exports" map CHẶT, cố tình KHÔNG khai "./package.json" (đúng khó khăn #1 đã xác
-  // nhận từ log thật) — nhưng "." và "./dynamic-wasi" vẫn resolve bình thường.
+  // nhận từ log thật) — nhưng "." và "./dynamic-wasi" vẫn resolve bình thường. Nhánh "./dynamic-wasi"
+  // khai RIÊNG 2 file cho 2 điều kiện "import" (ESM thật, browser cần đúng file này) và "require" (CJS,
+  // chứa require() thô — nếu code cũ phục vụ NHẦM file này, trình duyệt sẽ báo "require is not
+  // defined", đúng lỗi thật đã gặp ở production — audit lại lần 6).
   fs.writeFileSync(path.join(scopeDir, 'binding', 'package.json'), JSON.stringify({
     name: '@open-spaced-repetition/binding', version: '0.5.0',
-    exports: { '.': './index.js', './dynamic-wasi': './dynamic-wasi.js' },
+    exports: {
+      '.': './index.js',
+      './dynamic-wasi': { import: './dynamic-wasi.mjs', require: './dynamic-wasi.cjs' },
+    },
   }));
   fs.writeFileSync(path.join(scopeDir, 'binding', 'index.js'), 'module.exports = {};');
-  fs.writeFileSync(path.join(scopeDir, 'binding', 'dynamic-wasi.js'), 'module.exports = { initOptimizer: async () => ({}) };');
+  fs.writeFileSync(path.join(scopeDir, 'binding', 'dynamic-wasi.mjs'), 'export async function initOptimizer() { return {}; }');
+  fs.writeFileSync(path.join(scopeDir, 'binding', 'dynamic-wasi.cjs'), 'const fakeDep = require("fs"); module.exports = { initOptimizer: async () => ({}) };'); // file CJS "bẫy" — nếu bị chọn nhầm, đây chính là nguồn require() gây lỗi thật trong trình duyệt
 
   // Package WASM — tên file KHÔNG khớp ví dụ đã tra cứu (đúng khó khăn #2), không có "main"/"exports".
   fs.writeFileSync(path.join(scopeDir, 'binding-wasm32-wasi', 'package.json'), JSON.stringify({
@@ -80,7 +87,14 @@ try {
   test('computeBrowserOptimizerAssetUrlsDetailed(): vẫn resolve ĐÚNG dù package chính có "exports" map chặn "./package.json" (lỗi thật đã gặp ở production — audit lại lần 4)', () => {
     const result = computeBrowserOptimizerAssetUrlsDetailed();
     assert.strictEqual(result.ok, true, `kỳ vọng ok:true, nhận: ${JSON.stringify(result)}`);
-    assert.ok(result.urls.dynamicWasiEntryUrl.endsWith('/dynamic-wasi.js'));
+    assert.ok(result.urls.dynamicWasiEntryUrl.endsWith('/dynamic-wasi.mjs'));
+  });
+
+  test('computeBrowserOptimizerAssetUrlsDetailed(): PHẢI chọn nhánh "import" (ESM thật) của dynamic-wasi, KHÔNG được chọn nhánh "require" (CJS, chứa require() — lỗi thật "require is not defined" đã gặp ở production, audit lại lần 6)', () => {
+    const result = computeBrowserOptimizerAssetUrlsDetailed();
+    assert.strictEqual(result.ok, true);
+    assert.ok(result.urls.dynamicWasiEntryUrl.endsWith('.mjs'), `phải chọn file .mjs (ESM), tuyệt đối không phải .cjs (CommonJS) — nhận: ${result.urls.dynamicWasiEntryUrl}`);
+    assert.ok(!result.urls.dynamicWasiEntryUrl.includes('dynamic-wasi.cjs'), 'không được chọn nhầm file bẫy CommonJS');
   });
 
   test('computeBrowserOptimizerAssetUrlsDetailed(): tìm đúng file .wasm dù tên KHÔNG khớp ví dụ đã tra cứu lúc viết code', () => {
