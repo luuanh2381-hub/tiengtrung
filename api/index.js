@@ -1378,15 +1378,50 @@ function computeBrowserOptimizerAssetUrlsDetailed() {
     return { ok: false, diag };
   }
 
+  // KHÔNG dùng require.resolve('.../dynamic-wasi') nữa — audit lại lần 6 (log thật: "require is not
+  // defined" khi chạy trong trình duyệt) phát hiện: require.resolve() chạy TỪ api/index.js (1 file
+  // CommonJS) sẽ resolve theo điều kiện "require" trong "exports" map của package — RẤT CÓ THỂ khác
+  // với file dành cho điều kiện "import" (bản ESM, đúng cái trình duyệt cần). Nếu package công bố 2
+  // bản riêng cho 2 điều kiện này, require.resolve() sẽ luôn trả về ĐÚNG bản CommonJS (có chứa
+  // require(...) bên trong) — dù bản đó "resolve được" và "tồn tại trên đĩa" hoàn toàn bình thường
+  // (đúng như log trước đó cho thấy — không phải lỗi thiếu file). Đọc THẲNG "exports" map trong
+  // package.json, tự chọn nhánh "import" (ưu tiên) thay vì để Node tự chọn theo ngữ cảnh CommonJS.
   let dynamicWasiEntry = null;
-  try { dynamicWasiEntry = require.resolve('@open-spaced-repetition/binding/dynamic-wasi'); }
-  catch (e) { diag.dynamicWasiResolveError = e && e.message; }
+  try {
+    const bindingPkgJson = JSON.parse(fs.readFileSync(path.join(bindingRoot, 'package.json'), 'utf8'));
+    const exportsMap = bindingPkgJson.exports;
+    const entry = exportsMap && exportsMap['./dynamic-wasi'];
+    let chosen = null;
+    if (typeof entry === 'string') chosen = entry;
+    else if (entry && typeof entry === 'object') {
+      chosen = entry.import || entry.browser || entry.default || entry.require || null;
+      if (chosen && typeof chosen === 'object') chosen = chosen.default || chosen.import || null; // 1 số package lồng thêm 1 tầng điều kiện nữa bên trong "import"
+    }
+    diag.dynamicWasiExportsMapEntry = entry || null; // lưu lại NGUYÊN VẸN để nếu vẫn sai, thấy ngay cấu trúc thật thay vì đoán tiếp
+    if (chosen) dynamicWasiEntry = path.resolve(bindingRoot, chosen);
+  } catch (e) { diag.dynamicWasiResolveError = e && e.message; }
+  // Dự phòng: package không có "exports" map dạng object (hiếm, nhưng có thể xảy ra ở version khác) —
+  // quay lại cách cũ CHỈ khi cách đọc trực tiếp ở trên hoàn toàn thất bại.
+  if (!dynamicWasiEntry) {
+    try { dynamicWasiEntry = require.resolve('@open-spaced-repetition/binding/dynamic-wasi'); } catch { /* đã có diag.dynamicWasiResolveError ở trên nếu có */ }
+  }
   diag.dynamicWasiEntry = dynamicWasiEntry;
   if (!dynamicWasiEntry || !fs.existsSync(dynamicWasiEntry)) {
     diag.failedAt = 'dynamic_wasi_subpath';
     diag.hint = 'Package không có export "dynamic-wasi" ở version đang cài, hoặc version quá cũ/mới so với tài liệu đã tra cứu.';
     return { ok: false, diag };
   }
+  // Kiểm tra NGAY ở đây (trước khi trình duyệt phải tự thử rồi báo lỗi) — nếu file được chọn vẫn có
+  // dấu hiệu CommonJS thô (require(...)/module.exports không đi kèm cú pháp ESM), rất có thể sẽ gặp lại
+  // đúng lỗi "require is not defined" khi chạy trong trình duyệt. KHÔNG chặn (vẫn có thể là false
+  // positive — 1 số file ESM hợp lệ vẫn có thể chứa chữ "require" trong chuỗi/comment) — chỉ cảnh báo
+  // rõ trong diagnostics để không phải đợi thêm 1 vòng deploy-thử-chụp-ảnh mới biết.
+  try {
+    const entrySrc = fs.readFileSync(dynamicWasiEntry, 'utf8');
+    const hasBareRequire = /(^|[^.\w])require\s*\(/.test(entrySrc);
+    const hasEsmSyntax = /(^|\n)\s*(import\s|export\s)/.test(entrySrc);
+    diag.dynamicWasiLooksLikeCommonJS = hasBareRequire && !hasEsmSyntax;
+  } catch { /* không đọc được để soi thử — không quan trọng, việc chính (tìm đúng file) đã xong */ }
 
   const wasmFile = findFileInPkg(wasmRoot, (name) => name.endsWith('.wasm'));
   // "worker" + ("browser" HOẶC "wasi") ở BẤT KỲ thứ tự nào trong tên (không giả định thứ tự cụ thể —
@@ -1409,6 +1444,9 @@ function computeBrowserOptimizerAssetUrlsDetailed() {
   const workerRelPath = path.relative(wasmRoot, workerFile).split(path.sep).join('/');
   return {
     ok: true,
+    warnings: diag.dynamicWasiLooksLikeCommonJS
+      ? ['File dynamic-wasi được chọn có dấu hiệu là CommonJS thô (require(...) không kèm cú pháp ESM) — trình duyệt có thể báo lỗi "require is not defined" khi chạy. Xem dynamicWasiExportsMapEntry ở lần probe trước để kiểm tra lại nhánh "import" có đúng không.']
+      : [],
     urls: {
       dynamicWasiEntryUrl: `/api/fsrs-optimizer/browser/pkg/binding/${dynamicWasiRelPath}`,
       wasmAssetUrl: `/api/fsrs-optimizer/browser/pkg/binding-wasm32-wasi/${wasmRelPath}`,
