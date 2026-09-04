@@ -73,3 +73,33 @@ tra trong sandbox. Không có log Vercel thật nên KHÔNG đoán mù — thay 
 
 **Bước tiếp theo**: deploy lại, bấm Run Optimizer thử lại. Nếu vẫn lỗi, bấm nút "🔎 [Admin] Kiểm tra
 engine native/WASI" và gửi tôi xem đúng dòng "Optimizer (trình duyệt)" hiện gì.
+
+---
+
+# VÒNG 4 (V92.2) — TÌM ĐÚNG ROOT CAUSE THẬT TỪ LOG PRODUCTION
+
+Bạn gửi ảnh chụp dòng chẩn đoán mới: `"bindingRoot":null,"wasmRoot":null,"failedAt":"package_resolve"`
+— NHƯNG cùng lúc đó dòng "Engine (server): Native ✅" ngay phía trên lại xác nhận
+`@open-spaced-repetition/binding` chắc chắn ĐÃ cài và chạy tốt. Hai điều này MÂU THUẪN nếu nguyên nhân
+thật là "thiếu package" — nghĩa là lỗi nằm ở CÁCH TÔI TÌM thư mục package, không phải do thiếu cài đặt.
+
+**Root cause thật**: code cũ dùng `require.resolve('<package>/package.json')` để tìm thư mục gốc —
+nhưng `@open-spaced-repetition/binding` khai `"exports"` map trong package.json KHÔNG cho phép truy cập
+trực tiếp subpath `"./package.json"` từ bên ngoài (dù package vẫn dùng bình thường qua các subpath ĐƯỢC
+khai, như `dynamic-wasi`). Đây là 1 quy tắc bảo mật/đóng gói chuẩn của Node.js hiện đại — tôi đã viết
+lại test tái hiện chính xác lỗi này để xác nhận (không chỉ đoán), xem
+`test/fsrs-optimizer.browser-asset-resolution.test.js`.
+
+- `api/index.js`: đổi cách tìm thư mục package — không dựa vào resolve `./package.json` nữa, mà đi từ
+  1 subpath THẬT SỰ dùng được (`dynamic-wasi`) rồi truy ngược lên tìm đúng `package.json`. Với gói WASM
+  (`binding-wasm32-wasi`, thường không có "main" để resolve trực tiếp) — suy ra vị trí từ việc nó luôn
+  nằm CẠNH package chính (cách npm cài các gói chung 1 scope). Cũng làm việc tìm file `.wasm`/file
+  worker linh hoạt hơn (không giả định thứ tự chữ trong tên file).
+- Test mới `test/fsrs-optimizer.browser-asset-resolution.test.js`: tự dựng 1 bộ `node_modules` giả
+  ngay trên đĩa mô phỏng ĐÚNG 2 khó khăn đã gặp thật (exports map chặn + tên file khác ví dụ) — chạy
+  được ĐỘC LẬP, không cần bản giả lập tối thiểu như các test khác, thêm script
+  `npm run test:optimizer:browser-assets`.
+
+**Vẫn CHƯA chắc chắn 100%** đây là nguyên nhân DUY NHẤT (có thể còn vấn đề khác lộ ra sau khi qua được
+bước này) — nhưng đây là lần đầu tiên có bằng chứng cụ thể (không phải suy đoán) về CHÍNH XÁC dòng code
+nào sai và tại sao.

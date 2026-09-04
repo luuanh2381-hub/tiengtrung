@@ -13,6 +13,7 @@
     "test:distractor": "node test/heavy-distractor.test.js",
     "test:integration": "node test/fsrs.concurrency.integration.js",
     "test:optimizer": "node test/fsrs-optimizer.test.js",
+    "test:optimizer:browser-assets": "node test/fsrs-optimizer.browser-asset-resolution.test.js",
     "test:optimizer:integration": "node test/fsrs-optimizer.integration.test.js",
     "test:optimizer:binding": "node test/fsrs-optimizer.binding.smoke.test.js",
     "test:optimizer:frontend": "node test/fsrs-optimizer-frontend.smoke.test.js",
