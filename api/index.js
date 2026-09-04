@@ -1290,11 +1290,55 @@ const BROWSER_OPTIMIZER_CONTENT_TYPES = {
   '.json': 'application/json; charset=utf-8',
 };
 const _browserOptimizerPkgRootCache = {};
+// Tìm thư mục gốc của 1 package bằng cách "đi lên từ 1 entry point CHẮC CHẮN resolve được" rồi tìm
+// đúng package.json khai tên khớp — KHÔNG dùng require.resolve('<pkg>/package.json') trực tiếp như
+// bản trước (audit lại lần 3, có log thật từ production mới phát hiện ra): nhiều package hiện đại khai
+// "exports" map CHẶT, không cho resolve subpath "./package.json" từ ngoài dù package đó vẫn cài đặt/
+// dùng được HOÀN TOÀN bình thường — bằng chứng trực tiếp: log thật cho thấy "Engine (server): Native"
+// hoạt động tốt (tức @open-spaced-repetition/binding chắc chắn có cài + native binary chạy được) NGAY
+// TRONG CÙNG 1 lần probe mà "bindingRoot" vẫn ra null — mâu thuẫn đó tự nó chỉ ra lỗi nằm ở CÁCH TÌM
+// thư mục của tôi, không phải do thiếu package thật.
+function findPackageRootByEntry(pkgName, entrySubpath) {
+  let entryPath;
+  try { entryPath = require.resolve(entrySubpath ? `${pkgName}/${entrySubpath}` : pkgName); }
+  catch { return null; }
+  let dir = path.dirname(entryPath);
+  for (let i = 0; i < 12; i++) { // giới hạn số bước đi lên — tránh vòng lặp nếu có gì bất thường, 12 tầng thừa đủ cho mọi cấu trúc node_modules thực tế
+    const pkgJsonPath = path.join(dir, 'package.json');
+    if (fs.existsSync(pkgJsonPath)) {
+      try { if (JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8')).name === pkgName) return dir; }
+      catch { /* package.json ở đây lỗi định dạng (hiếm) — cứ tiếp tục đi lên */ }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null; // đã tới gốc ổ đĩa, không tìm thấy
+    dir = parent;
+  }
+  return null;
+}
+
 function resolveBrowserOptimizerPkgRoot(pkgKey) {
   if (pkgKey in _browserOptimizerPkgRootCache) return _browserOptimizerPkgRootCache[pkgKey];
-  const pkgName = BROWSER_OPTIMIZER_PACKAGES[pkgKey];
   let root = null;
-  try { root = path.dirname(require.resolve(`${pkgName}/package.json`)); } catch { root = null; }
+  if (pkgKey === 'binding') {
+    // Dùng thẳng subpath "dynamic-wasi" làm entry chắc chắn resolve được (nếu resolve được thì tự
+    // nhiên suy ra package đã cài đủ, đỡ phải thử "main" riêng) — fallback về entry chính nếu vì lý do
+    // gì đó dynamic-wasi không có nhưng package chính vẫn cài (vd version khác không có subpath này).
+    root = findPackageRootByEntry('@open-spaced-repetition/binding', 'dynamic-wasi')
+        || findPackageRootByEntry('@open-spaced-repetition/binding', null);
+  } else if (pkgKey === 'binding-wasm32-wasi') {
+    // Package này thường CHỈ chứa asset (.wasm + .mjs), không có "main" JS nào để require.resolve()
+    // suông được — cách đáng tin cậy nhất: suy ra từ vị trí package CHÍNH (luôn nằm cùng thư mục cha,
+    // đúng cách npm/pnpm cài các package chung 1 scope @open-spaced-repetition/) thay vì tự resolve
+    // riêng lẻ package này.
+    const bindingRoot = resolveBrowserOptimizerPkgRoot('binding');
+    if (bindingRoot) {
+      const sibling = path.join(path.dirname(bindingRoot), 'binding-wasm32-wasi');
+      if (fs.existsSync(path.join(sibling, 'package.json'))) root = sibling;
+    }
+    // Phòng khi node_modules hoisting KHÔNG đặt 2 package này cạnh nhau — thử thêm 1 cách nữa trước
+    // khi kết luận thiếu package thật.
+    if (!root) root = findPackageRootByEntry('@open-spaced-repetition/binding-wasm32-wasi', 'package.json');
+  }
   _browserOptimizerPkgRootCache[pkgKey] = root;
   return root;
 }
@@ -1345,7 +1389,13 @@ function computeBrowserOptimizerAssetUrlsDetailed() {
   }
 
   const wasmFile = findFileInPkg(wasmRoot, (name) => name.endsWith('.wasm'));
-  const workerFile = findFileInPkg(wasmRoot, (name) => /worker.*browser.*\.m?js$/i.test(name) || /wasi.*worker.*\.m?js$/i.test(name));
+  // "worker" + ("browser" HOẶC "wasi") ở BẤT KỲ thứ tự nào trong tên (không giả định thứ tự cụ thể —
+  // audit lại lần 4 phát hiện: ví dụ duy nhất đọc được là "wasi-worker-browser.mjs", nhưng không có gì
+  // đảm bảo version thật/tương lai giữ ĐÚNG thứ tự đó). Nếu vẫn không khớp, dự phòng: chấp nhận BẤT KỲ
+  // file .mjs/.js nào khác trong thư mục (gói asset kiểu này hiếm khi có file JS không liên quan) —
+  // wasmRootListing trong log/diagnostics vẫn cho thấy đủ để tự sửa tay nếu dự phòng này cũng sai.
+  const workerFile = findFileInPkg(wasmRoot, (name) => /worker/i.test(name) && (/browser/i.test(name) || /wasi/i.test(name)))
+    || findFileInPkg(wasmRoot, (name) => /\.m?js$/i.test(name));
   diag.wasmFile = wasmFile;
   diag.workerFile = workerFile;
   if (!wasmFile || !workerFile) {
