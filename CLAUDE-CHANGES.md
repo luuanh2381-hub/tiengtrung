@@ -127,3 +127,27 @@ hưởng hành vi đã có.
 tra: script không làm hỏng build nếu thất bại (chỉ cảnh báo), đọc đúng version cần tải, có giới hạn thời
 gian chờ (30s) để không treo build. Việc TẢI THẬT THÀNH CÔNG chỉ xác nhận được sau khi bạn deploy —
 bấm nút 🔎 chẩn đoán để xem `wasmRoot` đã khác `null` chưa.
+
+---
+
+# VÒNG 6 (V92.4) — SỬA "require is not defined" (chọn nhầm file CommonJS thay vì ESM)
+
+Bạn gửi ảnh mới: gói WASM đã cài được (đúng như vòng 5 sửa) — lỗi ĐỔI sang
+`"Optimizer lỗi trong trình duyệt: require is not defined"`. Đây là tiến triển thật (đi qua được bước
+trước), không phải lỗi cũ quay lại.
+
+**Root cause**: nhiều package hiện đại công bố 2 bản cho cùng 1 chức năng — 1 bản ESM (dành cho
+`import`, trình duyệt cần đúng bản này) và 1 bản CommonJS (dành cho `require()`, có chứa `require(...)`
+bên trong — chỉ chạy được trong Node, KHÔNG chạy được thẳng trong trình duyệt). Code cũ dùng
+`require.resolve()` (chạy trên server, vốn là CommonJS) để tìm file `dynamic-wasi` — Node tự động chọn
+ĐÚNG bản CommonJS cho ngữ cảnh đó, rồi tôi lại đem SERVE bản đó cho trình duyệt — sai bản.
+
+**Đã sửa**: đọc thẳng "exports" map trong package.json, tự chọn nhánh "import" (ESM) thay vì để Node tự
+chọn theo ngữ cảnh server. Đã viết test tái hiện chính xác tình huống 2 bản file khác nhau + xác nhận
+test này THẬT SỰ bắt được lỗi (tự thử revert lại code cũ, xác nhận test báo lỗi đúng file `.cjs`, rồi
+khôi phục lại bản sửa — không chỉ tin test tự viết mà không kiểm chứng ngược). Cũng thêm cảnh báo chủ
+động trong nút 🔎 chẩn đoán — nếu file được chọn vẫn còn dấu hiệu CommonJS, sẽ thấy cảnh báo ngay mà
+không cần đợi thử Run Optimizer thật rồi mới biết.
+
+**Vẫn có thể còn lỗi khác phía sau** (vd nếu chính `wasi-worker-browser.mjs`/file nó gọi tới cũng gặp
+vấn đề tương tự) — chỉ xác nhận được sau khi bạn deploy và thử lại.
