@@ -21,7 +21,7 @@
     "test:auth-security": "node test/auth-security.test.js",
     "verify:fsrs6": "node scripts/verify-fsrs6.js",
     "verify:optimizer-binding": "node scripts/verify-optimizer-binding.js",
-    "postinstall": "node scripts/verify-optimizer-binding.js",
+    "postinstall": "node scripts/verify-optimizer-binding.js; s=$?; node scripts/ensure-wasm-optimizer.js; exit $s",
     "migrate:fsrs": "node scripts/migrate-to-pure-fsrs.js",
     "fix:current-lesson": "node scripts/fix-current-lesson-start.js"
   },

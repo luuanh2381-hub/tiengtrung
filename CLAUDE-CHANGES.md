@@ -103,3 +103,27 @@ lại test tái hiện chính xác lỗi này để xác nhận (không chỉ đ
 **Vẫn CHƯA chắc chắn 100%** đây là nguyên nhân DUY NHẤT (có thể còn vấn đề khác lộ ra sau khi qua được
 bước này) — nhưng đây là lần đầu tiên có bằng chứng cụ thể (không phải suy đoán) về CHÍNH XÁC dòng code
 nào sai và tại sao.
+
+---
+
+# VÒNG 5 (V92.3) — ROOT CAUSE THẬT SỰ: npm CHUẨN BỎ QUA GÓI WASM, KHÔNG PHẢI LỖI CODE
+
+Bạn gửi ảnh mới: `bindingRoot` giờ ĐÃ đúng (`/var/task/node_modules/@open-spaced-repetition/binding`)
+— xác nhận sửa vòng 4 có tác dụng thật. Nhưng `wasmRoot` vẫn `null`. Tra cứu kỹ hơn (tài liệu chính
+thức của NAPI-RS — framework build ra package đang dùng) xác nhận: package
+`@open-spaced-repetition/binding-wasm32-wasi` tự khai `cpu: ["wasm32"]` — và **đây là quy ước CHUẨN**:
+mọi máy build thật (kể cả máy của Vercel) đều là x64/arm64, KHÔNG máy nào tự nhận là "wasm32", nên
+`npm install`/`npm ci` LUÔN bỏ qua gói này, dù đã khai trong `optionalDependencies` và dù
+`includeFiles` trong `vercel.json` đã đúng — `includeFiles` chỉ đóng gói file ĐÃ CÓ trên đĩa, không
+giúp CÀI ĐẶT file chưa từng được tải về. **Đây không phải lỗi tôi gây ra hay lỗi cấu hình của bạn** —
+`pnpm` có tuỳ chọn riêng để ép cài trường hợp này, nhưng `npm` (project đang dùng) không có.
+
+**Đã sửa**: thêm `scripts/ensure-wasm-optimizer.js`, tự chạy sau `npm install` (postinstall) — nếu thấy
+gói WASM bị thiếu, tự tải thẳng từ npm registry (KHÔNG qua bước bị lọc theo cpu) rồi tự giải nén vào
+đúng chỗ. Không sửa gì script postinstall cũ (`verify-optimizer-binding.js`) — chỉ nối thêm, không ảnh
+hưởng hành vi đã có.
+
+**CHƯA THỂ tự xác nhận 100%** — máy sửa code không có mạng thật để thử tải xuống thành công. Đã kiểm
+tra: script không làm hỏng build nếu thất bại (chỉ cảnh báo), đọc đúng version cần tải, có giới hạn thời
+gian chờ (30s) để không treo build. Việc TẢI THẬT THÀNH CÔNG chỉ xác nhận được sau khi bạn deploy —
+bấm nút 🔎 chẩn đoán để xem `wasmRoot` đã khác `null` chưa.
