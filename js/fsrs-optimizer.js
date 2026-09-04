@@ -137,7 +137,8 @@ async function checkOptimizerEngineDiagnostics() {
   if (bt) {
     html += `<hr style="margin:8px 0;border-color:rgba(0,0,0,.08);">Optimizer (trình duyệt): ` +
       (bt.ok
-        ? `<b style="color:var(--ok);">✅ Sẵn sàng</b> — dynamic-wasi=${bt.urls.dynamicWasiEntryUrl} · wasm=${bt.urls.wasmAssetUrl} · worker=${bt.urls.workerScriptUrl}`
+        ? `<b style="color:var(--ok);">✅ Sẵn sàng</b> — dynamic-wasi=${bt.urls.dynamicWasiEntryUrl} · wasm=${bt.urls.wasmAssetUrl} · worker=${bt.urls.workerScriptUrl}` +
+          (bt.warnings && bt.warnings.length ? `<br><span style="color:#b45309;">⚠️ ${bt.warnings.join('<br>⚠️ ')}</span>` : '')
         : `<b style="color:var(--fail);">⚠️ CHƯA sẵn sàng</b> — dừng ở bước: <code>${bt.diag.failedAt}</code>` +
           (bt.diag.hint ? `<br>${bt.diag.hint}` : '') +
           `<br><span style="font-size:.62rem;opacity:.8;">${JSON.stringify(bt.diag).slice(0, 500)}</span>`);
