@@ -1442,11 +1442,14 @@ function computeBrowserOptimizerAssetUrlsDetailed() {
   const dynamicWasiRelPath = path.relative(bindingRoot, dynamicWasiEntry).split(path.sep).join('/');
   const wasmRelPath = path.relative(wasmRoot, wasmFile).split(path.sep).join('/');
   const workerRelPath = path.relative(wasmRoot, workerFile).split(path.sep).join('/');
+  const importMap = buildImportMapForFile(dynamicWasiEntry, 2);
+  diag.importMap = importMap; // lưu cả khi thành công — nếu sau này vẫn còn bare specifier nào lọt lưới, thấy ngay map thật đã tính ra là gì thay vì đoán
   return {
     ok: true,
     warnings: diag.dynamicWasiLooksLikeCommonJS
       ? ['File dynamic-wasi được chọn có dấu hiệu là CommonJS thô (require(...) không kèm cú pháp ESM) — trình duyệt có thể báo lỗi "require is not defined" khi chạy. Xem dynamicWasiExportsMapEntry ở lần probe trước để kiểm tra lại nhánh "import" có đúng không.']
       : [],
+    importMap,
     urls: {
       dynamicWasiEntryUrl: `/api/fsrs-optimizer/browser/pkg/binding/${dynamicWasiRelPath}`,
       wasmAssetUrl: `/api/fsrs-optimizer/browser/pkg/binding-wasm32-wasi/${wasmRelPath}`,
@@ -1461,7 +1464,125 @@ function computeBrowserOptimizerAssetUrls() {
     console.error('[fsrs-optimizer/browser] computeBrowserOptimizerAssetUrls() thất bại — xem chi tiết ở GET /api/fsrs-optimizer/diagnostics (admin) hoặc log dưới đây:', JSON.stringify(result.diag));
     return null;
   }
-  return result.urls;
+  return { ...result.urls, importMap: result.importMap };
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// IMPORT MAP cho các "bare specifier" (vd `import ... from '@napi-rs/wasm-runtime'`) — audit lại lần 7
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// Log thật (production) cho thấy file dynamic-wasi (ESM) mà ta serve có import "trần" (bare specifier,
+// tên package thường dùng trong Node — KHÔNG phải đường dẫn tương đối) tới 1 package KHÁC
+// (@napi-rs/wasm-runtime — thư viện WASM runtime dùng chung của napi-rs, không phải phần riêng của
+// FSRS binding). Trình duyệt KHÔNG tự resolve được specifier kiểu này (đúng lỗi thật: "Failed to
+// resolve module specifier... Relative references must start with..."). Cách chuẩn của web platform để
+// giải quyết là "import map" (`<script type="importmap">`) — NHƯNG import map CHỈ áp dụng cho module
+// nạp vào DOCUMENT chính, KHÔNG áp dụng cho module nạp trong Worker/Worklet (xác nhận từ tài liệu chính
+// thức MDN) — đây là lý do kiến trúc "chạy trong Worker riêng" (bản trước) không thể dùng cách này được.
+// => Thiết kế lại: initOptimizer()/computeParameters() giờ chạy TRÊN LUỒNG CHÍNH (không còn
+// js/fsrs-optimizer-worker.js) — bản thân package đã tự spawn 1 Worker RIÊNG của nó
+// (`worker: () => new WasiWorker()`) để thực hiện phần tính toán nặng, nên luồng chính vẫn KHÔNG bị
+// chặn dù gọi trực tiếp — và import map (chỉ hoạt động ở luồng chính) mới dùng được.
+//
+// KHÔNG thể biết trước TẤT CẢ bare specifier nào sẽ cần (tài liệu không liệt kê đầy đủ, và các gói phụ
+// thuộc lồng nhau có thể tự thay đổi qua từng version) — nên thay vì liệt kê tay, code dưới đây tự ĐỌC
+// nội dung file entry, tự tìm mọi bare specifier, tự resolve + đăng ký route serve cho từng cái, và
+// quét thêm 1-2 tầng vào các file được require/import bởi chính chúng (đa số các gói WASM-runtime nhỏ,
+// gọn, ít khi sâu hơn vài tầng phụ thuộc).
+
+const _dynamicPkgUrlKeyByName = {};
+const _dynamicPkgNameByUrlKey = {};
+function sanitizePkgNameForUrl(pkgName) {
+  if (_dynamicPkgUrlKeyByName[pkgName]) return _dynamicPkgUrlKeyByName[pkgName];
+  const key = pkgName.replace(/^@/, '').replace(/\//g, '__');
+  _dynamicPkgUrlKeyByName[pkgName] = key;
+  _dynamicPkgNameByUrlKey[key] = pkgName;
+  return key;
+}
+
+// Bắt CẢ 2 dạng hay gặp: "import ... from 'x'"/"export ... from 'x'" (gộp chung nhờ đều kết thúc bằng
+// "from '...'") VÀ "import('x')" (dynamic import). KHÔNG bắt "import 'x'" (side-effect-only, hiếm gặp
+// ở loại thư viện này) — chấp nhận bỏ sót trường hợp hiếm đó để giữ regex đơn giản, ít rủi ro bắt nhầm.
+const RE_STATIC_FROM = /\bfrom(\s*)(['"])([^'"]+)\2/g;
+const RE_DYNAMIC_IMPORT = /\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g;
+
+function isBareSpecifier(spec) {
+  return !!spec && !spec.startsWith('.') && !spec.startsWith('/') && !/^https?:/.test(spec);
+}
+
+function extractBareSpecifiers(sourceText) {
+  const found = new Set();
+  let m;
+  RE_STATIC_FROM.lastIndex = 0;
+  while ((m = RE_STATIC_FROM.exec(sourceText))) if (isBareSpecifier(m[3])) found.add(m[3]);
+  RE_DYNAMIC_IMPORT.lastIndex = 0;
+  while ((m = RE_DYNAMIC_IMPORT.exec(sourceText))) if (isBareSpecifier(m[2])) found.add(m[2]);
+  return [...found];
+}
+
+function splitPkgNameAndSubpath(spec) {
+  const m = spec.match(/^(@[^/]+\/[^/]+|[^/]+)(\/.*)?$/);
+  return m ? { pkgName: m[1], subpath: m[2] || '' } : { pkgName: spec, subpath: '' };
+}
+
+// Trả về { url, filePath } cho 1 bare specifier cụ thể (đã tách sẵn tên package/subpath) — dùng
+// require.resolve() bình thường CHO PHÉP ở đây (khác dynamic-wasi) vì các package phụ thuộc kiểu
+// runtime-helper này thường KHÔNG có 2 bản CJS/ESM khác nhau cho cùng chức năng (bản thân chúng thường
+// đã là ESM thuần hoặc dual-mode tương thích cả 2) — nếu sau này lộ ra vấn đề tương tự, áp dụng lại
+// đúng kỹ thuật đọc "exports" map thủ công như đã làm cho dynamic-wasi ở trên.
+function resolveBareSpecifierUrl(spec) {
+  const { pkgName, subpath } = splitPkgNameAndSubpath(spec);
+  let filePath = null;
+  try { filePath = require.resolve(subpath ? `${pkgName}${subpath}` : pkgName); } catch { /* thử tiếp bằng root ở dưới nếu subpath rỗng */ }
+  const root = findPackageRootByEntry(pkgName, subpath ? subpath.slice(1) : null) || (filePath ? path.dirname(filePath) : null);
+  if (!filePath || !root) return null;
+  const relPath = path.relative(root, filePath).split(path.sep).join('/');
+  const urlKey = sanitizePkgNameForUrl(pkgName);
+  return { url: `/api/fsrs-optimizer/browser/pkg-dyn/${urlKey}/${relPath}`, filePath, root, pkgName, urlKey };
+}
+
+// Quét đệ quy (giới hạn độ sâu — các gói runtime-helper nhỏ hiếm khi sâu hơn vài tầng, và giới hạn này
+// tránh quét vô hạn nếu có gì bất thường) — trả về { "specifier": "url", ... } dùng thẳng cho import map.
+function buildImportMapForFile(entryFilePath, maxDepth) {
+  const importMap = {};
+  const visited = new Set();
+  function visit(filePath, depth) {
+    if (depth > maxDepth || visited.has(filePath)) return;
+    visited.add(filePath);
+    let src;
+    try { src = fs.readFileSync(filePath, 'utf8'); } catch { return; }
+    for (const spec of extractBareSpecifiers(src)) {
+      if (importMap[spec]) continue;
+      const resolved = resolveBareSpecifierUrl(spec);
+      if (!resolved) continue; // không resolve được thì bỏ qua — import map thiếu 1 mục sẽ lộ lỗi rõ ràng giống hiện tại (không giấu đi), không làm hỏng thêm gì
+      importMap[spec] = resolved.url;
+      visit(resolved.filePath, depth + 1);
+    }
+  }
+  visit(entryFilePath, 0);
+  return importMap;
+}
+
+function serveDynamicPkgFile(req, res) {
+  const urlKey = req.params.urlKey;
+  const pkgName = _dynamicPkgNameByUrlKey[urlKey];
+  const root = pkgName ? findPackageRootByEntry(pkgName, null) : null;
+  if (!pkgName || !root) {
+    res.status(404).json({ ok: false, error: 'Không rõ package (có thể server đã restart và mất cache đăng ký — thử tải lại trang rồi bấm Run lại).' });
+    return;
+  }
+  const relPath = (req.params[0] || '').replace(/\\/g, '/');
+  const filePath = path.resolve(root, relPath);
+  if (filePath !== root && !filePath.startsWith(root + path.sep)) {
+    res.status(400).json({ ok: false, error: 'Đường dẫn không hợp lệ.' });
+    return;
+  }
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    res.status(404).json({ ok: false, error: `Không tìm thấy file: ${relPath}` });
+    return;
+  }
+  res.setHeader('Content-Type', BROWSER_OPTIMIZER_CONTENT_TYPES[path.extname(filePath)] || 'application/octet-stream');
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  fs.createReadStream(filePath).pipe(res);
 }
 
 function serveBrowserOptimizerPackageFile(pkgKey) {
@@ -1489,6 +1610,7 @@ function serveBrowserOptimizerPackageFile(pkgKey) {
 }
 app.get('/api/fsrs-optimizer/browser/pkg/binding/*', serveBrowserOptimizerPackageFile('binding'));
 app.get('/api/fsrs-optimizer/browser/pkg/binding-wasm32-wasi/*', serveBrowserOptimizerPackageFile('binding-wasm32-wasi'));
+app.get('/api/fsrs-optimizer/browser/pkg-dyn/:urlKey/*', serveDynamicPkgFile);
 
 // POST apply / rollback / reset: lỗi ở đây là lỗi NGHIỆP VỤ (vd bấm Apply khi chưa Run) — trả
 // ok:false/200 thay vì 500, đúng convention của /api/settings/retention.
