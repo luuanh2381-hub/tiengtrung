@@ -151,3 +151,35 @@ không cần đợi thử Run Optimizer thật rồi mới biết.
 
 **Vẫn có thể còn lỗi khác phía sau** (vd nếu chính `wasi-worker-browser.mjs`/file nó gọi tới cũng gặp
 vấn đề tương tự) — chỉ xác nhận được sau khi bạn deploy và thử lại.
+
+---
+
+# VÒNG 7 (V92.5) — SỬA "Failed to resolve module specifier" + ĐỔI KIẾN TRÚC (bỏ Worker riêng của app)
+
+Bạn gửi ảnh mới: lỗi đổi thành `Failed to resolve module specifier "@napi-rs/wasm-runtime". Relative
+references must start with either "/", "./", or "../"`. Lỗi này khác về BẢN CHẤT so với các lỗi trước —
+không chỉ là "thiếu file", mà là **giới hạn kiến trúc thật của trình duyệt** (đã tra cứu tài liệu chính
+thức MDN để xác nhận, không suy đoán): `dynamic-wasi.mjs` cần `import` một package KHÁC
+(`@napi-rs/wasm-runtime`) bằng tên trần (không phải đường dẫn) — cách chuẩn để trình duyệt hiểu tên trần
+đó là dùng "import map", NHƯNG **import map chỉ hoạt động với module tải vào trang chính, KHÔNG hoạt
+động với module tải trong Web Worker** — mà bản trước của tôi lại cho toàn bộ việc train chạy trong 1
+Worker riêng do app tự tạo, nên không dùng được cách này.
+
+**Đã đổi kiến trúc**: bỏ hẳn `js/fsrs-optimizer-worker.js` (Worker riêng của app) — giờ gọi
+`initOptimizer()`/`computeParameters()` TRỰC TIẾP trên luồng chính của trang. Không lo bị chặn giao
+diện: bản thân thư viện đã tự tạo 1 Worker CỦA RIÊNG NÓ để làm phần tính toán nặng (đúng mục đích tham
+số `worker: () => new Worker(...)` trong tài liệu chính thức) — luồng chính chỉ `await` kết quả.
+
+Server giờ tự đọc nội dung file `dynamic-wasi` thật, tự tìm mọi tên package "trần" nó cần (không hardcode
+tên `@napi-rs/wasm-runtime` — quét tổng quát, phòng trường hợp version khác cần package khác hoặc nhiều
+hơn 1 package), tự tạo URL phục vụ cho từng cái, rồi trang tự chèn `<script type="importmap">` đúng
+lúc trước khi tải — đã viết test xác nhận cơ chế quét + tạo import map này hoạt động đúng với 1 tình
+huống mô phỏng sát thực tế (2 package, có phụ thuộc chéo).
+
+**Đánh đổi cần biết**: nút "Hủy" giờ không còn dừng ngay lập tức được phép tính đang chạy dở (trước đây
+dừng được vì có Worker riêng để `.terminate()`) — bấm Hủy vẫn báo server dừng nhận kết quả đó, nhưng
+phép tính có thể vẫn tiếp diễn ngầm tới khi xong tự nhiên rồi bị bỏ qua. Đổi lại là sửa được đúng lỗi
+kiến trúc ở trên.
+
+**Vẫn CHƯA thể tự xác nhận bằng trình duyệt thật** — đây là thay đổi kiến trúc lớn nhất từ đầu tới giờ,
+rất mong bạn thử kỹ và báo lại, kể cả khi thành công lẫn khi vẫn còn lỗi.
