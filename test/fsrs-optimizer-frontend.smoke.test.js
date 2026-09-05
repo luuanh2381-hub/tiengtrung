@@ -256,17 +256,25 @@ test('renderOptimizerBody(): state "running" phải có nút Hủy (cancelOptimi
 
 test('Source: runOptimizerNow() KHÔNG còn gọi /api/fsrs-optimizer/run hay /api/fsrs-optimizer/worker — chỉ /browser/prepare (Phần V "không để 2 optimizer chạy song song")', () => {
   const startIdx = SRC.indexOf('async function runOptimizerNow');
-  const endIdx = SRC.indexOf('\nfunction runBrowserOptimizerWorker');
-  assert.ok(startIdx !== -1 && endIdx !== -1 && endIdx > startIdx, 'không tìm thấy runOptimizerNow()/runBrowserOptimizerWorker() — cấu trúc file có thể đã đổi, cập nhật lại test này');
+  const endIdx = SRC.indexOf('\nasync function runBrowserOptimizerMainThread');
+  assert.ok(startIdx !== -1 && endIdx !== -1 && endIdx > startIdx, 'không tìm thấy runOptimizerNow()/runBrowserOptimizerMainThread() — cấu trúc file có thể đã đổi, cập nhật lại test này');
   const body = SRC.slice(startIdx, endIdx);
   assert.ok(!/'\/api\/fsrs-optimizer\/run'/.test(body), 'KHÔNG được gọi /api/fsrs-optimizer/run nữa từ runOptimizerNow()');
   assert.ok(!/'\/api\/fsrs-optimizer\/worker'/.test(body), 'KHÔNG được gọi /api/fsrs-optimizer/worker');
   assert.ok(/\/api\/fsrs-optimizer\/browser\/prepare/.test(body), 'phải gọi đúng /api/fsrs-optimizer/browser/prepare');
 });
 
-test('Source: runBrowserOptimizerWorker() tạo Worker đúng file js/fsrs-optimizer-worker.js với { type: "module" } (bắt buộc để import() ESM động hoạt động trong Worker)', () => {
-  const body = SRC.slice(SRC.indexOf('function runBrowserOptimizerWorker'), SRC.indexOf('function stopOptimizerKeepaliveOnly'));
-  assert.ok(/new Worker\(\s*'\/js\/fsrs-optimizer-worker\.js'\s*,\s*\{\s*type:\s*'module'\s*\}\s*\)/.test(body), 'phải tạo đúng Worker kiểu module, trỏ đúng file');
+test('Source: runBrowserOptimizerMainThread() KHÔNG còn tạo Worker riêng của app (audit lại lần 7 — import map cần cho bare-specifier dependency chỉ hoạt động ở luồng chính, không hoạt động trong Worker theo tài liệu MDN) — chỉ còn Worker do CHÍNH thư viện tự tạo qua tham số worker: () => new Worker(...)', () => {
+  const body = SRC.slice(SRC.indexOf('async function runBrowserOptimizerMainThread'), SRC.indexOf('function stopOptimizerKeepaliveOnly'));
+  assert.ok(!/new Worker\(\s*'\/js\/fsrs-optimizer-worker\.js'/.test(body), 'KHÔNG được tự tạo Worker riêng của app nữa (đã bỏ file js/fsrs-optimizer-worker.js)');
+  assert.ok(/injectOptimizerImportMap\(/.test(body), 'phải chèn import map TRƯỚC khi import() động — bare specifier như @napi-rs/wasm-runtime cần import map để trình duyệt resolve được');
+  assert.ok(/await\s+import\(/.test(body), 'phải import() ĐỘNG dynamic-wasi entry ngay trên luồng chính');
+});
+
+test('Source: injectOptimizerImportMap() tạo đúng <script type="importmap"> và chỉ chèn 1 lần (chèn lần 2 sau khi module đã tải sẽ bị trình duyệt bỏ qua/lỗi)', () => {
+  const body = SRC.slice(SRC.indexOf('function injectOptimizerImportMap'), SRC.indexOf('async function runBrowserOptimizerMainThread'));
+  assert.ok(/type\s*=\s*['"]importmap['"]/.test(body), 'phải set type="importmap"');
+  assert.ok(/_optimizerImportMapInjected/.test(body), 'phải có cờ chặn chèn lần 2');
 });
 
 run();

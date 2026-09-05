@@ -46,8 +46,19 @@ function buildFakeNodeModules(root) {
     },
   }));
   fs.writeFileSync(path.join(scopeDir, 'binding', 'index.js'), 'module.exports = {};');
-  fs.writeFileSync(path.join(scopeDir, 'binding', 'dynamic-wasi.mjs'), 'export async function initOptimizer() { return {}; }');
+  // dynamic-wasi.mjs (bản ESM đúng) có bare import tới 1 package KHÁC — đúng lỗi thật production gặp
+  // ("Failed to resolve module specifier '@napi-rs/wasm-runtime'"). Package giả lập đặt CẠNH, không
+  // liên quan gì tới @open-spaced-repetition, giống hệt cấu trúc thật.
+  fs.writeFileSync(path.join(scopeDir, 'binding', 'dynamic-wasi.mjs'),
+    "import { instantiate } from '@napi-rs/wasm-runtime';\nexport async function initOptimizer() { return { instantiate }; }\n");
   fs.writeFileSync(path.join(scopeDir, 'binding', 'dynamic-wasi.cjs'), 'const fakeDep = require("fs"); module.exports = { initOptimizer: async () => ({}) };'); // file CJS "bẫy" — nếu bị chọn nhầm, đây chính là nguồn require() gây lỗi thật trong trình duyệt
+
+  const otherScopeDir = path.join(root, 'node_modules', '@napi-rs');
+  fs.mkdirSync(path.join(otherScopeDir, 'wasm-runtime'), { recursive: true });
+  fs.writeFileSync(path.join(otherScopeDir, 'wasm-runtime', 'package.json'), JSON.stringify({
+    name: '@napi-rs/wasm-runtime', version: '0.2.0', main: './index.mjs',
+  }));
+  fs.writeFileSync(path.join(otherScopeDir, 'wasm-runtime', 'index.mjs'), 'export function instantiate() { return {}; }\n');
 
   // Package WASM — tên file KHÔNG khớp ví dụ đã tra cứu (đúng khó khăn #2), không có "main"/"exports".
   fs.writeFileSync(path.join(scopeDir, 'binding-wasm32-wasi', 'package.json'), JSON.stringify({
@@ -67,7 +78,7 @@ function loadFunctionsFromRealSource() {
   const snippet = src.slice(startIdx, endIdx);
   const sandbox = { require, fs, path, console, module: { exports: {} } };
   vm.createContext(sandbox);
-  vm.runInContext(snippet + '\nmodule.exports = { computeBrowserOptimizerAssetUrlsDetailed };', sandbox, { filename: 'api/index.js (trích đoạn)' });
+  vm.runInContext(snippet + '\nmodule.exports = { computeBrowserOptimizerAssetUrlsDetailed, buildImportMapForFile };', sandbox, { filename: 'api/index.js (trích đoạn)' });
   return sandbox.module.exports;
 }
 
@@ -82,7 +93,7 @@ try {
   module.paths.unshift(path.join(tmpRoot, 'node_modules'));
   require('module').Module._initPaths(); // đảm bảo global resolution cache nhận path mới ngay
 
-  const { computeBrowserOptimizerAssetUrlsDetailed } = loadFunctionsFromRealSource();
+  const { computeBrowserOptimizerAssetUrlsDetailed, buildImportMapForFile } = loadFunctionsFromRealSource();
 
   test('computeBrowserOptimizerAssetUrlsDetailed(): vẫn resolve ĐÚNG dù package chính có "exports" map chặn "./package.json" (lỗi thật đã gặp ở production — audit lại lần 4)', () => {
     const result = computeBrowserOptimizerAssetUrlsDetailed();
@@ -95,6 +106,19 @@ try {
     assert.strictEqual(result.ok, true);
     assert.ok(result.urls.dynamicWasiEntryUrl.endsWith('.mjs'), `phải chọn file .mjs (ESM), tuyệt đối không phải .cjs (CommonJS) — nhận: ${result.urls.dynamicWasiEntryUrl}`);
     assert.ok(!result.urls.dynamicWasiEntryUrl.includes('dynamic-wasi.cjs'), 'không được chọn nhầm file bẫy CommonJS');
+  });
+
+  test('computeBrowserOptimizerAssetUrlsDetailed(): importMap PHẢI có mục cho "@napi-rs/wasm-runtime" (bare specifier mà dynamic-wasi.mjs import — lỗi thật "Failed to resolve module specifier" đã gặp ở production, audit lại lần 7)', () => {
+    const result = computeBrowserOptimizerAssetUrlsDetailed();
+    assert.strictEqual(result.ok, true);
+    assert.ok(result.importMap['@napi-rs/wasm-runtime'], `importMap phải có mục cho @napi-rs/wasm-runtime — nhận: ${JSON.stringify(result.importMap)}`);
+    assert.ok(result.importMap['@napi-rs/wasm-runtime'].startsWith('/api/fsrs-optimizer/browser/pkg-dyn/napi-rs__wasm-runtime/'));
+  });
+
+  test('buildImportMapForFile(): quét đúng bare specifier từ nội dung file thật, không cần biết tên trước (tổng quát, không hardcode "@napi-rs/wasm-runtime")', () => {
+    const dynamicWasiPath = path.join(tmpRoot, 'node_modules', '@open-spaced-repetition', 'binding', 'dynamic-wasi.mjs');
+    const map = buildImportMapForFile(dynamicWasiPath, 2);
+    assert.deepStrictEqual(Object.keys(map), ['@napi-rs/wasm-runtime']);
   });
 
   test('computeBrowserOptimizerAssetUrlsDetailed(): tìm đúng file .wasm dù tên KHÔNG khớp ví dụ đã tra cứu lúc viết code', () => {
