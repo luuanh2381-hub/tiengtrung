@@ -19,14 +19,19 @@ let _optimizerPollTimer = null;
 let _optimizerConsecutiveErrors = 0; // Phần 3 — chặn tự thử lại VÔ HẠN nếu lỗi hạ tầng KHÔNG PHẢI tạm thời (vd cấu hình sai vĩnh viễn), tránh dội tải DB/server không cần thiết
 const OPTIMIZER_MAX_CONSECUTIVE_ERRORS = 5; // ~10s tự thử lại liên tục (5 × 2s) trước khi cần user chủ động bấm lại
 const OPTIMIZER_POLL_MS = 2000;
-// ── Audit lại "AUDIT V91 – FIX FSRS OPTIMIZER DỨT ĐIỂM" — computeParameters() giờ chạy TRONG
-//     TRÌNH DUYỆT qua Web Worker (Phần I/II/V), KHÔNG còn trong Vercel Function nữa. State module-
-//     scope này theo dõi Worker của CHÍNH TAB này — sống độc lập với việc modal đang mở hay đóng
-//     (đóng modal KHÔNG dừng Worker, giống hệt tinh thần "đóng modal không huỷ job" ở bản server cũ —
-//     chỉ có source của việc train là đổi từ server sang tab này). Reload/đóng hẳn tab MỚI thật sự
-//     dừng Worker (trình duyệt tự huỷ) — server nhận ra qua mất keepalive (Phần VI/VII).
-let _optimizerBrowserWorker = null;
+// ── Audit lại "AUDIT V91 – FIX FSRS OPTIMIZER DỨT ĐIỂM" (qua nhiều vòng — xem CLAUDE-CHANGES.md) —
+//     computeParameters() giờ chạy TRÊN LUỒNG CHÍNH của trang (KHÔNG còn Worker riêng của app — vòng
+//     audit lại lần 7 phát hiện: import map cần cho package phụ thuộc "bare specifier" của thư viện
+//     KHÔNG hoạt động trong Worker, chỉ hoạt động ở luồng chính — xem injectOptimizerImportMap()).
+//     Bản thân thư viện tự tạo 1 Worker RIÊNG của nó để tính toán nặng, nên UI vẫn không bị chặn dù
+//     gọi trực tiếp ở luồng chính. State module-scope này theo dõi việc train của CHÍNH TAB này — sống
+//     độc lập với việc modal đang mở hay đóng (đóng modal KHÔNG dừng việc train, giống tinh thần "đóng
+//     modal không huỷ job" ở bản server cũ). Reload/đóng hẳn tab MỚI thật sự dừng hẳn (server nhận ra
+//     qua mất keepalive — Phần VI/VII). KHÔNG còn cách NGẮT NGANG phép tính đang chạy dở khi user bấm
+//     Hủy (khác bản Worker riêng trước, gọi .terminate() được) — chỉ đánh dấu bỏ qua kết quả khi xong.
+let _optimizerBrowserRunning = false;
 let _optimizerBrowserJobId = null;
+let _optimizerBrowserCancelled = false;
 let _optimizerKeepaliveTimer = null;
 const OPTIMIZER_KEEPALIVE_MS = 15000; // rõ ràng ngắn hơn nhiều so với ngưỡng stale phía server (mặc định 180s) — vài lần lỡ nhịp (tab bị trình duyệt tạm ngưng ở nền) vẫn không bị đánh stale oan
 
@@ -358,19 +363,22 @@ function showOptimizerError(msg) {
   errEl.classList.add('show');
 }
 
-// V91-BROWSER (audit lại "AUDIT V91 – FIX FSRS OPTIMIZER DỨT ĐIỂM") — runOptimizerNow() giờ:
+// V91-BROWSER (audit lại "AUDIT V91 – FIX FSRS OPTIMIZER DỨT ĐIỂM", đã cập nhật ở vòng 7 — xem
+// CLAUDE-CHANGES.md) — runOptimizerNow() giờ:
 //   1. POST /browser/prepare — server CHỈ chuẩn bị dữ liệu (nhanh, không phải phần từng gây timeout),
-//      trả về NGAY train/validation/defaultWeights + URL asset WASM (Phần III bước 1-3).
-//   2. Tạo Web Worker (js/fsrs-optimizer-worker.js) TỰ TRAIN trong trình duyệt — KHÔNG còn request
-//      HTTP nào "đợi cả pipeline train chạy xong" nữa (đó là NGUỒN GỐC của bug timeout xuyên suốt
-//      V83→V90→V91 — dời hẳn việc train ra khỏi request/response HTTP nào cả, kể cả bất đồng bộ).
-//   3. Trong lúc Worker chạy: gửi keepalive định kỳ (Phần VII) + cập nhật tiến độ TRỰC TIẾP từ message
-//      của Worker (phản hồi nhanh hơn round-trip GET /status, nhưng /status vẫn đúng nếu poll trúng).
-//   4. Worker xong → POST /browser/commit gửi weights lên, server tự tính lại điểm số + lưu candidate.
+//      trả về NGAY train/validation/defaultWeights + URL asset WASM + import map (Phần III bước 1-3).
+//   2. Chạy TRỰC TIẾP trên luồng chính (KHÔNG còn Worker riêng của app — import map cần cho package
+//      phụ thuộc "bare specifier" của thư viện chỉ hoạt động ở luồng chính, không hoạt động trong
+//      Worker) — KHÔNG còn request HTTP nào "đợi cả pipeline train chạy xong" nữa (đó là NGUỒN GỐC của
+//      bug timeout xuyên suốt V83→V90→V91 — dời hẳn việc train ra khỏi request/response HTTP nào cả).
+//      Bản thân thư viện tự tạo 1 Worker RIÊNG của nó để tính toán nặng, UI vẫn không bị chặn.
+//   3. Trong lúc train: gửi keepalive định kỳ (Phần VII) + cập nhật tiến độ TRỰC TIẾP từ progress
+//      callback (phản hồi nhanh hơn round-trip GET /status, nhưng /status vẫn đúng nếu poll trúng).
+//   4. Train xong → POST /browser/commit gửi weights lên, server tự tính lại điểm số + lưu candidate.
 // KHÔNG còn gọi /api/fsrs-optimizer/run hay /worker nữa — 2 route đó vẫn tồn tại (tương thích ngược)
 // nhưng không nơi nào trong sản phẩm còn kích hoạt (Phần V "không để 2 optimizer chạy song song").
 async function runOptimizerNow() {
-  if (_optimizerBusy || _optimizerBrowserWorker) return;
+  if (_optimizerBusy || _optimizerBrowserRunning) return;
   _optimizerBusy = true;
   const btn = document.getElementById('optimizer-run-btn');
   if (btn) { btn.disabled = true; btn.textContent = '🕓 Đang chuẩn bị dữ liệu...'; }
@@ -388,7 +396,7 @@ async function runOptimizerNow() {
     } else if (!data.ok) {
       errorMsg = data.error || 'Có lỗi xảy ra';
     } else if (data.trainingPayload && data.job && data.job.status === 'running') {
-      // Có dữ liệu train + job mới tạo/đang chờ → bắt đầu Worker NGAY (Phần III bước 4-9). Nếu thiếu
+      // Có dữ liệu train + job mới tạo/đang chờ → bắt đầu train NGAY (Phần III bước 4-9). Nếu thiếu
       // assetUrls (package WASM chưa sẵn sàng trên server — Phần VIII), KHÔNG cố tải 1 URL đoán mò:
       // báo lỗi rõ ràng + tự huỷ job vừa tạo (tránh để lại job "running" không ai train, phải chờ hết
       // hạn stale mới dọn — Phần VI).
@@ -399,7 +407,7 @@ async function runOptimizerNow() {
           body: JSON.stringify({ jobId: data.job.id, reason: 'assetUrls null lúc prepare — WASM package chưa sẵn sàng trên server' }),
         }).catch(() => {});
       } else {
-        runBrowserOptimizerWorker(data.job.id, data.trainingPayload, data.assetUrls);
+        runBrowserOptimizerMainThread(data.job.id, data.trainingPayload, data.assetUrls);
       }
     }
     // else: data.job tồn tại nhưng KHÔNG có trainingPayload (NOT_READY, hoặc job active từ trước không
@@ -413,102 +421,118 @@ async function runOptimizerNow() {
   }
 }
 
-// Tạo Worker THẬT, gửi dữ liệu train, lắng nghe progress/done/error — KHÔNG tính toán gì ở luồng
-// chính (main thread không bị chặn — Phần IX "MOBILE" "không block UI/main thread").
-function runBrowserOptimizerWorker(jobId, trainingPayload, assetUrls) {
-  _optimizerBrowserJobId = jobId;
-  let worker;
-  try {
-    worker = new Worker('/js/fsrs-optimizer-worker.js', { type: 'module' });
-  } catch (e) {
-    showOptimizerError('Trình duyệt này không hỗ trợ Web Worker kiểu module — không thể chạy Optimizer. (' + (e && e.message) + ')');
-    fetch('/api/fsrs-optimizer/browser/cancel', {
-      method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jobId, reason: 'trình duyệt không hỗ trợ Worker module: ' + (e && e.message) }),
-    }).catch(() => {});
-    return;
-  }
-  _optimizerBrowserWorker = worker;
+// V92.5 (audit lại lần 7) — CHẠY TRÊN LUỒNG CHÍNH, không còn Worker riêng của app nữa. Lý do đổi kiến
+// trúc: initOptimizer()/computeParameters() cần import() 1 package phụ thuộc "trần" (bare specifier,
+// vd "@napi-rs/wasm-runtime") — trình duyệt chỉ tự resolve được specifier kiểu đó nếu có
+// "<script type=importmap>" khai sẵn, và import map CHỈ áp dụng cho module nạp vào DOCUMENT chính,
+// KHÔNG áp dụng cho module nạp trong Worker (xác nhận từ tài liệu chính thức MDN) — lỗi thật gặp phải
+// khi còn chạy trong Worker riêng. May mắn là bản thân package đã tự tạo 1 Worker RIÊNG của nó
+// (worker: () => new Worker(...)) để làm phần tính toán nặng — nên gọi trực tiếp ở luồng chính vẫn
+// KHÔNG chặn UI (Phần IX "MOBILE" "không block UI/main thread" vẫn được đảm bảo, chỉ khác ai tạo ra
+// Worker thực hiện việc đó — thư viện tự làm, không phải app tự bọc thêm 1 lớp Worker nữa).
+let _optimizerImportMapInjected = false;
+function injectOptimizerImportMap(importMap) {
+  // Import map phải được khai TRƯỚC lần import() module đầu tiên của cả trang — vì trang này không
+  // dùng <script type="module"> nào khác (chỉ script thường), đây luôn là lần import() ĐẦU TIÊN, nên
+  // chèn lúc nào trước khi gọi import() bên dưới cũng an toàn. Chỉ chèn 1 LẦN DUY NHẤT trong đời trang
+  // (chèn lần 2 sẽ bị trình duyệt bỏ qua/báo lỗi vì đã có module tải rồi — không cần thử lại).
+  if (_optimizerImportMapInjected || !importMap || !Object.keys(importMap).length) return;
+  const el = document.createElement('script');
+  el.type = 'importmap';
+  el.textContent = JSON.stringify({ imports: importMap });
+  document.head.appendChild(el);
+  _optimizerImportMapInjected = true;
+}
 
+async function runBrowserOptimizerMainThread(jobId, trainingPayload, assetUrls) {
+  _optimizerBrowserJobId = jobId;
+  _optimizerBrowserRunning = true;
+  _optimizerBrowserCancelled = false;
   _optimizerKeepaliveTimer = setInterval(() => {
     fetch('/api/fsrs-optimizer/browser/heartbeat', {
       method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ jobId }),
     }).then((r) => r.json()).then((d) => {
-      // ok:false — server đã coi job này KHÔNG CÒN active nữa (vd bị huỷ từ tab/thiết bị khác) —
-      // dừng Worker của tab NÀY luôn, không tiếp tục train vô ích cho 1 job đã chết (Phần VII).
-      if (d && d.ok === false) stopBrowserOptimizerWorker({ terminate: true });
+      // ok:false — server đã coi job này KHÔNG CÒN active nữa (vd bị huỷ từ tab/thiết bị khác). Không
+      // có cách nào NGẮT NGANG computeParameters() đang chạy dở ở luồng chính (khác Worker riêng, không
+      // gọi .terminate() được nữa) — chỉ đánh dấu "đã hủy" để khi tính xong thì BỎ QUA kết quả, không
+      // gửi commit (Phần VII, chấp nhận đánh đổi này để đơn giản hoá kiến trúc).
+      if (d && d.ok === false) _optimizerBrowserCancelled = true;
     }).catch(() => { /* lỗi mạng tạm thời khi gửi keepalive — bỏ qua, lần sau thử lại; job tự stale nếu mất mạng thật lâu */ });
   }, OPTIMIZER_KEEPALIVE_MS);
+  loadOptimizerStatus(); // render ngay trạng thái "training" (job đã running phía server) thay vì chờ tới lượt poll đầu tiên
 
-  worker.onmessage = async (ev) => {
-    const msg = ev.data || {};
-    if (msg.jobId !== jobId) return; // phòng trường hợp hiếm message trễ từ 1 Worker cũ đã bị thay
-    if (msg.type === 'progress') {
-      updateOptimizerLiveProgress(msg.current, msg.total);
-      return;
+  try {
+    injectOptimizerImportMap(assetUrls.importMap);
+    const { initOptimizer } = await import(/* webpackIgnore: true */ assetUrls.dynamicWasiEntryUrl);
+    if (typeof initOptimizer !== 'function') {
+      throw new Error('Module dynamic-wasi không export initOptimizer như tài liệu mô tả — có thể package đã đổi API (package đang ở giai đoạn beta, "API may change").');
     }
-    if (msg.type === 'done') {
-      stopOptimizerKeepaliveOnly();
-      try {
-        const res = await fetch('/api/fsrs-optimizer/browser/commit', {
-          method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jobId, weights: msg.weights }),
-        });
-        const data = await res.json().catch(() => null);
-        if (!data || !data.ok) showOptimizerError((data && data.error) || `Lưu kết quả thất bại (mã ${res.status}).`);
-      } catch (e) {
-        showOptimizerError('Train xong nhưng gửi kết quả lên server thất bại (lỗi mạng): ' + e.message + ' — có thể bấm Thử lại.');
-      } finally {
-        stopBrowserOptimizerWorker({ terminate: false }); // Worker đã tự kết thúc việc của nó, không cần terminate cưỡng bức
-        await loadOptimizerStatus();
-      }
-      return;
+    const binding = await initOptimizer({
+      wasm: assetUrls.wasmAssetUrl,
+      worker: () => new Worker(assetUrls.workerScriptUrl, { type: 'module' }),
+    });
+    if (!binding || typeof binding.computeParameters !== 'function' || typeof binding.FSRSBindingItem !== 'function' || typeof binding.FSRSBindingReview !== 'function') {
+      throw new Error('initOptimizer() không trả về đúng hình dạng binding mong đợi (thiếu computeParameters/FSRSBindingItem/FSRSBindingReview).');
     }
-    if (msg.type === 'error') {
-      showOptimizerError('Optimizer lỗi trong trình duyệt: ' + msg.message);
+    const bindingItems = trainingPayload.train.map((item) =>
+      new binding.FSRSBindingItem((item.reviews || []).map((r) => new binding.FSRSBindingReview(r.rating, r.deltaT)))
+    );
+    let lastProgressUiAt = 0;
+    const result = await binding.computeParameters(bindingItems, {
+      enableShortTerm: true,
+      progress: (current, total) => {
+        const now = Date.now();
+        if (now - lastProgressUiAt >= 250 || current === total) {
+          lastProgressUiAt = now;
+          updateOptimizerLiveProgress(current, total);
+        }
+        return true; // KHÔNG chủ động abort — không còn giới hạn thời lượng nhân tạo nào cần né trong trình duyệt (Phần II)
+      },
+    });
+    if (_optimizerBrowserCancelled) return; // đã bị hủy trong lúc train — bỏ qua kết quả, KHÔNG commit (server đã tự dọn job)
+
+    const weights = Array.isArray(result) ? result
+      : (result && Array.isArray(result.parameters)) ? result.parameters
+      : (result && Array.isArray(result.w)) ? result.w
+      : null;
+    const FSRS6_PARAM_COUNT = 21;
+    if (!Array.isArray(weights) || weights.length !== FSRS6_PARAM_COUNT || !weights.every((n) => Number.isFinite(Number(n)))) {
+      throw new Error(`Optimizer trả về weights không hợp lệ (cần đúng ${FSRS6_PARAM_COUNT} số hữu hạn).`);
+    }
+
+    stopOptimizerKeepaliveOnly();
+    try {
+      const res = await fetch('/api/fsrs-optimizer/browser/commit', {
+        method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId, weights }),
+      });
+      const commitData = await res.json().catch(() => null);
+      if (!commitData || !commitData.ok) showOptimizerError((commitData && commitData.error) || `Lưu kết quả thất bại (mã ${res.status}).`);
+    } catch (e) {
+      showOptimizerError('Train xong nhưng gửi kết quả lên server thất bại (lỗi mạng): ' + e.message + ' — có thể bấm Thử lại.');
+    }
+  } catch (e) {
+    if (!_optimizerBrowserCancelled) {
+      showOptimizerError('Optimizer lỗi trong trình duyệt: ' + ((e && e.message) || String(e)));
       fetch('/api/fsrs-optimizer/browser/cancel', {
         method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jobId, reason: msg.message }),
-      }).catch(() => {}).finally(async () => {
-        stopBrowserOptimizerWorker({ terminate: false });
-        await loadOptimizerStatus();
-      });
+        body: JSON.stringify({ jobId, reason: (e && e.message) || String(e) }),
+      }).catch(() => {});
     }
-  };
-  worker.onerror = (e) => {
-    // Lỗi Ở TẦNG WORKER (vd script không load được — 404/lỗi mạng khi tải chính file .js Worker) —
-    // KHÁC message {type:'error'} do CHÍNH worker tự báo (đã bắt trong try/catch của nó) — trường hợp
-    // này worker CHẾT hẳn, không kịp tự báo gì cả.
-    showOptimizerError('Không khởi động được Worker chạy Optimizer: ' + (e && e.message ? e.message : 'lỗi không rõ'));
-    fetch('/api/fsrs-optimizer/browser/cancel', {
-      method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jobId, reason: 'Worker onerror: ' + (e && e.message) }),
-    }).catch(() => {}).finally(async () => {
-      stopBrowserOptimizerWorker({ terminate: false });
-      await loadOptimizerStatus();
-    });
-  };
-
-  worker.postMessage({
-    type: 'start', jobId, assetUrls,
-    trainItems: trainingPayload.train,
-    enableShortTerm: true,
-  });
-  loadOptimizerStatus(); // render ngay trạng thái "training" (job đã running phía server) thay vì chờ tới lượt poll đầu tiên
+  } finally {
+    stopOptimizerKeepaliveOnly();
+    _optimizerBrowserRunning = false;
+    _optimizerBrowserJobId = null;
+    await loadOptimizerStatus();
+  }
 }
 
 function stopOptimizerKeepaliveOnly() {
   if (_optimizerKeepaliveTimer) { clearInterval(_optimizerKeepaliveTimer); _optimizerKeepaliveTimer = null; }
 }
-function stopBrowserOptimizerWorker({ terminate }) {
-  stopOptimizerKeepaliveOnly();
-  if (_optimizerBrowserWorker && terminate) { try { _optimizerBrowserWorker.terminate(); } catch { /* ignore */ } }
-  _optimizerBrowserWorker = null;
-  _optimizerBrowserJobId = null;
-}
 
-// Hiện tiến độ NGAY từ message của Worker (nhanh hơn round-trip GET /status) — chỉ cập nhật phần
+// Hiện tiến độ NGAY từ chính progress callback (nhanh hơn round-trip GET /status) — chỉ cập nhật phần
 // TRONG khối tiến độ đã render sẵn bởi renderOptimizerBody(), không render lại toàn bộ modal (đỡ
 // giật/mất focus nếu user đang xem).
 function updateOptimizerLiveProgress(current, total) {
@@ -525,12 +549,14 @@ function updateOptimizerLiveProgress(current, total) {
 
 // Phần VII "BROWSER CANCELLATION" — user chủ động bấm Hủy trong lúc đang train. Nhận jobId từ
 // THAM SỐ (lấy từ đúng job đang render, s.job.id) thay vì chỉ dựa vào _optimizerBrowserJobId — vẫn
-// hủy được ở SERVER ngay cả khi trang này vừa được tải lại (không còn Worker cục bộ nào để dừng,
-// nhưng vẫn nên báo server dừng NGAY thay vì để job tự rơi vào diện stale sau cả phút chờ).
+// hủy được ở SERVER ngay cả khi trang này vừa được tải lại. LƯU Ý: không còn cách nào NGẮT NGANG phép
+// tính đang chạy dở ở luồng chính (khác bản Worker riêng trước đây, gọi .terminate() được) — đánh dấu
+// "đã hủy" để bỏ qua kết quả khi tính xong, việc tính toán thật có thể vẫn tiếp diễn ngầm tới khi xong
+// tự nhiên (đổi lại lấy được: import map hoạt động, sửa đúng lỗi "Failed to resolve module specifier").
 async function cancelOptimizerRun(jobId) {
   if (!jobId) return;
   if (!confirm('Hủy lượt train đang chạy?')) return;
-  if (_optimizerBrowserJobId === jobId) stopBrowserOptimizerWorker({ terminate: true }); // có Worker cục bộ đúng job này → dừng NGAY ở tab này trước
+  if (_optimizerBrowserJobId === jobId) { _optimizerBrowserCancelled = true; stopOptimizerKeepaliveOnly(); }
   try {
     await fetch('/api/fsrs-optimizer/browser/cancel', {
       method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
