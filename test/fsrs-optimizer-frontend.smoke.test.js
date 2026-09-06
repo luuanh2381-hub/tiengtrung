@@ -277,4 +277,15 @@ test('Source: injectOptimizerImportMap() tạo đúng <script type="importmap"> 
   assert.ok(/_optimizerImportMapInjected/.test(body), 'phải có cờ chặn chèn lần 2');
 });
 
+test('Source: import map được tải + chèn NGAY LÚC FILE VỪA CHẠY (page load), KHÔNG đợi tới lúc bấm Run — audit lại lần 8: theo đặc tả import-map, 1 lần thử tải module TRƯỚC ĐÓ (kể cả thất bại) sẽ khoá vĩnh viễn mọi import map thêm SAU trên CÙNG 1 lần tải trang, nên phải chèn sớm nhất có thể, không đợi user thao tác', () => {
+  const idx = SRC.indexOf('preloadOptimizerImportMapAsEarlyAsPossible');
+  assert.ok(idx !== -1, 'thiếu hàm/lời gọi preload import map sớm — có thể đã đổi tên, cập nhật lại test này');
+  const body = SRC.slice(SRC.indexOf('(function preloadOptimizerImportMapAsEarlyAsPossible'), SRC.indexOf('(function preloadOptimizerImportMapAsEarlyAsPossible') + 500);
+  assert.ok(/\/api\/fsrs-optimizer\/browser\/importmap/.test(body), 'phải gọi đúng endpoint public /api/fsrs-optimizer/browser/importmap');
+  assert.ok(/injectOptimizerImportMap\(/.test(body), 'phải gọi injectOptimizerImportMap() ngay khi có kết quả');
+  // Hàm phải được GỌI NGAY (IIFE tự thực thi), không chỉ định nghĩa rồi chờ ai đó gọi — nếu không, vẫn
+  // trễ y hệt cách cũ (chỉ khi user tương tác mới chạy tới).
+  assert.ok(/\}\)\(\);/.test(SRC.slice(SRC.indexOf('(function preloadOptimizerImportMapAsEarlyAsPossible'), SRC.indexOf('(function preloadOptimizerImportMapAsEarlyAsPossible') + 800)), 'phải là IIFE tự gọi ngay (kết thúc bằng "})();"), không phải hàm chờ được gọi sau');
+});
+
 run();
