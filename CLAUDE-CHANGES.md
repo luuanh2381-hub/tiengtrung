@@ -183,3 +183,22 @@ kiến trúc ở trên.
 
 **Vẫn CHƯA thể tự xác nhận bằng trình duyệt thật** — đây là thay đổi kiến trúc lớn nhất từ đầu tới giờ,
 rất mong bạn thử kỹ và báo lại, kể cả khi thành công lẫn khi vẫn còn lỗi.
+
+---
+
+# VÒNG 8 (V92.6) — SỬA LỖI THỜI ĐIỂM CHÈN IMPORT MAP (đặc tả trình duyệt, không phải lỗi code)
+
+Bạn gửi ảnh: lỗi y hệt lần trước ("Failed to resolve module specifier @napi-rs/wasm-runtime") dù đã
+deploy bản vòng 7 (dòng chẩn đoán "✅ Sẵn sàng" hiện ra URL thật, khớp đúng bản mới). Tra cứu kỹ hơn xác
+nhận: theo đặc tả chính thức của import map, **1 khi trang đã có bất kỳ lần thử tải module nào (kể cả
+lần đã THẤT BẠI), mọi import map thêm vào SAU ĐÓ trên CÙNG 1 LẦN TẢI TRANG bị trình duyệt lờ đi vĩnh
+viễn** — không liên quan gì tới code sai. Bản vòng 7 chèn import map ngay trước lúc bấm "Run", nên nếu
+trang đã từng bấm Run 1 lần và lỗi (dù trước hay sau khi cập nhật code) mà CHƯA tải lại trang, lần chèn
+mới sẽ bị khoá bởi chính lần thử trước đó.
+
+**Đã sửa**: tải + chèn import map ngay LÚC TRANG VỪA MỞ (không đợi tới lúc bấm Run) — thêm 1 endpoint
+công khai riêng cho việc này.
+
+**⚠️ QUAN TRỌNG khi bạn thử lại lần này**: phải **TẢI LẠI TOÀN BỘ TRANG** (không chỉ đóng/mở lại popup)
+trước khi bấm Run — nếu không, dù code đã đúng, trình duyệt vẫn có thể còn nhớ lần thử lỗi trước đó
+trên đúng lần tải trang hiện tại.
