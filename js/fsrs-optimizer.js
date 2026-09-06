@@ -430,12 +430,18 @@ async function runOptimizerNow() {
 // (worker: () => new Worker(...)) để làm phần tính toán nặng — nên gọi trực tiếp ở luồng chính vẫn
 // KHÔNG chặn UI (Phần IX "MOBILE" "không block UI/main thread" vẫn được đảm bảo, chỉ khác ai tạo ra
 // Worker thực hiện việc đó — thư viện tự làm, không phải app tự bọc thêm 1 lớp Worker nữa).
+//
+// V92.6 (audit lại lần 8) — QUAN TRỌNG: theo đặc tả chính thức của import map (WICG/import-maps),
+// MỘT KHI đã có bất kỳ lần tải module nào xảy ra trên trang (KỂ CẢ lần đã THẤT BẠI), mọi import map
+// thêm vào SAU ĐÓ bị trình duyệt lờ đi hoàn toàn, vĩnh viễn, cho tới khi trang được tải lại. Nếu user
+// từng bấm "Run" 1 lần (dù trước hay sau bản vá này) và gặp lỗi mà KHÔNG tải lại trang trước khi bấm
+// Run lần nữa, việc chèn import map ngay trước lúc bấm Run (cách làm ở bản trước) có thể đã bị khoá bởi
+// chính lần thử trước đó — dù code đã đúng, vẫn thấy lại y hệt lỗi cũ. Vì vậy: gọi + chèn import map
+// NGAY KHI FILE NÀY VỪA CHẠY (tức ngay khi trang vừa tải xong) — TRƯỚC KHI user có cơ hội bấm Run lần
+// nào — thay vì đợi tới lúc bấm Run mới chèn. Endpoint KHÔNG cần đăng nhập (Phần VIII, thông tin resolve
+// package công khai) để không phụ thuộc token xác thực đã sẵn sàng hay chưa lúc trang vừa tải.
 let _optimizerImportMapInjected = false;
 function injectOptimizerImportMap(importMap) {
-  // Import map phải được khai TRƯỚC lần import() module đầu tiên của cả trang — vì trang này không
-  // dùng <script type="module"> nào khác (chỉ script thường), đây luôn là lần import() ĐẦU TIÊN, nên
-  // chèn lúc nào trước khi gọi import() bên dưới cũng an toàn. Chỉ chèn 1 LẦN DUY NHẤT trong đời trang
-  // (chèn lần 2 sẽ bị trình duyệt bỏ qua/báo lỗi vì đã có module tải rồi — không cần thử lại).
   if (_optimizerImportMapInjected || !importMap || !Object.keys(importMap).length) return;
   const el = document.createElement('script');
   el.type = 'importmap';
@@ -443,6 +449,12 @@ function injectOptimizerImportMap(importMap) {
   document.head.appendChild(el);
   _optimizerImportMapInjected = true;
 }
+(function preloadOptimizerImportMapAsEarlyAsPossible() {
+  fetch('/api/fsrs-optimizer/browser/importmap')
+    .then((r) => r.json())
+    .then((d) => { if (d && d.ok) injectOptimizerImportMap(d.importMap); })
+    .catch(() => { /* lỗi mạng lúc tải trang — vẫn còn 1 lần thử chèn dự phòng ngay trước lúc Run bên dưới, xem runBrowserOptimizerMainThread() */ });
+})();
 
 async function runBrowserOptimizerMainThread(jobId, trainingPayload, assetUrls) {
   _optimizerBrowserJobId = jobId;
