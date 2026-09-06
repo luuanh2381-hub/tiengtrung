@@ -1612,6 +1612,19 @@ app.get('/api/fsrs-optimizer/browser/pkg/binding/*', serveBrowserOptimizerPackag
 app.get('/api/fsrs-optimizer/browser/pkg/binding-wasm32-wasi/*', serveBrowserOptimizerPackageFile('binding-wasm32-wasi'));
 app.get('/api/fsrs-optimizer/browser/pkg-dyn/:urlKey/*', serveDynamicPkgFile);
 
+// ── Import map RIÊNG, KHÔNG cần đăng nhập (audit lại lần 8) — theo đặc tả chính thức của import map
+//     (WICG/import-maps): "1 khi ĐÃ có BẤT KỲ lần tải module nào (kể cả lần đã THẤT BẠI) xảy ra trên
+//     trang, mọi import map thêm vào SAU ĐÓ đều bị trình duyệt lờ đi hoàn toàn" — nghĩa là chèn import
+//     map ngay trước lúc bấm "Run" (như bản trước) có thể bị "khoá" bởi 1 lần thử TRƯỚC ĐÓ đã thất bại
+//     trên CÙNG 1 lần tải trang (chưa reload) — đúng như hiện tượng "sửa rồi mà vẫn lỗi y hệt" đã gặp.
+//     Endpoint riêng này cho phép FE gọi NGAY LÚC TRANG VỪA TẢI XONG (trước khi user kịp bấm Run lần
+//     nào) — không cần đăng nhập vì đây chỉ là thông tin resolve package công khai, không phải dữ liệu
+//     riêng tư, và tách khỏi luồng xác thực giúp việc gọi sớm không phụ thuộc token đã sẵn sàng chưa.
+app.get('/api/fsrs-optimizer/browser/importmap', (req, res) => {
+  const result = computeBrowserOptimizerAssetUrlsDetailed();
+  res.json({ ok: result.ok, importMap: result.ok ? result.importMap : {} });
+});
+
 // POST apply / rollback / reset: lỗi ở đây là lỗi NGHIỆP VỤ (vd bấm Apply khi chưa Run) — trả
 // ok:false/200 thay vì 500, đúng convention của /api/settings/retention.
 app.post('/api/fsrs-optimizer/apply', async (req, res) => {
