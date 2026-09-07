@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const { readDB, updateDB, updateDBWithFsrsCleanup, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson,
   getVocabWordsByLesson, updateVocabWord, deleteVocabWord,
+  removeVocabWordFromLesson, setVocabWordLessons, findVocabWordByHz, // V93 (audit thống nhất từ vựng)
   getAllVocabWords, updateVocabHanviet, getWordExampleCounts, insertWordExamples, getWordExamplesForLessons,
   getAllHanziParts, getHanziPartsKeys, insertHanziParts,
   insertActivityLog, getActivityLogs, reserveGeminiSlot, bumpGeminiRateLimit,
@@ -1670,8 +1671,23 @@ app.post('/api/admin/vocab/import', async (req, res) => {
     const result = await importVocab(words, !!overwrite);
     const actingUser = authed.db.users[authed.username];
     logActivity(authed.username, actingUser.role, 'vocab',
-      `Nhập từ vựng: thêm ${result.added}, cập nhật ${result.updated}, bỏ qua ${result.skipped} (tổng ${result.total} từ)`);
+      `Nhập từ vựng: thêm mới ${result.added}, cập nhật ${result.updated}, gắn thêm bài cho ${result.lessonLinked || 0} từ đã có, bỏ qua ${result.skipped} (tổng ${result.total} từ)`);
     res.json({ ok: true, ...result });
+  } catch (e) { fail(res, e); }
+});
+
+// ── V93 (Phần 7 audit) — [ADMIN] Kiểm tra 1 chữ Hán đã tồn tại trong vocabulary chưa, TRƯỚC KHI
+//     admin bấm "Thêm từ" thủ công — FE dùng để quyết định có cần hiện dialog "Giữ dữ liệu hiện
+//     tại / Ghi đè bằng dữ liệu mới" hay không (Phần 7). CHỈ ĐỌC. ──
+app.get('/api/admin/vocab/find-by-hz', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const hz = String(req.query.hz || '').trim();
+  if (!hz) return res.json({ ok: false, error: 'Thiếu chữ Hán cần kiểm tra' });
+  try {
+    const word = await findVocabWordByHz(hz);
+    res.json({ ok: true, word });
   } catch (e) { fail(res, e); }
 });
 
@@ -1708,6 +1724,9 @@ app.get('/api/admin/vocab/lesson-words', async (req, res) => {
 });
 
 // ── [ADMIN] Sửa 1 từ theo id ──
+// V93: `l` giờ chỉ mang nghĩa "đảm bảo có thuộc bài này" (KHÔNG di chuyển khỏi bài khác — Phần 15
+// audit). Nếu FE gửi kèm `lessons` (mảng số bài) thì THAY THẾ TOÀN BỘ tập bài bằng đúng mảng đó
+// (dùng cho form multi-lesson "☑ Bài 1 ☑ Bài 5 ☑ Bài 8") — ưu tiên hơn `l` đơn lẻ nếu có cả 2.
 app.post('/api/admin/vocab/update', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
@@ -1718,38 +1737,59 @@ app.post('/api/admin/vocab/update', async (req, res) => {
   const vi = String((req.body || {}).vi || '').trim();
   const l = parseInt((req.body || {}).l, 10);
   const tag = (req.body || {}).tag || null;
+  const lessons = Array.isArray((req.body || {}).lessons) ? (req.body || {}).lessons.map(Number).filter(Number.isFinite) : null;
   if (!Number.isFinite(id)) return res.json({ ok: false, error: 'Thiếu id của từ cần sửa' });
-  if (!hz || !vi || !Number.isFinite(l) || l < 1) {
-    return res.json({ ok: false, error: 'Vui lòng nhập đủ Chữ Hán, Nghĩa và Số bài (số nguyên ≥ 1)' });
+  if (!hz || !vi || (!Number.isFinite(l) && !lessons)) {
+    return res.json({ ok: false, error: 'Vui lòng nhập đủ Chữ Hán, Nghĩa và ít nhất 1 Số bài' });
   }
   try {
-    const updated = await updateVocabWord(id, { hz, py, vi, l, tag });
+    const updated = await updateVocabWord(id, { hz, py, vi, l: Number.isFinite(l) ? l : undefined, tag });
     if (!updated) return res.json({ ok: false, error: 'Không tìm thấy từ này (có thể đã bị xoá)' });
+    let finalWord = updated;
+    if (lessons && lessons.length) {
+      const r = await setVocabWordLessons(id, lessons);
+      if (r) finalWord = { ...updated, l: r.lessons[0], lessons: r.lessons };
+    }
     const actingUser = authed.db.users[authed.username];
-    logActivity(authed.username, actingUser.role, 'vocab', `Sửa từ #${id}: ${hz} (${py}) — ${vi}, bài ${l}`);
-    res.json({ ok: true, word: updated });
+    logActivity(authed.username, actingUser.role, 'vocab', `Sửa từ #${id}: ${hz} (${py}) — ${vi}, bài [${(finalWord.lessons || [l]).join(',')}]`);
+    res.json({ ok: true, word: finalWord });
   } catch (e) {
-    // Vi phạm ràng buộc UNIQUE (hz, l) — chữ Hán này đã tồn tại sẵn ở đúng bài đó rồi
+    // V93: constraint đổi từ UNIQUE(hz, l) sang UNIQUE(hz) toàn cục (sau khi migration đã dedupe) —
+    // vi phạm 23505 giờ nghĩa là chữ Hán này đã tồn tại ở 1 bản ghi KHÁC rồi (đổi hz trùng 1 từ có sẵn).
     if (e && e.code === '23505') {
-      return res.json({ ok: false, error: `Từ "${hz}" đã tồn tại sẵn ở bài ${l} rồi.` });
+      return res.json({ ok: false, error: `Chữ Hán "${hz}" đã tồn tại ở một bản ghi khác rồi — không thể đổi trùng.` });
     }
     fail(res, e);
   }
 });
 
 // ── [ADMIN] Xoá 1 từ theo id ──
+// V93 (Phần 16 audit): nếu body có `lesson`, CHỈ gỡ quan hệ (id, lesson) — vocab_words chỉ thực sự
+// bị xoá nếu đây là bài CUỐI CÙNG mà từ đó còn thuộc về (không còn dependency lesson nào khác).
+// KHÔNG gửi `lesson` (tương thích ngược) -> giữ hành vi cũ: xoá hẳn theo id, không phân biệt bài.
 app.post('/api/admin/vocab/delete-word', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
   if (!requireAdmin(authed.db.users[authed.username], res)) return;
   const id = parseInt((req.body || {}).id, 10);
+  const lessonRaw = (req.body || {}).lesson;
+  const lesson = lessonRaw === undefined || lessonRaw === null || lessonRaw === '' ? null : parseInt(lessonRaw, 10);
   if (!Number.isFinite(id)) return res.json({ ok: false, error: 'Thiếu id của từ cần xoá' });
   try {
+    const actingUser = authed.db.users[authed.username];
+    if (Number.isFinite(lesson)) {
+      const result = await removeVocabWordFromLesson(id, lesson);
+      if (!result.ok) return res.json({ ok: false, error: 'Từ này không thuộc bài đã chọn (có thể đã bị xoá trước đó)' });
+      logActivity(authed.username, actingUser.role, 'vocab',
+        result.fullyDeleted
+          ? `Xoá từ #${id} khỏi Bài ${lesson} — đây là bài cuối cùng nên đã xoá hẳn vocabulary`
+          : `Gỡ từ #${id} khỏi Bài ${lesson} — vẫn còn thuộc bài [${result.remainingLessons.join(',')}]`);
+      return res.json({ ok: true, fullyDeleted: result.fullyDeleted, remainingLessons: result.remainingLessons });
+    }
     const removed = await deleteVocabWord(id);
     if (!removed) return res.json({ ok: false, error: 'Không tìm thấy từ này (có thể đã bị xoá)' });
-    const actingUser = authed.db.users[authed.username];
-    logActivity(authed.username, actingUser.role, 'vocab', `Xoá từ #${id}`);
-    res.json({ ok: true });
+    logActivity(authed.username, actingUser.role, 'vocab', `Xoá hẳn từ #${id} (mọi bài)`);
+    res.json({ ok: true, fullyDeleted: true });
   } catch (e) { fail(res, e); }
 });
 
