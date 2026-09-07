@@ -34,11 +34,10 @@ function renderVocabAdmin() {
     <label style="display:flex;align-items:center;gap:6px;font-size:.78rem;color:var(--muted);margin-bottom:8px;">
       <input type="checkbox" id="vocab-manual-lyhop"> 🧩 Đây là động từ ly hợp (离合词)
     </label>
-    <label style="display:flex;align-items:center;gap:6px;font-size:.78rem;color:var(--muted);margin-bottom:8px;">
-      <input type="checkbox" id="vocab-manual-overwrite"> Ghi đè nếu chữ Hán + số bài này đã tồn tại (cập nhật lại pinyin/nghĩa)
-    </label>
+    <div style="font-size:.74rem;color:var(--muted);margin-bottom:8px;">ℹ️ Nếu chữ Hán này đã có trong hệ thống (ở bất kỳ bài nào), hệ thống sẽ hỏi bạn muốn giữ dữ liệu cũ hay ghi đè trước khi thêm.</div>
     <button class="btn btn-sm" style="background:var(--l11c);color:var(--l11a);" onclick="addVocabManual()">➕ Thêm từ này</button>
     <div id="vocab-manual-result" style="font-size:.8rem;color:var(--muted);margin-top:8px;"></div>
+    <div id="vocab-manual-dialog"></div>
   </div>
   <div class="panel">
     <div class="panel-title">📥 Thêm từ vựng mới (Excel)</div>
@@ -51,7 +50,7 @@ function renderVocabAdmin() {
       <button class="btn btn-sm" style="background:var(--l11c);color:var(--l11a);" onclick="uploadVocabExcel()">📤 Tải lên & nhập</button>
     </div>
     <label style="display:flex;align-items:center;gap:6px;font-size:.78rem;color:var(--muted);margin-bottom:10px;">
-      <input type="checkbox" id="vocab-excel-overwrite"> Ghi đè nếu chữ Hán + số bài đã tồn tại (cập nhật lại pinyin/nghĩa)
+      <input type="checkbox" id="vocab-excel-overwrite"> Ghi đè dữ liệu (pinyin/nghĩa) nếu chữ Hán đã tồn tại — dù ở bài nào. Bỏ tick vẫn LUÔN gắn thêm bài mới cho từ đã có, chỉ giữ nguyên metadata cũ.
     </label>
     <div id="vocab-import-result" style="font-size:.8rem;color:var(--muted);"></div>
   </div>
@@ -333,10 +332,16 @@ function renderLessonWordsList(l, words) {
 
 function renderWordRow(l, w) {
   const tagBadge = w.tag === 'ly_hop' ? ' <span style="font-size:.68rem;background:var(--l15c);color:var(--l15a);padding:1px 6px;border-radius:6px;">离合</span>' : '';
+  // V93 (Phần 15 audit): nếu từ này thuộc NHIỀU bài, hiện đủ danh sách (vd "Bài: 1, 5, 8") thay vì
+  // chỉ số bài đang xem — để admin biết sửa/xoá ở đây sẽ ảnh hưởng tới 1 từ DÙNG CHUNG nhiều bài.
+  const lessons = Array.isArray(w.lessons) && w.lessons.length ? w.lessons : [w.l];
+  const lessonsBadge = lessons.length > 1
+    ? ` <span style="font-size:.7rem;color:var(--l9a);background:var(--l9c);padding:1px 6px;border-radius:6px;" title="Từ này dùng chung cho nhiều bài">Bài: ${lessons.join(', ')}</span>`
+    : '';
   return `
     <div class="word-row" id="word-row-${w.id}" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 8px;background:var(--panel-2, rgba(0,0,0,.02));border-radius:8px;margin-bottom:6px;">
       <div style="min-width:0;">
-        <div style="font-weight:700;">${escapeHtml(w.hz)}${tagBadge} <span style="color:var(--muted);font-weight:500;font-size:.82rem;">${escapeHtml(w.py || '')}</span></div>
+        <div style="font-weight:700;">${escapeHtml(w.hz)}${tagBadge}${lessonsBadge} <span style="color:var(--muted);font-weight:500;font-size:.82rem;">${escapeHtml(w.py || '')}</span></div>
         <div style="font-size:.82rem;color:var(--muted);">${escapeHtml(w.vi)}</div>
       </div>
       <div style="display:flex;gap:6px;flex-shrink:0;">
@@ -353,17 +358,19 @@ function startEditWord(l, id) {
   if (!row) return;
   const renderForm = (w) => {
     lessonWordsCache[id] = w;
+    const lessonsStr = (Array.isArray(w.lessons) && w.lessons.length ? w.lessons : [w.l]).join(', ');
     row.outerHTML = `
       <div class="word-row" id="word-row-${id}" style="padding:8px;background:var(--panel-2, rgba(0,0,0,.03));border-radius:8px;margin-bottom:6px;border:1.5px solid var(--l11c);">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">
           <input type="text" id="edit-hz-${id}" value="${escapeAttr(w.hz)}" placeholder="Chữ Hán" style="padding:7px;border-radius:8px;border:1.5px solid #ddd;font-size:.88rem;">
           <input type="text" id="edit-py-${id}" value="${escapeAttr(w.py || '')}" placeholder="Pinyin" style="padding:7px;border-radius:8px;border:1.5px solid #ddd;font-size:.88rem;">
           <input type="text" id="edit-vi-${id}" value="${escapeAttr(w.vi)}" placeholder="Nghĩa tiếng Việt" style="padding:7px;border-radius:8px;border:1.5px solid #ddd;font-size:.88rem;grid-column:1 / -1;">
-          <input type="number" id="edit-l-${id}" value="${w.l}" min="1" placeholder="Số bài" style="padding:7px;border-radius:8px;border:1.5px solid #ddd;font-size:.88rem;">
+          <input type="text" id="edit-l-${id}" value="${escapeAttr(lessonsStr)}" placeholder="Số bài, có thể nhiều (vd: 1, 5, 8)" style="padding:7px;border-radius:8px;border:1.5px solid #ddd;font-size:.88rem;">
           <label style="display:flex;align-items:center;gap:6px;font-size:.78rem;color:var(--muted);">
             <input type="checkbox" id="edit-lyhop-${id}" ${w.tag === 'ly_hop' ? 'checked' : ''}> 🧩 Ly hợp từ
           </label>
         </div>
+        <div style="font-size:.7rem;color:var(--muted);margin-bottom:6px;">ℹ️ Từ này 1 bản ghi duy nhất, dùng chung cho mọi bài liệt kê ở trên — sửa nghĩa/pinyin ở đây áp dụng cho TẤT CẢ các bài đó.</div>
         <div style="display:flex;gap:6px;align-items:center;">
           <button class="btn btn-sm" style="background:var(--l11c);color:var(--l11a);" onclick="saveEditWord(${id})">💾 Lưu</button>
           <button class="btn btn-sm" style="background:var(--border);" onclick="cancelEditWord(${l}, ${id})">Huỷ</button>
@@ -398,11 +405,15 @@ async function saveEditWord(id) {
   const hz = document.getElementById(`edit-hz-${id}`).value.trim();
   const py = document.getElementById(`edit-py-${id}`).value.trim();
   const vi = document.getElementById(`edit-vi-${id}`).value.trim();
-  const l = parseInt(document.getElementById(`edit-l-${id}`).value, 10);
+  // V93: ô "Số bài" giờ nhận NHIỀU bài, cách nhau dấu phẩy (vd "1, 5, 8") — thay thế TOÀN BỘ tập
+  // bài của từ này bằng đúng danh sách đã nhập (Phần 15 audit).
+  const lessons = [...new Set(
+    document.getElementById(`edit-l-${id}`).value.split(',').map(s => parseInt(s.trim(), 10)).filter(n => Number.isFinite(n) && n >= 1)
+  )];
   const tag = document.getElementById(`edit-lyhop-${id}`).checked ? 'ly_hop' : null;
-  const oldLesson = lessonWordsCache[id] ? lessonWordsCache[id].l : l;
-  if (!hz || !vi || !Number.isFinite(l) || l < 1) {
-    resultEl.textContent = 'Vui lòng nhập đủ Chữ Hán, Nghĩa và Số bài.';
+  const oldLessons = lessonWordsCache[id] ? (lessonWordsCache[id].lessons || [lessonWordsCache[id].l]) : lessons;
+  if (!hz || !vi || lessons.length === 0) {
+    resultEl.textContent = 'Vui lòng nhập đủ Chữ Hán, Nghĩa và ít nhất 1 Số bài hợp lệ.';
     return;
   }
   resultEl.style.color = 'var(--muted)';
@@ -411,12 +422,12 @@ async function saveEditWord(id) {
     const res = await fetch('/api/admin/vocab/update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ id, hz, py, vi, l, tag }),
+      body: JSON.stringify({ id, hz, py, vi, l: lessons[0], lessons, tag }),
     });
     const data = await res.json();
     if (!data.ok) { resultEl.style.color = '#c0392b'; resultEl.textContent = '❌ ' + (data.error || 'Có lỗi xảy ra'); return; }
-    // Nếu đổi số bài, từ này chuyển sang bài khác — mở sẵn bài mới để thấy ngay kết quả
-    if (oldLesson !== l) openLessonWords.add(l);
+    // Nếu tập bài đổi (thêm/bớt bài nào đó), mở sẵn các bài mới để thấy ngay kết quả
+    lessons.forEach(x => { if (!oldLessons.includes(x)) openLessonWords.add(x); });
     loadVocabAdminList(); // nạp lại toàn bộ danh sách bài + tự mở lại các bài đang xem dở
     alert(`Đã lưu từ "${hz}". Tải lại trang để cập nhật dữ liệu học.`);
   } catch (e) {
@@ -426,15 +437,19 @@ async function saveEditWord(id) {
 }
 
 async function deleteWord(l, id, hz) {
-  if (!confirm(`Xoá từ "${hz}"? Không thể hoàn tác.`)) return;
+  if (!confirm(`Xoá từ "${hz}" khỏi Bài ${l}?\n(Nếu từ này không còn thuộc bài nào khác, dữ liệu từ vựng sẽ được xoá hẳn. Không thể hoàn tác.)`)) return;
   try {
     const res = await fetch('/api/admin/vocab/delete-word', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ id }),
+      body: JSON.stringify({ id, lesson: l }),
     });
     const data = await res.json();
     if (!data.ok) { alert(data.error || 'Có lỗi xảy ra'); return; }
+    // V93: nếu từ vẫn còn thuộc bài khác (chưa xoá hẳn), báo cho admin biết để tránh hiểu nhầm là mất dữ liệu
+    if (data.fullyDeleted === false && Array.isArray(data.remainingLessons) && data.remainingLessons.length) {
+      alert(`Đã gỡ "${hz}" khỏi Bài ${l}. Từ này vẫn còn thuộc Bài ${data.remainingLessons.join(', ')} nên KHÔNG bị xoá hẳn.`);
+    }
     loadVocabAdminList(); // nạp lại số đếm theo bài + tự mở lại đúng bài đang xem, cập nhật danh sách từ
   } catch (e) {
     alert('Không kết nối được máy chủ: ' + e.message);
@@ -464,41 +479,106 @@ async function deleteLessonVocab(l) {
     alert('Không kết nối được máy chủ: ' + e.message);
   }
 }
+// V93 (Phần 7 audit — "Manual Add Word phải detect duplicate TRƯỚC KHI INSERT"): lưu tạm dữ liệu
+// đang chờ xác nhận (Giữ / Ghi đè) — dùng biến toàn cục thay vì nhúng JSON vào HTML onclick (an
+// toàn hơn với ký tự đặc biệt trong nghĩa tiếng Việt/pinyin), theo đúng convention của file này
+// (lessonWordsCache, openLessonWords cũng là biến toàn cục tương tự).
+let pendingManualAddPayload = null;
+
 async function addVocabManual() {
   const resultEl = document.getElementById('vocab-manual-result');
+  const dialogEl = document.getElementById('vocab-manual-dialog');
+  dialogEl.innerHTML = '';
   const hz = document.getElementById('vocab-manual-hz').value.trim();
   const py = document.getElementById('vocab-manual-py').value.trim();
   const vi = document.getElementById('vocab-manual-vi').value.trim();
   const l = parseInt(document.getElementById('vocab-manual-l').value, 10);
   const tag = document.getElementById('vocab-manual-lyhop').checked ? 'ly_hop' : null;
-  const overwrite = document.getElementById('vocab-manual-overwrite').checked;
   if (!hz || !vi || !Number.isFinite(l) || l < 1) {
     resultEl.textContent = 'Vui lòng nhập đủ Chữ Hán, Nghĩa và Số bài (số nguyên ≥ 1).';
     return;
   }
-  resultEl.textContent = 'Đang thêm...';
+  pendingManualAddPayload = { hz, py, vi, l, tag };
+  resultEl.textContent = 'Đang kiểm tra trùng lặp...';
+  try {
+    const checkRes = await fetch('/api/admin/vocab/find-by-hz?hz=' + encodeURIComponent(hz), { headers: authHeaders() });
+    const checkData = await checkRes.json();
+    if (!checkData.ok) { resultEl.textContent = '❌ ' + (checkData.error || 'Không kiểm tra được dữ liệu trùng'); return; }
+    if (!checkData.word) {
+      // Chưa tồn tại — thêm mới luôn, không cần hỏi gì (Giữ/Ghi đè chỉ có ý nghĩa khi đã có bản ghi cũ)
+      resultEl.textContent = 'Đang thêm...';
+      await submitVocabManual(false);
+      return;
+    }
+    resultEl.textContent = '';
+    renderManualAddDuplicateDialog(checkData.word, pendingManualAddPayload);
+  } catch (e) {
+    resultEl.textContent = '❌ Không kết nối được máy chủ: ' + e.message;
+  }
+}
+
+// Hiện dialog so sánh dữ liệu cũ/mới + 2 lựa chọn, đúng theo mẫu ở Phần 7 audit.
+function renderManualAddDuplicateDialog(existing, incoming) {
+  const dialogEl = document.getElementById('vocab-manual-dialog');
+  const existingLessons = (Array.isArray(existing.lessons) && existing.lessons.length ? existing.lessons : [existing.l]).join(', ');
+  dialogEl.innerHTML = `
+    <div style="margin-top:10px;padding:10px;border-radius:8px;border:1.5px solid var(--l15c);background:var(--panel-2, rgba(0,0,0,.03));">
+      <div style="font-weight:700;margin-bottom:6px;">⚠️ Từ "${escapeHtml(existing.hz)}" đã tồn tại (đang ở Bài ${escapeHtml(existingLessons)})</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:.82rem;margin-bottom:8px;">
+        <div>
+          <div style="color:var(--muted);margin-bottom:2px;">Dữ liệu hiện tại</div>
+          <div>${escapeHtml(existing.py || '(chưa có pinyin)')}</div>
+          <div>${escapeHtml(existing.vi)}</div>
+        </div>
+        <div>
+          <div style="color:var(--muted);margin-bottom:2px;">Dữ liệu mới bạn vừa nhập</div>
+          <div>${escapeHtml(incoming.py || '(chưa có pinyin)')}</div>
+          <div>${escapeHtml(incoming.vi)}</div>
+        </div>
+      </div>
+      <div style="font-size:.74rem;color:var(--muted);margin-bottom:8px;">Dù chọn cách nào, từ này cũng sẽ được gắn thêm vào Bài ${incoming.l} nếu chưa có — không tạo bản ghi từ vựng trùng, không ảnh hưởng lịch ôn tập (FSRS) đã có.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-sm" style="background:var(--border);" onclick="submitVocabManual(false)">Giữ dữ liệu hiện tại</button>
+        <button class="btn btn-sm" style="background:var(--l11c);color:var(--l11a);" onclick="submitVocabManual(true)">Ghi đè bằng dữ liệu mới</button>
+      </div>
+    </div>`;
+}
+
+async function submitVocabManual(overwrite) {
+  const payload = pendingManualAddPayload;
+  if (!payload) return;
+  const resultEl = document.getElementById('vocab-manual-result');
+  const dialogEl = document.getElementById('vocab-manual-dialog');
+  dialogEl.innerHTML = '';
+  resultEl.style.color = 'var(--muted)';
+  resultEl.textContent = 'Đang lưu...';
   try {
     const res = await fetch('/api/admin/vocab/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ words: [{ hz, py, vi, l, tag }], overwrite }),
+      body: JSON.stringify({ words: [payload], overwrite }),
     });
     const data = await res.json();
-    if (!data.ok) { resultEl.textContent = '❌ ' + (data.error || 'Có lỗi xảy ra'); return; }
+    if (!data.ok) { resultEl.style.color = '#c0392b'; resultEl.textContent = '❌ ' + (data.error || 'Có lỗi xảy ra'); return; }
+    resultEl.style.color = 'var(--muted)';
     if (data.added > 0) {
-      resultEl.innerHTML = `✅ Đã thêm từ <b>${hz}</b>. <span style="color:var(--l9a);">Tải lại trang để dùng ngay.</span>`;
-      document.getElementById('vocab-manual-hz').value = '';
-      document.getElementById('vocab-manual-py').value = '';
-      document.getElementById('vocab-manual-vi').value = '';
-      document.getElementById('vocab-manual-l').value = '';
-      document.getElementById('vocab-manual-lyhop').checked = false;
-      loadVocabAdminList();
+      resultEl.innerHTML = `✅ Đã thêm từ mới <b>${escapeHtml(payload.hz)}</b>. <span style="color:var(--l9a);">Tải lại trang để dùng ngay.</span>`;
     } else if (data.updated > 0) {
-      resultEl.innerHTML = `✅ Đã cập nhật lại từ <b>${hz}</b> (bài ${l}). <span style="color:var(--l9a);">Tải lại trang để dùng ngay.</span>`;
+      resultEl.innerHTML = `✅ Đã ghi đè dữ liệu + gắn <b>${escapeHtml(payload.hz)}</b> vào Bài ${payload.l}. <span style="color:var(--l9a);">Tải lại trang để dùng ngay.</span>`;
+    } else if (data.lessonLinked > 0) {
+      resultEl.innerHTML = `✅ Đã giữ dữ liệu cũ, gắn thêm <b>${escapeHtml(payload.hz)}</b> vào Bài ${payload.l}. <span style="color:var(--l9a);">Tải lại trang để dùng ngay.</span>`;
     } else {
-      resultEl.textContent = `⚠️ Từ "${hz}" ở bài ${l} đã tồn tại rồi. Tick ô "Ghi đè" nếu muốn cập nhật lại pinyin/nghĩa.`;
+      resultEl.textContent = `ℹ️ "${payload.hz}" đã có sẵn ở đúng Bài ${payload.l} rồi, không có gì thay đổi.`;
     }
+    document.getElementById('vocab-manual-hz').value = '';
+    document.getElementById('vocab-manual-py').value = '';
+    document.getElementById('vocab-manual-vi').value = '';
+    document.getElementById('vocab-manual-l').value = '';
+    document.getElementById('vocab-manual-lyhop').checked = false;
+    pendingManualAddPayload = null;
+    loadVocabAdminList();
   } catch (e) {
+    resultEl.style.color = '#c0392b';
     resultEl.textContent = '❌ Không kết nối được máy chủ: ' + e.message;
   }
 }
@@ -551,7 +631,9 @@ async function uploadVocabExcel() {
     });
     const data = await res.json();
     if (!data.ok) { resultEl.textContent = '❌ ' + (data.error || 'Có lỗi xảy ra'); return; }
-    resultEl.innerHTML = `✅ Đã thêm <b>${data.added}</b> từ mới, cập nhật <b>${data.updated}</b> từ trùng. Bỏ qua ${data.skipped} từ trùng (chưa tick ghi đè), ${data.invalid} dòng thiếu dữ liệu.<br>Tổng số từ đã thêm qua Excel/thủ công: <b>${data.total}</b>.<br><span style="color:var(--l9a);">Tải lại trang để dùng ngay các từ mới.</span>`;
+    // V93: "skipped" giờ CHỈ nghĩa là từ đã có VÀ đã ở đúng bài đó rồi (thật sự không đổi gì) — từ
+    // trùng nhưng THUỘC BÀI MỚI luôn được gắn thêm (tính vào lessonLinked) dù có tick ghi đè hay không.
+    resultEl.innerHTML = `✅ Đã thêm <b>${data.added}</b> từ hoàn toàn mới, cập nhật dữ liệu <b>${data.updated}</b> từ trùng (đã tick ghi đè), gắn thêm bài cho <b>${data.lessonLinked || 0}</b> từ đã có. Bỏ qua ${data.skipped} dòng (đã có sẵn đúng bài này), ${data.invalid} dòng thiếu dữ liệu.<br>Tổng số từ vựng hiện có: <b>${data.total}</b>.<br><span style="color:var(--l9a);">Tải lại trang để dùng ngay các từ mới.</span>`;
     loadVocabAdminList();
     input.value = '';
   } catch (e) {
