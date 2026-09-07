@@ -10,6 +10,8 @@
     "start": "node api/index.js",
     "dev": "node api/index.js",
     "test": "node test/fsrs.test.js",
+    "test:vocab-merge": "node test/vocab-merge.test.js",
+    "test:vocab-identity": "node test/vocab-identity.integration.test.js",
     "test:distractor": "node test/heavy-distractor.test.js",
     "test:integration": "node test/fsrs.concurrency.integration.js",
     "test:optimizer": "node test/fsrs-optimizer.test.js",
@@ -23,6 +25,7 @@
     "verify:optimizer-binding": "node scripts/verify-optimizer-binding.js",
     "postinstall": "node scripts/verify-optimizer-binding.js; s=$?; node scripts/ensure-wasm-optimizer.js; exit $s",
     "migrate:fsrs": "node scripts/migrate-to-pure-fsrs.js",
+    "migrate:vocab-identity": "node scripts/migrate-vocab-identity.js",
     "fix:current-lesson": "node scripts/fix-current-lesson-start.js"
   },
   "dependencies": {
