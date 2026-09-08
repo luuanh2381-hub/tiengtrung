@@ -19,7 +19,7 @@ const assert = require('assert');
 const path = require('path');
 const {
   mergeFuller, mergeSticky, mergeMeaning, mergeVocabRecords,
-  pickCanonical, mergeManyVocabRecords, pickSurvivingFsrsCard, groupBy,
+  pickCanonical, mergeManyVocabRecords, pickSurvivingFsrsCard, groupBy, planBulkUpsert,
 } = require(path.join(__dirname, '..', 'lib', 'vocab-merge'));
 
 let passed = 0, failed = 0;
@@ -204,6 +204,66 @@ test('gom đúng nhóm theo hz, giữ nguyên thứ tự phần tử trong từn
   const map = groupBy([{ hz: 'A', id: 1 }, { hz: 'B', id: 2 }, { hz: 'A', id: 3 }], r => r.hz);
   assert.deepStrictEqual(map.get('A').map(x => x.id), [1, 3]);
   assert.deepStrictEqual(map.get('B').map(x => x.id), [2]);
+});
+
+console.log('\n[planBulkUpsert — V93.1: kế hoạch import hàng loạt (fix "Failed to fetch" do timeout)]');
+
+test('Case 1 — từ hoàn toàn mới, chưa có trong existingByHz -> vào newWords, added=1', () => {
+  const plan = planBulkUpsert(new Map(), [{ hz: '电脑', py: 'diànnǎo', vi: 'máy tính', l: 10, tag: null }], false);
+  assert.strictEqual(plan.counts.added, 1);
+  assert.strictEqual(plan.counts.updated, 0);
+  assert.strictEqual(plan.newWords.length, 1);
+  assert.strictEqual(plan.newWords[0].l, 10);
+  assert.deepStrictEqual(plan.newWords[0].lessons, [10]);
+});
+
+test('Case 2 — đã tồn tại, khác lesson, overwrite=false -> KHÔNG update, chỉ ghi nhận cần thêm lesson', () => {
+  const existingByHz = new Map([['学习', { id: 101, hz: '学习', py: 'xuéxí', vi: 'học', tag: null, hanviet: null }]]);
+  const plan = planBulkUpsert(existingByHz, [{ hz: '学习', py: 'xuéxí', vi: 'học khác', l: 8, tag: null }], false);
+  assert.strictEqual(plan.counts.added, 0);
+  assert.strictEqual(plan.counts.updated, 0, 'overwrite=false không được update metadata');
+  assert.strictEqual(plan.updates.length, 0);
+  assert.strictEqual(plan.existingLessonNeeds.length, 1);
+  assert.strictEqual(plan.existingLessonNeeds[0].wordId, 101);
+  assert.deepStrictEqual(plan.existingLessonNeeds[0].lessons, [8]);
+});
+
+test('Case 5 — 1 lô có 2 dòng CÙNG hz MỚI (mô phỏng Excel liệt kê 1 từ ở 2 bài) -> gộp thành 1 newWord, không tách 2', () => {
+  const plan = planBulkUpsert(new Map(), [
+    { hz: '学习', py: 'xuéxí', vi: 'học', l: 1, tag: null },
+    { hz: '学习', py: 'xuéxí', vi: 'học tập', l: 8, tag: null },
+  ], false);
+  assert.strictEqual(plan.counts.added, 1, 'phải gộp thành ĐÚNG 1 từ mới, không tạo 2');
+  assert.strictEqual(plan.newWords.length, 1);
+  assert.deepStrictEqual(plan.newWords[0].lessons, [1, 8]);
+  assert.ok(plan.newWords[0].vi.includes('học') && plan.newWords[0].vi.includes('học tập'), 'không được mất nghĩa nào khi gộp trong cùng batch');
+});
+
+test('nhiều dòng CÙNG hz đã tồn tại trong CÙNG lô, overwrite=true -> merge tuần tự đúng, chỉ 1 update duy nhất cho id đó', () => {
+  const existingByHz = new Map([['你好', { id: 5, hz: '你好', py: 'nihao', vi: 'xin chào', tag: null, hanviet: null }]]);
+  const plan = planBulkUpsert(existingByHz, [
+    { hz: '你好', py: 'nǐhǎo', vi: 'xin chào', l: 2, tag: null },
+    { hz: '你好', py: 'nǐ hǎo', vi: 'xin chào; chào bạn', l: 3, tag: null },
+  ], true);
+  assert.strictEqual(plan.updates.length, 1, 'phải gộp thành 1 câu update duy nhất cho cùng 1 id, không lặp lại');
+  assert.strictEqual(plan.updates[0].id, 5);
+  assert.strictEqual(plan.updates[0].py, 'nǐ hǎo');
+  assert.ok(plan.updates[0].vi.includes('chào bạn'));
+  assert.deepStrictEqual(plan.existingLessonNeeds[0].lessons, [2, 3]);
+});
+
+test('overwrite=true nhưng dữ liệu mới giống hệt cũ -> không đưa vào updates (đúng "chỉ update khi thực sự đổi")', () => {
+  const existingByHz = new Map([['电脑', { id: 9, hz: '电脑', py: 'diànnǎo', vi: 'máy tính', tag: null, hanviet: null }]]);
+  const plan = planBulkUpsert(existingByHz, [{ hz: '电脑', py: 'diànnǎo', vi: 'máy tính', l: 10, tag: null }], true);
+  assert.strictEqual(plan.counts.updated, 0);
+  assert.strictEqual(plan.updates.length, 0);
+});
+
+test('mảng rỗng -> không throw, mọi thứ rỗng', () => {
+  const plan = planBulkUpsert(new Map(), [], false);
+  assert.strictEqual(plan.newWords.length, 0);
+  assert.strictEqual(plan.updates.length, 0);
+  assert.strictEqual(plan.existingLessonNeeds.length, 0);
 });
 
 console.log('\n════════════════════════════════════════════════════');
