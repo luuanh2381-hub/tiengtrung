@@ -15,7 +15,7 @@ const assert = require('assert');
 const path = require('path');
 
 const fsrs = require(path.join(__dirname, '..', 'lib', 'fsrs'));
-const { getAutomaticFSRSRating } = require(path.join(__dirname, '..', 'lib', 'fsrs-auto-rating'));
+const { getAutomaticFSRSRating, personalBaselineMs } = require(path.join(__dirname, '..', 'lib', 'fsrs-auto-rating'));
 const studyScope = require(path.join(__dirname, '..', 'lib', 'fsrs', 'studyScope'));
 
 let passed = 0, failed = 0;
@@ -142,6 +142,54 @@ test('Chưa đủ lịch sử để dựng baseline cá nhân → mặc định 
     card: { state: 2, reps: 1, stability: 5, difficulty: 3 }, reviewHistory: [],
   });
   assert.strictEqual(r, 'good');
+});
+
+console.log('\n[lib/fsrs-auto-rating.js — fix "review nhiễu khi thoát ra vào lại" (MAX_TRUSTED_RESPONSE_MS)]');
+
+test('responseTimeMs cực lớn (vd thoát app 10 phút) trên từ MỚI, trả lời ĐÚNG → KHÔNG bị chấm "hard" oan', () => {
+  const r = getAutomaticFSRSRating({
+    answerCorrect: true, responseTimeMs: 10 * 60 * 1000, answerChanges: 0, card: null, reviewHistory: [],
+  });
+  assert.strictEqual(r, 'good', 'responseTime bất thường phải bị bỏ qua, KHÔNG được suy ra hard chỉ vì "chậm"');
+});
+
+test('responseTimeMs cực lớn trên card ĐÃ có baseline hợp lệ → vẫn KHÔNG bị chấm "hard" vì lý do thời gian', () => {
+  const reviewHistory = [
+    { answer_correct: true, response_time_ms: 2000, reviewed_at: '2026-01-01' },
+    { answer_correct: true, response_time_ms: 2200, reviewed_at: '2026-01-02' },
+    { answer_correct: true, response_time_ms: 1800, reviewed_at: '2026-01-03' },
+  ];
+  const r = getAutomaticFSRSRating({
+    answerCorrect: true, responseTimeMs: 45 * 60 * 1000, answerChanges: 0,
+    card: { state: 2, reps: 5, stability: 8, difficulty: 3, last_review: '2026-01-03' },
+    reviewHistory,
+  });
+  assert.strictEqual(r, 'good', 'baseline vẫn dựng được từ lịch sử hợp lệ, nhưng rt hiện tại bị loại nên rơi về nhánh "không có rt" -> good mặc định');
+});
+
+test('responseTimeMs VỪA PHẢI (dưới ngưỡng) vẫn hoạt động bình thường — không bị lớp phòng thủ này chặn nhầm', () => {
+  const reviewHistory = [
+    { answer_correct: true, response_time_ms: 2000, reviewed_at: '2026-01-01' },
+    { answer_correct: true, response_time_ms: 2200, reviewed_at: '2026-01-02' },
+    { answer_correct: true, response_time_ms: 1800, reviewed_at: '2026-01-03' },
+  ];
+  const r = getAutomaticFSRSRating({
+    answerCorrect: true, responseTimeMs: 5000, answerChanges: 0, // chậm hơn baseline (~2000) nhưng KHÔNG bất thường
+    card: { state: 2, reps: 5, stability: 8, difficulty: 3, last_review: '2026-01-03' },
+    reviewHistory,
+  });
+  assert.strictEqual(r, 'hard', 'ratio ~2.3x baseline vẫn phải được TÍNH BÌNH THƯỜNG (ra hard theo đúng tín hiệu thật), không bị lớp phòng thủ 90s ảnh hưởng');
+});
+
+test('personalBaselineMs(): 1 lượt lịch sử CŨ bị nhiễu (thoát app) KHÔNG được kéo lệch baseline của các lượt SAU', () => {
+  const reviewHistory = [
+    { answer_correct: true, response_time_ms: 40 * 60 * 1000, reviewed_at: '2026-01-04' }, // nhiễu cũ — phải bị loại
+    { answer_correct: true, response_time_ms: 2000, reviewed_at: '2026-01-03' },
+    { answer_correct: true, response_time_ms: 2200, reviewed_at: '2026-01-02' },
+    { answer_correct: true, response_time_ms: 1800, reviewed_at: '2026-01-01' },
+  ];
+  const baseline = personalBaselineMs(reviewHistory);
+  assert.ok(baseline !== null && baseline < 3000, `baseline phải phản ánh đúng tốc độ thật (~2000ms), không bị kéo lên bởi lượt nhiễu 40 phút: ${baseline}`);
 });
 
 console.log('\n[lib/fsrs/studyScope.js — chọn bài học / thứ tự ưu tiên từ mới]');
