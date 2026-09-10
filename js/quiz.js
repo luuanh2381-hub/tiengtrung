@@ -149,7 +149,7 @@ function qzRenderQ() {
   document.querySelectorAll('#qz-opts .quiz-opt').forEach(b=>{
     b._correct = (b.dataset.v === (qzType==='漢→Việt' ? w.vi : w.hz));
   });
-  qzStartedAt = performance.now(); // Phần 4: đo từ thời điểm câu hỏi THỰC SỰ hiển thị
+  qzStartedAt = performance.now(); vtMarkStart(); // Phần 4: đo từ thời điểm câu hỏi THỰC SỰ hiển thị
 }
 
 // V70/V71: mỗi lượt trả lời đi qua ĐÚNG reviewService.reviewCard() (user đã đăng nhập). Server tự
@@ -159,7 +159,8 @@ function qzRenderQ() {
 async function qzPick(btn, hz) {
   const w = qzQueue.items[0];
   const isCorrectLocally = btn._correct;
-  const responseTimeMs = performance.now() - qzStartedAt;
+  // "Review nhiễu khi thoát ra vào lại": trừ tổng thời gian tab bị ẩn ra khỏi responseTimeMs.
+  const responseTimeMs = Math.max(0, performance.now() - qzStartedAt - vtHiddenMs());
   document.querySelectorAll('#qz-opts .quiz-opt').forEach(b=>{
     if (b._correct) b.classList.add('correct');
     else if (b === btn && !isCorrectLocally) b.classList.add('wrong');

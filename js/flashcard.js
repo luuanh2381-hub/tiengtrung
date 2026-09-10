@@ -164,7 +164,7 @@ function fcUpdate() {
   document.getElementById('fc-counter').textContent = `Thẻ ${fcQueue.answeredCount+1} · còn ${fcQueue.items.length} trong hàng đợi`;
   const inner = document.getElementById('fc-inner');
   inner.classList.remove('flipped'); fcFlipped = false;
-  fcStartedAt = performance.now(); fcResponseTimeMs = null; // Phần 4: đo từ lúc thẻ MỚI hiện ra
+  fcStartedAt = performance.now(); fcResponseTimeMs = null; vtMarkStart(); // Phần 4: đo từ lúc thẻ MỚI hiện ra
 
   const tagStyle2 = lessonTagStyle(w.l);
   const lyHopBadge = w.tag === 'ly_hop' ? `<span class="fc-lesson-tag" style="background:#fff0e0;color:#b5651d;margin-left:6px;">🧩 Ly hợp</span>` : '';
@@ -197,7 +197,8 @@ function fcFlip() {
   const inner = document.getElementById('fc-inner');
   if (!fcFlipped) {
     inner.classList.add('flipped'); fcFlipped = true;
-    fcResponseTimeMs = performance.now() - fcStartedAt; // thời gian "cố nhớ" trước khi lật thẻ
+    // "Review nhiễu khi thoát ra vào lại": trừ tổng thời gian tab bị ẩn ra khỏi thời gian "cố nhớ".
+    fcResponseTimeMs = Math.max(0, performance.now() - fcStartedAt - vtHiddenMs()); // thời gian "cố nhớ" trước khi lật thẻ
     speak(fcQueue.items[0].hz);
   }
 }

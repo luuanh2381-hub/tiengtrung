@@ -87,7 +87,7 @@ function tyRenderQ() {
     </div>
   </div>`;
   setTimeout(()=>{ const i=document.getElementById('ty-input'); if(i)i.focus(); },100);
-  tyStartedAt = performance.now(); // Phần 4: đo từ thời điểm câu hỏi hiển thị
+  tyStartedAt = performance.now(); vtMarkStart(); // Phần 4: đo từ thời điểm câu hỏi hiển thị
 }
 // V70/V71: trả lời/bỏ qua đi qua ĐÚNG reviewService.reviewCard() (user đã đăng nhập). sqAdvance()
 // đảm bảo thẻ vừa đúng bị loại khỏi phiên ngay, thẻ sai/bỏ qua chỉ lặp lại sau tối thiểu
@@ -108,7 +108,8 @@ async function tyCheck() {
   const val = inp.value.trim();
   const w = tyQueue.items[0];
   const okLocally = val === w.hz;
-  const responseTimeMs = performance.now() - tyStartedAt;
+  // "Review nhiễu khi thoát ra vào lại": trừ tổng thời gian tab bị ẩn ra khỏi responseTimeMs.
+  const responseTimeMs = Math.max(0, performance.now() - tyStartedAt - vtHiddenMs());
   const fb = document.getElementById('ty-fb');
   fb.className='type-feedback '+(okLocally?'ok':'bad');
   // FIX (audit — "phần kết quả" luôn hiện Pinyin dù đã ẩn): trước đây (${w.py}) bị gắn cứng vào
@@ -147,7 +148,8 @@ async function tySkip() {
   const btnsEl0 = document.getElementById('ty-btns');
   if (btnsEl0) { btnsEl0.classList.add('is-busy'); btnsEl0.querySelectorAll('button').forEach(b => b.disabled = true); }
   const w = tyQueue.items[0];
-  const responseTimeMs = performance.now() - tyStartedAt;
+  // "Review nhiễu khi thoát ra vào lại": trừ tổng thời gian tab bị ẩn ra khỏi responseTimeMs.
+  const responseTimeMs = Math.max(0, performance.now() - tyStartedAt - vtHiddenMs());
   if (isLoggedIn()) {
     await submitFsrsReviewAwaited({ word: w, quizType: fsrsQuizTypeFor('type'), selectedAnswer: '⨯ (bỏ qua) ⨯', responseTimeMs });
   } else {

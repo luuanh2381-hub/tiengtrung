@@ -97,7 +97,7 @@ function lsRenderWord(w) {
     <button id="ls-play" class="listen-play" onclick="speak('${escapeJsAttr(w.hz)}')" title="Phát lại">🔊</button>
     <div class="listen-opts">${optHtml}</div>
   </div>`;
-  lsStartedAt = performance.now(); // Phần 4: đo từ thời điểm câu hỏi hiển thị (trước cả auto-play)
+  lsStartedAt = performance.now(); vtMarkStart(); // Phần 4: đo từ thời điểm câu hỏi hiển thị (trước cả auto-play)
 }
 
 // V70/V71: trả lời đi qua ĐÚNG reviewService.reviewCard() (user đã đăng nhập). sqAdvance() đảm
@@ -108,7 +108,8 @@ function lsRenderWord(w) {
 async function lsPickWord(btn, chosen, correct) {
   const w = lsQueue.items[0];
   const isCorrectLocally = chosen === correct;
-  const responseTimeMs = performance.now() - lsStartedAt;
+  // "Review nhiễu khi thoát ra vào lại": trừ tổng thời gian tab bị ẩn ra khỏi responseTimeMs.
+  const responseTimeMs = Math.max(0, performance.now() - lsStartedAt - vtHiddenMs());
   document.querySelectorAll('#ls-area .listen-opt').forEach(b=>{
     const bv = b.getAttribute('onclick').match(/'([^']+)','[^']+'/)[1];
     if(bv===correct) b.classList.add('correct');

@@ -234,6 +234,7 @@ function rvPrepareCurrentCard() {
   rvClearCountdown();
   rvRatingPhase = null; rvSystemRating = null; rvUserRating = null; rvFinalRating = null; rvPendingReview = null;
   rvStartedAt = performance.now();
+  vtMarkStart(); // "review nhiễu khi thoát ra vào lại" — reset bộ đếm ẩn cho câu hỏi MỚI này
 }
 
 function rvClearCountdown() {
@@ -490,7 +491,9 @@ let rvAttemptId = 0; // FIX: đánh dấu lượt trả lời hiện tại — p
 async function rvPick(btn, hz) {
   if (rvSubmitting || rvPhase !== 'question') return;
   rvSubmitting = true;
-  const responseTimeMs = Math.round(performance.now() - rvStartedAt); // Phần 4
+  // "Review nhiễu khi thoát ra vào lại": trừ đi tổng thời gian tab bị ẩn (chuyển app/khoá màn hình)
+  // trong lúc câu hỏi này đang chờ trả lời — performance.now() vẫn chạy đều khi ẩn nên phải tự trừ.
+  const responseTimeMs = Math.max(0, Math.round(performance.now() - rvStartedAt - vtHiddenMs())); // Phần 4
   const item = rvQueue.items[0];
   const w = item.word;
   const isCorrectLocally = !!btn._correct;
