@@ -1299,9 +1299,25 @@ const _browserOptimizerPkgRootCache = {};
 // hoạt động tốt (tức @open-spaced-repetition/binding chắc chắn có cài + native binary chạy được) NGAY
 // TRONG CÙNG 1 lần probe mà "bindingRoot" vẫn ra null — mâu thuẫn đó tự nó chỉ ra lỗi nằm ở CÁCH TÌM
 // thư mục của tôi, không phải do thiếu package thật.
-function findPackageRootByEntry(pkgName, entrySubpath) {
+//
+// `fromFilePath` (audit lỗi "Failed to resolve module specifier @napi-rs/wasm-runtime" — lỗi THẬT
+// gặp trong trình duyệt, xem AUDIT-REPORT-V95): TUỲ CHỌN — nếu có, resolve TỪ NGỮ CẢNH của file đó
+// (dùng createRequire) thay vì từ api/index.js. Các package TOP-LEVEL của project (binding/
+// binding-wasm32-wasi, khai trực tiếp trong package.json) hầu như luôn được npm hoist lên
+// node_modules gốc nên KHÔNG cần context (2 lời gọi cũ ở resolveBrowserOptimizerPkgRoot() dưới đây
+// vẫn không truyền, giữ nguyên hành vi đã hoạt động đúng — "Engine (server): Native" đã xác nhận).
+// Nhưng các package "runtime-helper" mà bản thân binding/binding-wasm32-wasi phụ thuộc (transitive
+// dependency, vd @napi-rs/wasm-runtime) rất có thể KHÔNG được hoist — npm/pnpm có thể đặt chúng NESTED
+// bên trong node_modules/<package-cha>/node_modules/ (đặc biệt nếu có version khác ở nơi khác trong
+// cây phụ thuộc). require.resolve() gọi từ api/index.js chỉ tìm theo cây node_modules xuất phát từ
+// CHÍNH FILE api/index.js — sẽ KHÔNG thấy các package nested kiểu này (đây là hành vi ĐÚNG, ĐẶC TẢ
+// CHÍNH THỨC của Node Module Resolution, không phải bug của Node) — createRequire(fromFilePath) tạo
+// 1 "require" có gốc ĐÚNG tại vị trí file cha thật, đi lên node_modules từ ĐÓ, tìm được cả các
+// node_modules lồng bên trong package đó.
+function findPackageRootByEntry(pkgName, entrySubpath, fromFilePath) {
   let entryPath;
-  try { entryPath = require.resolve(entrySubpath ? `${pkgName}/${entrySubpath}` : pkgName); }
+  const localRequire = fromFilePath ? require('module').createRequire(fromFilePath) : require;
+  try { entryPath = localRequire.resolve(entrySubpath ? `${pkgName}/${entrySubpath}` : pkgName); }
   catch { return null; }
   let dir = path.dirname(entryPath);
   for (let i = 0; i < 12; i++) { // giới hạn số bước đi lên — tránh vòng lặp nếu có gì bất thường, 12 tầng thừa đủ cho mọi cấu trúc node_modules thực tế
@@ -1492,6 +1508,12 @@ function computeBrowserOptimizerAssetUrls() {
 
 const _dynamicPkgUrlKeyByName = {};
 const _dynamicPkgNameByUrlKey = {};
+// (audit lỗi "Failed to resolve module specifier" — xem AUDIT-REPORT-V95) — cache LẠI root ĐÃ XÁC
+// ĐỊNH ĐÚNG (bằng context/createRequire, xem resolveBareSpecifierUrl) theo urlKey, để route
+// serveDynamicPkgFile (nơi trình duyệt thực sự GET file về) dùng LẠI ĐÚNG root này thay vì tự tính
+// lại bằng require.resolve() KHÔNG có context (context sai — chính là bug thứ 2 cùng gốc: dù import
+// map build đúng, request tải file thật vẫn 404 nếu route serve tính root theo cách khác).
+const _dynamicPkgRootByUrlKey = {};
 function sanitizePkgNameForUrl(pkgName) {
   if (_dynamicPkgUrlKeyByName[pkgName]) return _dynamicPkgUrlKeyByName[pkgName];
   const key = pkgName.replace(/^@/, '').replace(/\//g, '__');
@@ -1500,11 +1522,14 @@ function sanitizePkgNameForUrl(pkgName) {
   return key;
 }
 
-// Bắt CẢ 2 dạng hay gặp: "import ... from 'x'"/"export ... from 'x'" (gộp chung nhờ đều kết thúc bằng
-// "from '...'") VÀ "import('x')" (dynamic import). KHÔNG bắt "import 'x'" (side-effect-only, hiếm gặp
-// ở loại thư viện này) — chấp nhận bỏ sót trường hợp hiếm đó để giữ regex đơn giản, ít rủi ro bắt nhầm.
+// Bắt CẢ 3 dạng: "import ... from 'x'"/"export ... from 'x'" (gộp chung nhờ đều kết thúc bằng "from
+// '...'"), "import('x')" (dynamic import), VÀ "import 'x'" (side-effect-only, không gán biến — trước
+// đây CHỦ Ý bỏ qua vì cho là hiếm gặp, nhưng audit lỗi thật "Failed to resolve module specifier
+// @napi-rs/wasm-runtime" cho thấy KHÔNG thể loại trừ khả năng 1 package runtime-helper dùng đúng dạng
+// này để chạy side-effect khởi tạo — bắt thêm không có tác dụng phụ, chỉ tăng độ phủ).
 const RE_STATIC_FROM = /\bfrom(\s*)(['"])([^'"]+)\2/g;
 const RE_DYNAMIC_IMPORT = /\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g;
+const RE_SIDE_EFFECT_IMPORT = /\bimport\s+(?!\()(['"])([^'"]+)\1/g; // (?!\() loại trừ "import (" (dynamic import có khoảng trắng lạ) khỏi bị nhầm match
 
 function isBareSpecifier(spec) {
   return !!spec && !spec.startsWith('.') && !spec.startsWith('/') && !/^https?:/.test(spec);
@@ -1517,6 +1542,8 @@ function extractBareSpecifiers(sourceText) {
   while ((m = RE_STATIC_FROM.exec(sourceText))) if (isBareSpecifier(m[3])) found.add(m[3]);
   RE_DYNAMIC_IMPORT.lastIndex = 0;
   while ((m = RE_DYNAMIC_IMPORT.exec(sourceText))) if (isBareSpecifier(m[2])) found.add(m[2]);
+  RE_SIDE_EFFECT_IMPORT.lastIndex = 0;
+  while ((m = RE_SIDE_EFFECT_IMPORT.exec(sourceText))) if (isBareSpecifier(m[2])) found.add(m[2]);
   return [...found];
 }
 
@@ -1525,19 +1552,22 @@ function splitPkgNameAndSubpath(spec) {
   return m ? { pkgName: m[1], subpath: m[2] || '' } : { pkgName: spec, subpath: '' };
 }
 
-// Trả về { url, filePath } cho 1 bare specifier cụ thể (đã tách sẵn tên package/subpath) — dùng
-// require.resolve() bình thường CHO PHÉP ở đây (khác dynamic-wasi) vì các package phụ thuộc kiểu
-// runtime-helper này thường KHÔNG có 2 bản CJS/ESM khác nhau cho cùng chức năng (bản thân chúng thường
-// đã là ESM thuần hoặc dual-mode tương thích cả 2) — nếu sau này lộ ra vấn đề tương tự, áp dụng lại
-// đúng kỹ thuật đọc "exports" map thủ công như đã làm cho dynamic-wasi ở trên.
-function resolveBareSpecifierUrl(spec) {
+// Trả về { url, filePath } cho 1 bare specifier cụ thể (đã tách sẵn tên package/subpath).
+// `fromFilePath` — xem giải thích đầy đủ ở findPackageRootByEntry() phía trên: BẮT BUỘC truyền vào
+// (là file ĐANG CHỨA câu import/export này, do buildImportMapForFile() truyền xuống) để resolve
+// ĐÚNG theo ngữ cảnh thật, không phải theo ngữ cảnh cố định của api/index.js — khác findPackageRootByEntry
+// (dùng cho binding/binding-wasm32-wasi, top-level dependency hầu như luôn được hoist), các specifier
+// tìm thấy Ở ĐÂY là transitive dependency của CHÍNH package binding, khả năng cao KHÔNG được hoist.
+function resolveBareSpecifierUrl(spec, fromFilePath) {
   const { pkgName, subpath } = splitPkgNameAndSubpath(spec);
   let filePath = null;
-  try { filePath = require.resolve(subpath ? `${pkgName}${subpath}` : pkgName); } catch { /* thử tiếp bằng root ở dưới nếu subpath rỗng */ }
-  const root = findPackageRootByEntry(pkgName, subpath ? subpath.slice(1) : null) || (filePath ? path.dirname(filePath) : null);
+  const localRequire = fromFilePath ? require('module').createRequire(fromFilePath) : require;
+  try { filePath = localRequire.resolve(subpath ? `${pkgName}${subpath}` : pkgName); } catch { /* thử tiếp bằng root ở dưới nếu subpath rỗng */ }
+  const root = findPackageRootByEntry(pkgName, subpath ? subpath.slice(1) : null, fromFilePath) || (filePath ? path.dirname(filePath) : null);
   if (!filePath || !root) return null;
   const relPath = path.relative(root, filePath).split(path.sep).join('/');
   const urlKey = sanitizePkgNameForUrl(pkgName);
+  _dynamicPkgRootByUrlKey[urlKey] = root; // cache lại — serveDynamicPkgFile() dùng đúng root này, không tính lại
   return { url: `/api/fsrs-optimizer/browser/pkg-dyn/${urlKey}/${relPath}`, filePath, root, pkgName, urlKey };
 }
 
@@ -1553,7 +1583,7 @@ function buildImportMapForFile(entryFilePath, maxDepth) {
     try { src = fs.readFileSync(filePath, 'utf8'); } catch { return; }
     for (const spec of extractBareSpecifiers(src)) {
       if (importMap[spec]) continue;
-      const resolved = resolveBareSpecifierUrl(spec);
+      const resolved = resolveBareSpecifierUrl(spec, filePath); // filePath = ngữ cảnh ĐÚNG (file đang chứa specifier này)
       if (!resolved) continue; // không resolve được thì bỏ qua — import map thiếu 1 mục sẽ lộ lỗi rõ ràng giống hiện tại (không giấu đi), không làm hỏng thêm gì
       importMap[spec] = resolved.url;
       visit(resolved.filePath, depth + 1);
@@ -1566,7 +1596,12 @@ function buildImportMapForFile(entryFilePath, maxDepth) {
 function serveDynamicPkgFile(req, res) {
   const urlKey = req.params.urlKey;
   const pkgName = _dynamicPkgNameByUrlKey[urlKey];
-  const root = pkgName ? findPackageRootByEntry(pkgName, null) : null;
+  // Ưu tiên root ĐÃ CACHE (tính đúng theo context/createRequire lúc build import map — xem
+  // resolveBareSpecifierUrl) — fallback về cách tính KHÔNG có context chỉ khi cache miss (vd server
+  // vừa restart mất cache trong-memory) — biết trước fallback này CÓ THỂ thất bại với package nested
+  // không hoist (đúng gốc rễ của bug — xem AUDIT-REPORT-V95), nhưng vẫn giữ làm lưới an toàn còn hơn
+  // 404 thẳng, và trường hợp "vừa restart" hiếm khi trùng đúng lúc user đang có job đang chạy dở.
+  const root = pkgName ? (_dynamicPkgRootByUrlKey[urlKey] || findPackageRootByEntry(pkgName, null)) : null;
   if (!pkgName || !root) {
     res.status(404).json({ ok: false, error: 'Không rõ package (có thể server đã restart và mất cache đăng ký — thử tải lại trang rồi bấm Run lại).' });
     return;
