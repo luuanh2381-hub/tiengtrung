@@ -47,18 +47,24 @@ function buildFakeNodeModules(root) {
   }));
   fs.writeFileSync(path.join(scopeDir, 'binding', 'index.js'), 'module.exports = {};');
   // dynamic-wasi.mjs (bản ESM đúng) có bare import tới 1 package KHÁC — đúng lỗi thật production gặp
-  // ("Failed to resolve module specifier '@napi-rs/wasm-runtime'"). Package giả lập đặt CẠNH, không
-  // liên quan gì tới @open-spaced-repetition, giống hệt cấu trúc thật.
+  // ("Failed to resolve module specifier '@napi-rs/wasm-runtime'"). QUAN TRỌNG (audit lỗi này — xem
+  // AUDIT-REPORT-V95): đặt package NESTED bên trong node_modules CỦA CHÍNH package "binding" (mô
+  // phỏng ĐÚNG cách npm/pnpm thường xử lý transitive dependency KHÔNG được hoist lên node_modules gốc
+  // — vd do version khác ở nơi khác trong cây phụ thuộc), KHÔNG đặt sẵn ở node_modules gốc như trước
+  // (bản test trước đặt ở gốc nên "quá dễ" — require.resolve() từ BẤT KỲ context nào cũng tìm thấy,
+  // không bắt được đúng bug context-resolution mà production thực sự gặp phải).
   fs.writeFileSync(path.join(scopeDir, 'binding', 'dynamic-wasi.mjs'),
     "import { instantiate } from '@napi-rs/wasm-runtime';\nexport async function initOptimizer() { return { instantiate }; }\n");
   fs.writeFileSync(path.join(scopeDir, 'binding', 'dynamic-wasi.cjs'), 'const fakeDep = require("fs"); module.exports = { initOptimizer: async () => ({}) };'); // file CJS "bẫy" — nếu bị chọn nhầm, đây chính là nguồn require() gây lỗi thật trong trình duyệt
 
-  const otherScopeDir = path.join(root, 'node_modules', '@napi-rs');
-  fs.mkdirSync(path.join(otherScopeDir, 'wasm-runtime'), { recursive: true });
-  fs.writeFileSync(path.join(otherScopeDir, 'wasm-runtime', 'package.json'), JSON.stringify({
+  // NESTED bên trong node_modules/@open-spaced-repetition/binding/node_modules/@napi-rs/wasm-runtime —
+  // CỐ Ý không đặt ở node_modules gốc của tmpRoot (xem giải thích ở trên).
+  const nestedScopeDir = path.join(scopeDir, 'binding', 'node_modules', '@napi-rs');
+  fs.mkdirSync(path.join(nestedScopeDir, 'wasm-runtime'), { recursive: true });
+  fs.writeFileSync(path.join(nestedScopeDir, 'wasm-runtime', 'package.json'), JSON.stringify({
     name: '@napi-rs/wasm-runtime', version: '0.2.0', main: './index.mjs',
   }));
-  fs.writeFileSync(path.join(otherScopeDir, 'wasm-runtime', 'index.mjs'), 'export function instantiate() { return {}; }\n');
+  fs.writeFileSync(path.join(nestedScopeDir, 'wasm-runtime', 'index.mjs'), 'export function instantiate() { return {}; }\n');
 
   // Package WASM — tên file KHÔNG khớp ví dụ đã tra cứu (đúng khó khăn #2), không có "main"/"exports".
   fs.writeFileSync(path.join(scopeDir, 'binding-wasm32-wasi', 'package.json'), JSON.stringify({
@@ -78,7 +84,7 @@ function loadFunctionsFromRealSource() {
   const snippet = src.slice(startIdx, endIdx);
   const sandbox = { require, fs, path, console, module: { exports: {} } };
   vm.createContext(sandbox);
-  vm.runInContext(snippet + '\nmodule.exports = { computeBrowserOptimizerAssetUrlsDetailed, buildImportMapForFile };', sandbox, { filename: 'api/index.js (trích đoạn)' });
+  vm.runInContext(snippet + '\nmodule.exports = { computeBrowserOptimizerAssetUrlsDetailed, buildImportMapForFile, serveDynamicPkgFile, _dynamicPkgRootByUrlKey };', sandbox, { filename: 'api/index.js (trích đoạn)' });
   return sandbox.module.exports;
 }
 
@@ -93,7 +99,7 @@ try {
   module.paths.unshift(path.join(tmpRoot, 'node_modules'));
   require('module').Module._initPaths(); // đảm bảo global resolution cache nhận path mới ngay
 
-  const { computeBrowserOptimizerAssetUrlsDetailed, buildImportMapForFile } = loadFunctionsFromRealSource();
+  const { computeBrowserOptimizerAssetUrlsDetailed, buildImportMapForFile, serveDynamicPkgFile, _dynamicPkgRootByUrlKey } = loadFunctionsFromRealSource();
 
   test('computeBrowserOptimizerAssetUrlsDetailed(): vẫn resolve ĐÚNG dù package chính có "exports" map chặn "./package.json" (lỗi thật đã gặp ở production — audit lại lần 4)', () => {
     const result = computeBrowserOptimizerAssetUrlsDetailed();
@@ -121,6 +127,27 @@ try {
     assert.deepStrictEqual(Object.keys(map), ['@napi-rs/wasm-runtime']);
   });
 
+  test('cache _dynamicPkgRootByUrlKey PHẢI trỏ đúng vào thư mục NESTED (bug thứ 2, cùng gốc với bug trên): route serveDynamicPkgFile() — nơi trình duyệt THỰC SỰ tải file @napi-rs/wasm-runtime về — phải dùng LẠI đúng root đã xác định lúc build import map, KHÔNG được tự tính lại bằng require.resolve() không-context (nếu tính lại sẽ vẫn ra null/404 dù import map đã đúng, vì cùng 1 lý do gốc: package bị nested, không hoist)', () => {
+    computeBrowserOptimizerAssetUrlsDetailed(); // đảm bảo cache đã populate (an toàn gọi lại nhiều lần)
+    const cachedRoot = _dynamicPkgRootByUrlKey['napi-rs__wasm-runtime'];
+    const expectedNestedRoot = path.join(tmpRoot, 'node_modules', '@open-spaced-repetition', 'binding', 'node_modules', '@napi-rs', 'wasm-runtime');
+    assert.strictEqual(cachedRoot, expectedNestedRoot, `phải dùng đúng root NESTED đã cache, nhận: ${cachedRoot}`);
+  });
+
+  test('serveDynamicPkgFile(): PHẢI serve được file thật (không rơi vào nhánh lỗi 404 "Không rõ package") cho đúng urlKey của @napi-rs/wasm-runtime', () => {
+    computeBrowserOptimizerAssetUrlsDetailed();
+    const res = {
+      _json: null, _status: null,
+      status(code) { this._status = code; return this; },
+      json(obj) { this._json = obj; return this; }, // nếu code lỗi sẽ gọi tới đây (đồng bộ) — vượt qua được nghĩa là fix đúng
+      setHeader() {},
+      write() { return true; }, end() {}, on() {}, once() {}, emit() {}, // no-op đủ để .pipe() không throw, không cần kiểm tra nội dung file
+    };
+    serveDynamicPkgFile({ params: { urlKey: 'napi-rs__wasm-runtime', 0: 'index.mjs' } }, res);
+    assert.strictEqual(res._json, null, `không được rơi vào nhánh lỗi — nhận lỗi: ${JSON.stringify(res._json)}`);
+    assert.notStrictEqual(res._status, 404);
+  });
+
   test('computeBrowserOptimizerAssetUrlsDetailed(): tìm đúng file .wasm dù tên KHÔNG khớp ví dụ đã tra cứu lúc viết code', () => {
     const result = computeBrowserOptimizerAssetUrlsDetailed();
     assert.ok(result.ok && result.urls.wasmAssetUrl.endsWith('/weird-name.v9.wasm'), `kỳ vọng tìm thấy weird-name.v9.wasm, nhận: ${JSON.stringify(result)}`);
@@ -131,7 +158,14 @@ try {
     assert.ok(result.ok && result.urls.workerScriptUrl.endsWith('/browser-worker-thing.mjs'), `kỳ vọng tìm thấy browser-worker-thing.mjs, nhận: ${JSON.stringify(result)}`);
   });
 } finally {
-  fs.rmSync(tmpRoot, { recursive: true, force: true });
+  // Trì hoãn việc xoá tmpRoot — test serveDynamicPkgFile() ở trên gọi fs.createReadStream(...).pipe()
+  // (BẤT ĐỒNG BỘ, không đợi) để verify KHÔNG rơi vào nhánh lỗi 404 (đủ cho assertion, không cần đợi đọc
+  // xong nội dung) — nhưng nếu xoá tmpRoot NGAY LẬP TỨC ở đây, luồng đọc file đó (đang chạy dở, rớt lại)
+  // sẽ gặp ENOENT khi thư mục đã biến mất → "Unhandled 'error' event" làm crash tiến trình DÙ mọi
+  // assertion đã PASS. setTimeout giữ event loop sống thêm 1 chút, đủ để thao tác đọc file nhỏ trong
+  // tmpfs (luôn rất nhanh) hoàn thành trước khi dọn dẹp — không ảnh hưởng gì tới các dòng in kết quả/
+  // process.exitCode bên dưới (chạy đồng bộ, độc lập, không đợi setTimeout này).
+  setTimeout(() => fs.rmSync(tmpRoot, { recursive: true, force: true }), 200);
 }
 
 console.log(`\n════════════════════════════════════════════════════`);
