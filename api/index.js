@@ -1554,16 +1554,39 @@ function splitPkgNameAndSubpath(spec) {
 
 // Trả về { url, filePath } cho 1 bare specifier cụ thể (đã tách sẵn tên package/subpath).
 // `fromFilePath` — xem giải thích đầy đủ ở findPackageRootByEntry() phía trên: BẮT BUỘC truyền vào
-// (là file ĐANG CHỨA câu import/export này, do buildImportMapForFile() truyền xuống) để resolve
-// ĐÚNG theo ngữ cảnh thật, không phải theo ngữ cảnh cố định của api/index.js — khác findPackageRootByEntry
-// (dùng cho binding/binding-wasm32-wasi, top-level dependency hầu như luôn được hoist), các specifier
-// tìm thấy Ở ĐÂY là transitive dependency của CHÍNH package binding, khả năng cao KHÔNG được hoist.
+// (là file ĐANG CHỨA câu import/export này, do buildImportMapForFile()/rewriteBareSpecifiersInSource()
+// truyền xuống) để resolve ĐÚNG theo ngữ cảnh thật, không phải theo ngữ cảnh cố định của api/index.js.
+//
+// (audit lỗi "vẫn Failed to resolve module specifier" SAU KHI V95 đã fix context-resolution — xem
+// AUDIT-REPORT-V96): chỉ thử ĐÚNG 1 context (fromFilePath) CHƯA ĐỦ — phát hiện qua test: package
+// "runtime-helper" như @napi-rs/wasm-runtime có thể được npm nested vào BÊN TRONG package "binding"
+// HOẶC "binding-wasm32-wasi" — đây là 2 package "ANH EM" (sibling), KHÔNG PHẢI package con của nhau —
+// nên nếu nó nested trong "binding" nhưng specifier lại nằm trong 1 file THUỘC "binding-wasm32-wasi"
+// (đúng thực tế: package đó tự spawn Worker, code worker import '@napi-rs/wasm-runtime'), context của
+// riêng file worker đó KHÔNG THẤY ĐƯỢC dependency nested bên "binding". Thử LẦN LƯỢT: (1) context của
+// chính file đang chứa specifier, (2) root của package "binding", (3) root của "binding-wasm32-wasi" —
+// dừng ở ứng viên ĐẦU TIÊN resolve thành công. Dùng "__probe__.js" (không cần tồn tại thật)
+// làm điểm neo — createRequire() chỉ cần 1 đường dẫn để suy ra thư mục xuất phát, không đọc file đó.
 function resolveBareSpecifierUrl(spec, fromFilePath) {
   const { pkgName, subpath } = splitPkgNameAndSubpath(spec);
+  const candidates = [];
+  if (fromFilePath) candidates.push(fromFilePath);
+  const bindingRoot = resolveBrowserOptimizerPkgRoot('binding');
+  const wasmRoot = resolveBrowserOptimizerPkgRoot('binding-wasm32-wasi');
+  if (bindingRoot) candidates.push(path.join(bindingRoot, '__probe__.js'));
+  if (wasmRoot) candidates.push(path.join(wasmRoot, '__probe__.js'));
+
   let filePath = null;
-  const localRequire = fromFilePath ? require('module').createRequire(fromFilePath) : require;
-  try { filePath = localRequire.resolve(subpath ? `${pkgName}${subpath}` : pkgName); } catch { /* thử tiếp bằng root ở dưới nếu subpath rỗng */ }
-  const root = findPackageRootByEntry(pkgName, subpath ? subpath.slice(1) : null, fromFilePath) || (filePath ? path.dirname(filePath) : null);
+  let usedFrom = null;
+  for (const candidate of candidates) {
+    const localRequire = require('module').createRequire(candidate);
+    try {
+      filePath = localRequire.resolve(subpath ? `${pkgName}${subpath}` : pkgName);
+      usedFrom = candidate;
+      break;
+    } catch { /* thử ứng viên tiếp theo */ }
+  }
+  const root = findPackageRootByEntry(pkgName, subpath ? subpath.slice(1) : null, usedFrom) || (filePath ? path.dirname(filePath) : null);
   if (!filePath || !root) return null;
   const relPath = path.relative(root, filePath).split(path.sep).join('/');
   const urlKey = sanitizePkgNameForUrl(pkgName);
@@ -1593,6 +1616,65 @@ function buildImportMapForFile(entryFilePath, maxDepth) {
   return importMap;
 }
 
+// (audit lỗi "Failed to resolve module specifier" khi Optimizer chạy trong trình duyệt — xem
+// AUDIT-REPORT-V96): import map (V95) đã đúng ở tầng resolve, NHƯNG import map, theo đặc tả WHATWG,
+// KHÔNG áp dụng cho module nạp bên trong 1 Worker (dedicated Worker có "module map" RIÊNG, không kế
+// thừa từ document) — trong khi CHÍNH package binding-wasm32-wasi lại TỰ TẠO 1 Worker RIÊNG của nó để
+// chạy phần tính toán nặng (xem comment "audit lại lần 7" ở đầu js/fsrs-optimizer.js — app đã cố
+// tránh Worker CỦA CHÍNH NÓ, nhưng không tránh được Worker mà THƯ VIỆN tự spawn bên trong). Vì vậy dù
+// import map ở document chính đã đúng, module bên trong Worker đó vẫn không resolve được.
+//
+// GIẢI PHÁP TRIỆT ĐỂ: thay vì trông cậy trình duyệt tự áp dụng import map, SERVER tự "viết lại" mọi
+// bare specifier NGAY TRONG NỘI DUNG file .js/.mjs/.cjs thành URL TUYỆT ĐỐI (bắt đầu bằng "/") trước
+// khi trả về — 1 đường dẫn tuyệt đối luôn hợp lệ trong ES module resolution ở MỌI ngữ cảnh (main
+// thread hay Worker), không phụ thuộc trình duyệt có hỗ trợ "import map cho Worker" hay không. Giữ
+// NGUYÊN import map (V95) chạy song song làm lưới an toàn — không hại gì, một số đường vẫn cần.
+const JS_TEXT_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
+
+function rewriteBareSpecifiersInSource(sourceText, filePath) {
+  const resolveFn = (spec) => {
+    const resolved = resolveBareSpecifierUrl(spec, filePath);
+    return resolved ? resolved.url : null;
+  };
+  let out = sourceText;
+  out = out.replace(/\bfrom(\s*)(['"])([^'"]+)\2/g, (whole, ws, quote, spec) => {
+    if (!isBareSpecifier(spec)) return whole;
+    const url = resolveFn(spec);
+    return url ? `from${ws}${quote}${url}${quote}` : whole; // không resolve được thì GIỮ NGUYÊN — lộ lỗi rõ ràng giống trước, không giấu đi
+  });
+  out = out.replace(/\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g, (whole, quote, spec) => {
+    if (!isBareSpecifier(spec)) return whole;
+    const url = resolveFn(spec);
+    return url ? whole.replace(`${quote}${spec}${quote}`, `${quote}${url}${quote}`) : whole;
+  });
+  out = out.replace(/\bimport\s+(?!\()(['"])([^'"]+)\1/g, (whole, quote, spec) => {
+    if (!isBareSpecifier(spec)) return whole;
+    const url = resolveFn(spec);
+    return url ? `import ${quote}${url}${quote}` : whole;
+  });
+  return out;
+}
+
+// Dùng CHUNG cho cả 2 route serve file bên dưới — file JS/MJS/CJS thì đọc hẳn vào bộ nhớ để rewrite
+// (luôn nhỏ, vài chục KB, an toàn) rồi gửi text; file khác (.wasm nhị phân, không có gì để rewrite)
+// GIỮ NGUYÊN stream như cũ (hiệu năng, không tải hẳn vào RAM những file có thể vài MB).
+function sendPackageFile(filePath, res) {
+  const ext = path.extname(filePath);
+  res.setHeader('Content-Type', BROWSER_OPTIMIZER_CONTENT_TYPES[ext] || 'application/octet-stream');
+  if (JS_TEXT_EXTENSIONS.has(ext)) {
+    let src;
+    try { src = fs.readFileSync(filePath, 'utf8'); }
+    catch (e) { res.status(500).json({ ok: false, error: 'Không đọc được file: ' + e.message }); return; }
+    // Cache ngắn hơn nhiều so với .wasm — nội dung phụ thuộc kết quả resolve tại thời điểm serve (dù
+    // trong thực tế hiếm đổi giữa các lần deploy, không nên cache "immutable" như trước nữa).
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.send(rewriteBareSpecifiersInSource(src, filePath));
+  } else {
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    fs.createReadStream(filePath).pipe(res);
+  }
+}
+
 function serveDynamicPkgFile(req, res) {
   const urlKey = req.params.urlKey;
   const pkgName = _dynamicPkgNameByUrlKey[urlKey];
@@ -1616,9 +1698,7 @@ function serveDynamicPkgFile(req, res) {
     res.status(404).json({ ok: false, error: `Không tìm thấy file: ${relPath}` });
     return;
   }
-  res.setHeader('Content-Type', BROWSER_OPTIMIZER_CONTENT_TYPES[path.extname(filePath)] || 'application/octet-stream');
-  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-  fs.createReadStream(filePath).pipe(res);
+  sendPackageFile(filePath, res);
 }
 
 function serveBrowserOptimizerPackageFile(pkgKey) {
@@ -1639,9 +1719,7 @@ function serveBrowserOptimizerPackageFile(pkgKey) {
       res.status(404).json({ ok: false, error: `Không tìm thấy file trong package: ${relPath}` });
       return;
     }
-    res.setHeader('Content-Type', BROWSER_OPTIMIZER_CONTENT_TYPES[path.extname(filePath)] || 'application/octet-stream');
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // asset gắn version cố định trong tên package, cache dài hạn an toàn
-    fs.createReadStream(filePath).pipe(res);
+    sendPackageFile(filePath, res);
   };
 }
 app.get('/api/fsrs-optimizer/browser/pkg/binding/*', serveBrowserOptimizerPackageFile('binding'));
@@ -1658,6 +1736,7 @@ app.get('/api/fsrs-optimizer/browser/pkg-dyn/:urlKey/*', serveDynamicPkgFile);
 //     riêng tư, và tách khỏi luồng xác thực giúp việc gọi sớm không phụ thuộc token đã sẵn sàng chưa.
 app.get('/api/fsrs-optimizer/browser/importmap', (req, res) => {
   const result = computeBrowserOptimizerAssetUrlsDetailed();
+  res.setHeader('Cache-Control', 'no-store'); // luôn phản ánh code MỚI NHẤT — loại trừ khả năng trình duyệt dùng response JSON đã cache từ lần deploy trước
   res.json({ ok: result.ok, importMap: result.ok ? result.importMap : {} });
 });
 
