@@ -1073,6 +1073,51 @@ app.get('/api/fsrs-optimizer/status', async (req, res) => {
 // nguy hiểm nào; sanitizeEngineStatusForUser() (dù lẽ ra không cần vì đã chặn ở trên) vẫn được áp
 // dụng làm lớp phòng thủ thứ 2 — phòng khi có lỗi auth trong tương lai vẫn không lộ thông tin hệ
 // thống chi tiết (Phần "ERROR SECURITY", nguyên tắc phòng thủ theo chiều sâu).
+// (audit "Optimizer lỗi trong trình duyệt" lặp lại nhiều lần dù đã sửa logic resolve 2 lần — xem
+// AUDIT-REPORT-V97): sau khi xác định NGUYÊN NHÂN GỐC THỰC SỰ là includeFiles trong vercel.json quá
+// hẹp (chỉ "node_modules/@open-spaced-repetition/**", không đóng gói transitive dependency nằm NGOÀI
+// scope đó vào Vercel Function) — bài học rút ra: đừng tiếp tục ĐOÁN, hãy để SERVER TỰ BÁO CÁO.
+//
+// Hàm này đọc package.json của CẢ "binding" lẫn "binding-wasm32-wasi" (đã biết root), lấy TOÀN BỘ
+// "dependencies" chúng khai báo, rồi kiểm tra TRỰC TIẾP TRÊN ĐĨA (fs.existsSync — "ground truth", độc
+// lập hoàn toàn với require.resolve()/createRequire(), không thể bị ảnh hưởng bởi "exports" map hay
+// bất kỳ quy tắc resolve phức tạp nào) xem TỪNG dependency có THỰC SỰ CÓ MẶT trên server đang chạy hay
+// không — không chỉ kiểm tra đúng "@napi-rs/wasm-runtime" (tên đã biết từ lỗi hiện tại), mà kiểm tra
+// TẤT CẢ, để phát hiện SỚM nếu còn thiếu package nào khác (chưa từng gặp lỗi) — một lần chẩn đoán,
+// biết hết, không phải chờ user gặp lỗi rồi báo lại từng cái một.
+function checkTransitiveDepsOnDisk(bindingRoot, wasmRoot) {
+  const results = [];
+  const seen = new Set();
+  const candidateRoots = [bindingRoot, wasmRoot].filter(Boolean);
+
+  function existsAt(pkgName) {
+    const parts = pkgName.startsWith('@') ? pkgName.split('/') : [pkgName];
+    const foundPaths = [];
+    for (const root of candidateRoots) {
+      const p = path.join(root, 'node_modules', ...parts);
+      if (fs.existsSync(path.join(p, 'package.json'))) foundPaths.push(p);
+    }
+    // Hoisted lên gốc project (node_modules cùng cấp với api/index.js)
+    const rootP = path.join(__dirname, 'node_modules', ...parts);
+    if (fs.existsSync(path.join(rootP, 'package.json'))) foundPaths.push(rootP);
+    return foundPaths;
+  }
+
+  for (const root of candidateRoots) {
+    let pkgJson;
+    try { pkgJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')); }
+    catch { continue; }
+    const deps = { ...(pkgJson.dependencies || {}), ...(pkgJson.optionalDependencies || {}) };
+    for (const depName of Object.keys(deps)) {
+      if (seen.has(depName)) continue;
+      seen.add(depName);
+      const foundPaths = existsAt(depName);
+      results.push({ package: depName, requiredBy: pkgJson.name, onDisk: foundPaths.length > 0, foundAt: foundPaths });
+    }
+  }
+  return results;
+}
+
 app.get('/api/fsrs-optimizer/diagnostics', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
@@ -1086,6 +1131,14 @@ app.get('/api/fsrs-optimizer/diagnostics', async (req, res) => {
       // V92 — cùng gói vào đây thay vì route riêng, để admin chỉ cần nhớ 1 địa chỉ duy nhất
       // (/api/fsrs-optimizer/diagnostics) cho MỌI thứ liên quan tới optimizer, kể cả bản browser mới.
       diag.browserTraining = computeBrowserOptimizerAssetUrlsDetailed();
+      // V97 — chẩn đoán VẬT LÝ, độc lập với logic resolve (xem checkTransitiveDepsOnDisk phía trên).
+      try {
+        const bindingRoot = resolveBrowserOptimizerPkgRoot('binding');
+        const wasmRoot = resolveBrowserOptimizerPkgRoot('binding-wasm32-wasi');
+        diag.browserTraining.diskCheck = checkTransitiveDepsOnDisk(bindingRoot, wasmRoot);
+      } catch (e) {
+        diag.browserTraining.diskCheck = { error: e && e.message };
+      }
     }
     res.json({ ok: true, diagnostics: isAdmin ? diag : fsrsOptimizer.sanitizeEngineStatusForUser(diag) });
   } catch (e) { fail(res, e); }
