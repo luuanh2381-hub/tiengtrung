@@ -10,7 +10,7 @@
   "functions": {
     "api/index.js": {
       "maxDuration": 300,
-      "includeFiles": "node_modules/@open-spaced-repetition/**"
+      "includeFiles": "node_modules/**"
     }
   },
   "headers": [
