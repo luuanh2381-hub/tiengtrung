@@ -40,6 +40,7 @@ function buildFakeNodeModules(root) {
   // defined", đúng lỗi thật đã gặp ở production — audit lại lần 6).
   fs.writeFileSync(path.join(scopeDir, 'binding', 'package.json'), JSON.stringify({
     name: '@open-spaced-repetition/binding', version: '0.5.0',
+    dependencies: { '@napi-rs/wasm-runtime': '^0.2.0' }, // V97 — cần cho test checkTransitiveDepsOnDisk
     exports: {
       '.': './index.js',
       './dynamic-wasi': { import: './dynamic-wasi.mjs', require: './dynamic-wasi.cjs' },
@@ -67,8 +68,11 @@ function buildFakeNodeModules(root) {
   fs.writeFileSync(path.join(nestedScopeDir, 'wasm-runtime', 'index.mjs'), 'export function instantiate() { return {}; }\n');
 
   // Package WASM — tên file KHÔNG khớp ví dụ đã tra cứu (đúng khó khăn #2), không có "main"/"exports".
+  // "goi-khong-ton-tai-v97" (V97): dependency CỐ TÌNH không có mặt trên đĩa — test checkTransitiveDepsOnDisk
+  // phải phát hiện ĐÚNG package nào thiếu, không chỉ báo chung chung.
   fs.writeFileSync(path.join(scopeDir, 'binding-wasm32-wasi', 'package.json'), JSON.stringify({
     name: '@open-spaced-repetition/binding-wasm32-wasi', version: '0.5.0',
+    dependencies: { 'goi-khong-ton-tai-v97': '^1.0.0' },
   }));
   fs.writeFileSync(path.join(scopeDir, 'binding-wasm32-wasi', 'weird-name.v9.wasm'), '');
   // "browser" TRƯỚC "worker" — cố tình đảo thứ tự (đúng khó khăn #2). QUAN TRỌNG (audit lỗi V96 —
@@ -89,13 +93,21 @@ function loadFunctionsFromRealSource() {
   // NGAY TRƯỚC dòng app.get() đầu tiên (bao gồm trọn hàm, nhưng KHÔNG kéo theo lời gọi app.get() —
   // `app` là Express instance thật, không tồn tại trong sandbox test này, gọi vào sẽ throw).
   const endIdx = src.indexOf("app.get('/api/fsrs-optimizer/browser/pkg/binding/*'");
-  if (startIdx === -1 || endIdx === -1) {
+  // V97 — checkTransitiveDepsOnDisk() nằm TRƯỚC startIdx (ngay trước route diagnostics) — trích xuất
+  // RIÊNG đoạn này rồi nối vào, thay vì mở rộng startIdx (tránh kéo theo code khác phụ thuộc `app`).
+  const diskCheckStartIdx = src.indexOf('function checkTransitiveDepsOnDisk');
+  const diskCheckEndIdx = src.indexOf("app.get('/api/fsrs-optimizer/diagnostics'");
+  if (startIdx === -1 || endIdx === -1 || diskCheckStartIdx === -1 || diskCheckEndIdx === -1) {
     throw new Error('Không tìm thấy khối code browser-asset resolution trong api/index.js — cấu trúc file có thể đã đổi, cập nhật lại test này.');
   }
-  const snippet = src.slice(startIdx, endIdx);
-  const sandbox = { require, fs, path, console, module: { exports: {} } };
+  const diskCheckSnippet = src.slice(diskCheckStartIdx, diskCheckEndIdx);
+  const snippet = diskCheckSnippet + '\n' + src.slice(startIdx, endIdx);
+  // __dirname = tmpRoot — mô phỏng "api/index.js nằm ngay tại tmpRoot" để checkTransitiveDepsOnDisk's
+  // bước kiểm tra "hoisted lên node_modules gốc của project" tìm đúng vào tmpRoot/node_modules (nơi
+  // buildFakeNodeModules() đã dựng), không đụng vào node_modules thật của project.
+  const sandbox = { require, fs, path, console, module: { exports: {} }, __dirname: tmpRoot };
   vm.createContext(sandbox);
-  vm.runInContext(snippet + '\nmodule.exports = { computeBrowserOptimizerAssetUrlsDetailed, buildImportMapForFile, serveDynamicPkgFile, serveBrowserOptimizerPackageFile, _dynamicPkgRootByUrlKey, rewriteBareSpecifiersInSource, extractBareSpecifiers };', sandbox, { filename: 'api/index.js (trích đoạn)' });
+  vm.runInContext(snippet + '\nmodule.exports = { computeBrowserOptimizerAssetUrlsDetailed, buildImportMapForFile, serveDynamicPkgFile, serveBrowserOptimizerPackageFile, _dynamicPkgRootByUrlKey, rewriteBareSpecifiersInSource, extractBareSpecifiers, checkTransitiveDepsOnDisk };', sandbox, { filename: 'api/index.js (trích đoạn)' });
   return sandbox.module.exports;
 }
 
@@ -110,7 +122,7 @@ try {
   module.paths.unshift(path.join(tmpRoot, 'node_modules'));
   require('module').Module._initPaths(); // đảm bảo global resolution cache nhận path mới ngay
 
-  const { computeBrowserOptimizerAssetUrlsDetailed, buildImportMapForFile, serveDynamicPkgFile, serveBrowserOptimizerPackageFile, _dynamicPkgRootByUrlKey, rewriteBareSpecifiersInSource, extractBareSpecifiers } = loadFunctionsFromRealSource();
+  const { computeBrowserOptimizerAssetUrlsDetailed, buildImportMapForFile, serveDynamicPkgFile, serveBrowserOptimizerPackageFile, _dynamicPkgRootByUrlKey, rewriteBareSpecifiersInSource, extractBareSpecifiers, checkTransitiveDepsOnDisk } = loadFunctionsFromRealSource();
 
   test('computeBrowserOptimizerAssetUrlsDetailed(): vẫn resolve ĐÚNG dù package chính có "exports" map chặn "./package.json" (lỗi thật đã gặp ở production — audit lại lần 4)', () => {
     const result = computeBrowserOptimizerAssetUrlsDetailed();
@@ -233,6 +245,20 @@ try {
     assert.strictEqual(extractBareSpecifiers(res._body).length, 0, `nội dung file WORKER trả về cho trình duyệt KHÔNG được còn bare specifier nào (đây chính là file mà import map không áp dụng được): ${res._body}`);
     assert.ok(res._body.includes('/api/fsrs-optimizer/browser/pkg-dyn/napi-rs__wasm-runtime/'), res._body);
   });
+  console.log('\n[V97 — checkTransitiveDepsOnDisk(): tự chẩn đoán VẬT LÝ, phát hiện đúng package thiếu trên đĩa server]');
+
+  test('phát hiện ĐÚNG @napi-rs/wasm-runtime CÓ mặt (onDisk=true), và goi-khong-ton-tai-v97 THIẾU (onDisk=false)', () => {
+    const bindingRoot = path.join(tmpRoot, 'node_modules', '@open-spaced-repetition', 'binding');
+    const wasmRoot = path.join(tmpRoot, 'node_modules', '@open-spaced-repetition', 'binding-wasm32-wasi');
+    const results = checkTransitiveDepsOnDisk(bindingRoot, wasmRoot);
+    const napiRs = results.find(r => r.package === '@napi-rs/wasm-runtime');
+    const missing = results.find(r => r.package === 'goi-khong-ton-tai-v97');
+    assert.ok(napiRs, 'phải có mặt trong danh sách kiểm tra (khai báo trong dependencies của binding)');
+    assert.strictEqual(napiRs.onDisk, true, `@napi-rs/wasm-runtime THỰC SỰ có trên đĩa (nested trong binding) -> phải báo onDisk=true, nhận: ${JSON.stringify(napiRs)}`);
+    assert.ok(missing, 'phải có mặt trong danh sách kiểm tra (khai báo trong dependencies của binding-wasm32-wasi)');
+    assert.strictEqual(missing.onDisk, false, `goi-khong-ton-tai-v97 KHÔNG tồn tại trên đĩa -> phải báo đúng onDisk=false, không được báo nhầm true`);
+  });
+
 } finally {
   // Trì hoãn việc xoá tmpRoot — test serveDynamicPkgFile() ở trên gọi fs.createReadStream(...).pipe()
   // (BẤT ĐỒNG BỘ, không đợi) để verify KHÔNG rơi vào nhánh lỗi 404 (đủ cho assertion, không cần đợi đọc
