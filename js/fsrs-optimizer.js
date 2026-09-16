@@ -147,6 +147,20 @@ async function checkOptimizerEngineDiagnostics() {
         : `<b style="color:var(--fail);">⚠️ CHƯA sẵn sàng</b> — dừng ở bước: <code>${bt.diag.failedAt}</code>` +
           (bt.diag.hint ? `<br>${bt.diag.hint}` : '') +
           `<br><span style="font-size:.62rem;opacity:.8;">${JSON.stringify(bt.diag).slice(0, 500)}</span>`);
+    // V97 — "ground truth" độc lập với logic resolve: package có THỰC SỰ nằm trên đĩa server đang
+    // chạy hay không (fs.existsSync trực tiếp) — nếu thiếu, RẤT CÓ THỂ do vercel.json's includeFiles
+    // chưa đóng gói đúng, KHÔNG PHẢI lỗi logic code. Chỉ liệt kê chi tiết phần THIẾU (phần OK gộp gọn).
+    if (Array.isArray(bt.diskCheck)) {
+      const missing = bt.diskCheck.filter(x => !x.onDisk);
+      const okCount = bt.diskCheck.length - missing.length;
+      html += `<br>📦 Kiểm tra file vật lý trên server: ${okCount}/${bt.diskCheck.length} package OK` +
+        (missing.length
+          ? `<br><b style="color:var(--fail);">❌ THIẾU trên server (cần thêm vào vercel.json → includeFiles):</b><br>` +
+            missing.map(x => `&nbsp;&nbsp;• <code>${x.package}</code> (do ${x.requiredBy} cần)`).join('<br>')
+          : '');
+    } else if (bt.diskCheck && bt.diskCheck.error) {
+      html += `<br><span style="opacity:.7;">(Không chạy được kiểm tra file vật lý: ${bt.diskCheck.error})</span>`;
+    }
   }
   el.innerHTML = html;
 }
