@@ -98,9 +98,25 @@ function bindToday() {
 // Trang chủ (chấp nhận cache vài giây, ưu tiên hiển thị tức thời).
 let _todayDashCache = null, _todayDashCacheAt = 0;
 const TODAY_DASH_CACHE_TTL_MS = 10000;
+// V98 fix ("Hôm nay học"/"Bắt đầu học" ở Trang chủ không theo lựa chọn bài mới): saveSelectionState()
+// (js/ui.js) gọi hàm này ngay khi Quyển/bài đang chọn vừa đổi — trước đây chỉ
+// sqInvalidateQueuesForSelectionChange() (huỷ hàng đợi luyện tập) được gọi, còn cache dashboard này
+// (TTL 10s, dùng chung cho khối "at a glance" Trang chủ VÀ tab "Hôm nay học") không hề bị huỷ — nên
+// đổi bài xong, số due/mới hiển thị ngay vẫn là số theo phạm vi CŨ tới khi cache tự hết hạn.
+function invalidateTodayDashboardCache() {
+  _todayDashCache = null;
+  _todayDashCacheAt = 0;
+}
 async function fetchTodayDashboard(force) {
   if (!force && _todayDashCache && (Date.now() - _todayDashCacheAt) < TODAY_DASH_CACHE_TTL_MS) return _todayDashCache;
   try {
+    // V98 fix (cùng lớp bug với "Vấn đề 5" đã sửa ở loadFsrsPracticePool/rvFetchFreshSession —
+    // js/study-queue.js/js/review.js): TRƯỚC ĐÂY hàm này fetch thẳng /api/study/today mà không đợi
+    // flushProgressSync() — nếu gọi trong vòng 700ms sau khi user vừa đổi Quyển/bài (scheduleSync()
+    // còn đang debounce), server vẫn đọc user.progress.ui CŨ, trả về due/new theo phạm vi CŨ. Đây
+    // chính là lý do khối "Hôm nay học"/"Bắt đầu học" ở Trang chủ có vẻ "không theo lựa chọn bài" dù
+    // cache phía client (ở trên) đã được huỷ đúng lúc.
+    await flushProgressSync();
     const res = await fetch('/api/study/today', { headers: authHeaders() });
     const data = await res.json();
     _todayDashCache = data; _todayDashCacheAt = Date.now();
