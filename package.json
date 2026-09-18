@@ -11,6 +11,7 @@
     "dev": "node api/index.js",
     "test": "node test/fsrs.test.js",
     "test:vocab-merge": "node test/vocab-merge.test.js",
+    "test:visibility-timer": "node test/visibility-timer.test.js",
     "test:vocab-identity": "node test/vocab-identity.integration.test.js",
     "test:distractor": "node test/heavy-distractor.test.js",
     "test:integration": "node test/fsrs.concurrency.integration.js",
