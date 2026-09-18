@@ -37,6 +37,7 @@ const { execFileSync } = require('child_process');
 const HZ_PREFIX = '__itest93_';
 const TEST_USER = '__integration_test_user_v93__';
 const L1 = 999101, L2 = 999102, L3 = 999103, L4 = 999104, L5 = 999105;
+const L6 = 999106, L7 = 999107, L8 = 999108; // riêng cho Case 13 (V97) — tránh đụng lesson của các case khác
 
 async function main() {
   if (!process.env.DATABASE_URL) {
@@ -151,6 +152,71 @@ async function main() {
 
       const hist = await pool.query('SELECT COUNT(*)::int AS c FROM review_history WHERE user_id=$1 AND word_id=$2', [TEST_USER, word.id]);
       assert.strictEqual(hist.rows[0].c, 2, 'phải có đủ 2 dòng lịch sử, đều gắn đúng word_id');
+    });
+
+    console.log('\n[Case 13 (V97 fix) — Xoá bài/từ đã có lịch sử FSRS KHÔNG được vi phạm khoá ngoại]');
+    // Bug gốc: fsrs_cards.word_id/review_history.word_id tham chiếu vocab_words(id) từ V93 nhưng
+    // KHÔNG CASCADE — deleteVocabLesson/deleteVocabWord/clearVocab trước đây chỉ kiểm tra
+    // vocab_lessons trước khi DELETE FROM vocab_words, nên xoá 1 từ đã từng được review sẽ vi phạm
+    // khoá ngoại (Postgres 23503) → lộ ra client thành "Lỗi server nội bộ. Vui lòng thử lại sau."
+    const hz5 = HZ_PREFIX + 'E';
+    let word5Id;
+    await test('setup: từ E thuộc 2 bài (L6, L7), đã được review 1 lần (có fsrs_card + review_history)', async () => {
+      await db.importVocab([{ hz: hz5, py: 'py-e', vi: 'nghĩa E', l: L6 }], false);
+      await db.importVocab([{ hz: hz5, py: 'py-e', vi: 'nghĩa E', l: L7 }], false);
+      word5Id = (await db.findVocabWordByHz(hz5)).id;
+      const r = await db.reviewFsrsCard({ userId: TEST_USER, hz: hz5, l: L6, answerCorrect: true, responseTimeMs: 900, answerChanges: 0, desiredRetention: 0.9, idempotencyKey: 'v97-case13-setup' });
+      assert.strictEqual(r.ok, true);
+    });
+
+    await test('deleteVocabLesson(L6) KHÔNG NÉM LỖI dù từ E đã có fsrs_card/review_history', async () => {
+      const removed = await db.deleteVocabLesson(L6);
+      assert.ok(removed >= 1, 'phải gỡ được ít nhất 1 quan hệ (bao gồm từ E)');
+      const stillThere = await pool.query('SELECT id FROM vocab_words WHERE id=$1', [word5Id]);
+      assert.strictEqual(stillThere.rows.length, 1, 'từ E phải được GIỮ LẠI (mồ côi) vì còn fsrs_card tham chiếu — không xoá vật lý để tránh vi phạm FK');
+      const fsrsStillThere = await pool.query('SELECT id FROM fsrs_cards WHERE user_id=$1 AND word_id=$2', [TEST_USER, word5Id]);
+      assert.strictEqual(fsrsStillThere.rows.length, 1, 'fsrs_card của user KHÔNG được mất/hỏng sau khi xoá bài');
+    });
+
+    await test('deleteVocabLesson(L7) (bài cuối cùng còn lại của từ E) vẫn KHÔNG lỗi, từ E vẫn giữ mồ côi vì còn lịch sử review', async () => {
+      const removed = await db.deleteVocabLesson(L7);
+      assert.ok(removed >= 1);
+      const remainLessons = await pool.query('SELECT lesson FROM vocab_lessons WHERE word_id=$1', [word5Id]);
+      assert.strictEqual(remainLessons.rows.length, 0, 'từ E không còn thuộc bài nào (đã gỡ khỏi mọi lesson)');
+      const stillThere = await pool.query('SELECT id FROM vocab_words WHERE id=$1', [word5Id]);
+      assert.strictEqual(stillThere.rows.length, 1, 'vẫn phải giữ mồ côi (còn review_history tham chiếu)');
+    });
+
+    // LƯU Ý: KHÔNG gọi thẳng db.clearVocab() ở đây — hàm đó CỐ Ý xoá KHÔNG giới hạn (toàn bộ
+    // vocab_lessons + mọi vocab_words không còn dependency), không lọc theo tiền tố __itest93_, nên
+    // chạy trong integration test (có thể trỏ tới DATABASE_URL THẬT) sẽ xoá sạch dữ liệu thật của
+    // user. Thay vào đó verify ĐÚNG cùng 1 câu SQL guard mà clearVocab() dùng, nhưng tự giới hạn
+    // trong dữ liệu test (WHERE hz LIKE tiền tố) để an toàn.
+    const hz6 = HZ_PREFIX + 'F';
+    const hz7 = HZ_PREFIX + 'G';
+    await test('SQL guard giống clearVocab(): xoá lesson trước, chỉ purge vocab_words khi KHÔNG có fsrs_cards/review_history tham chiếu', async () => {
+      await db.importVocab([{ hz: hz6, py: 'py-f', vi: 'nghĩa F', l: L8 }], false);
+      await db.importVocab([{ hz: hz7, py: 'py-g', vi: 'nghĩa G', l: L8 }], false);
+      const wordF = await db.findVocabWordByHz(hz6);
+      const wordG = await db.findVocabWordByHz(hz7);
+      await db.reviewFsrsCard({ userId: TEST_USER, hz: hz6, l: L8, answerCorrect: true, responseTimeMs: 800, answerChanges: 0, desiredRetention: 0.9, idempotencyKey: 'v97-case13-clear' });
+
+      await pool.query('DELETE FROM vocab_lessons WHERE word_id IN ($1, $2)', [wordF.id, wordG.id]);
+      // Câu lệnh này PHẢI chạy được không lỗi (trước fix sẽ ném FK violation nếu chạy KHÔNG giới hạn
+      // — ở đây tự giới hạn CHỈ đúng 2 id của test để không đụng dữ liệu test khác, nhưng logic guard
+      // (NOT EXISTS fsrs_cards/review_history) giống hệt câu lệnh thật trong clearVocab()).
+      await pool.query(
+        `DELETE FROM vocab_words v
+           WHERE v.id IN ($1, $2)
+             AND NOT EXISTS (SELECT 1 FROM fsrs_cards fc WHERE fc.word_id = v.id)
+             AND NOT EXISTS (SELECT 1 FROM review_history rh WHERE rh.word_id = v.id)`,
+        [wordF.id, wordG.id]
+      );
+
+      const fRow = await pool.query('SELECT id FROM vocab_words WHERE id=$1', [wordF.id]);
+      assert.strictEqual(fRow.rows.length, 1, 'từ F (đã review) phải được giữ mồ côi, không xoá vật lý — đúng logic clearVocab() sau fix');
+      const gRow = await pool.query('SELECT id FROM vocab_words WHERE id=$1', [wordG.id]);
+      assert.strictEqual(gRow.rows.length, 0, 'từ G (chưa ai học) phải bị xoá HẲN vật lý như hành vi cũ');
     });
 
     console.log('\n[Case 9 + 10 — Giả lập duplicate "kiểu trước migration" + chạy scripts/migrate-vocab-identity.js]');
