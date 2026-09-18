@@ -46,6 +46,7 @@ async function loadHomeQuickstart() {
     <div style="display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:10px;font-size:.85rem;color:var(--muted);font-weight:700;">
       <span>🔴 ${data.dueCount} cần ôn</span><span>🆕 ${data.newInCurrentLesson} từ mới</span>
     </div>
+    ${data.blockedByBacklog ? `<div style="font-size:.78rem;color:var(--muted);text-align:center;margin-bottom:10px;">⏳ Từ mới đang tạm khoá vì còn ${data.totalDue} thẻ cần ôn (có thể ở Quyển/bài khác) — tắt "Chỉ học từ mới sau khi hết backlog ôn tập" trong Cài đặt hằng ngày nếu muốn học từ mới ngay.</div>` : ''}
     <button class="btn btn-primary" style="width:100%;font-size:1.05rem;padding:15px;" onclick="ssEnterMode('review')">▶️ Bắt đầu học</button>`;
 }
 
@@ -147,6 +148,7 @@ async function loadStudyDashboard() {
         <div class="study-stat lesson"><div class="study-stat-num">📖 Bài ${data.currentLesson}</div><div class="study-stat-label">Bài hiện tại</div></div>
         <div class="study-stat weak"><div class="study-stat-num">🔥 ${data.weakCount}</div><div class="study-stat-label">Từ hay quên</div></div>
       </div>
+      ${data.blockedByBacklog ? `<div style="font-size:.8rem;color:var(--muted);margin:8px 0;">⏳ Từ mới đang tạm khoá vì còn ${data.totalDue} thẻ cần ôn (có thể ở Quyển/bài khác) — tắt "Chỉ học từ mới sau khi hết backlog ôn tập" trong Cài đặt hằng ngày nếu muốn học từ mới ngay.</div>` : ''}
       <button class="btn btn-primary" style="width:100%;font-size:1.05rem;padding:15px;" onclick="ssEnterMode('review')">▶️ Bắt đầu học</button>
       ${data.weakCount > 0 ? `<button class="btn" style="width:100%;margin-top:8px;background:var(--l10c);color:var(--l10a);" onclick="ssEnterMode('review-weak')">⚠️ Luyện từ hay quên (${data.weakCount})</button>` : ''}
     `;
@@ -162,7 +164,13 @@ function updateStudySetting(key, value) {
   }
   cacheProgressLocally();
   scheduleSync();
-  // Bật/tắt "Học không giới hạn" cần vẽ lại panel ngay để làm mờ/khoá 3 dòng cài đặt bên dưới.
-  if (key === 'unlimitedStudy' && typeof render === 'function') render();
+  // V100 fix ("Hôm nay học không đổi dù đã chỉnh Cài đặt hằng ngày"): TRƯỚC ĐÂY chỉ unlimitedStudy
+  // mới render() lại — đổi dailyReviewLimit/dailyNewLimit/newOnlyAfterDue KHÔNG hề vẽ lại số due/
+  // mới, số cũ vẫn đứng yên tới khi user rời tab rồi quay lại. Giờ MỌI thay đổi ở đây đều huỷ cache
+  // dashboard rồi vẽ lại ngay (render() tự gọi loadStudyDashboard()/loadHomeQuickstart() tuỳ tab
+  // đang mở — xem js/navigation.js); fetchTodayDashboard() cũng tự flushProgressSync() nên server
+  // luôn thấy đúng giá trị MỚI NHẤT trước khi tính lại, không dính debounce 700ms của scheduleSync().
+  invalidateTodayDashboardCache();
+  if (typeof render === 'function') render();
 }
 
