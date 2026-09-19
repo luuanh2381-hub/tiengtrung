@@ -17,7 +17,8 @@ const { readDB, updateDB, updateDBWithFsrsCleanup, getVocabByLessons, getVocabCo
   getAllHanziParts, getHanziPartsKeys, insertHanziParts,
   insertActivityLog, getActivityLogs, reserveGeminiSlot, bumpGeminiRateLimit,
   getWeakFsrsCards, getFsrsCardsDebug,
-  getWordForAnswerCheck, countKnownFsrsWords, getKnownCountsForUsers, getKnownCountsByLesson } = require('../lib/db');
+  getWordForAnswerCheck, countKnownFsrsWords, getKnownCountsForUsers, getKnownCountsByLesson,
+  getBookDefs, createBookDef, updateBookDef, deleteBookDef } = require('../lib/db');
 const { getFsrsVerificationInfo } = require('../lib/fsrs');
 // V69: mọi review + toàn bộ analytics/optimizer/personal-retention giờ đi qua lib/fsrs/ (scheduler
 // layer chuẩn hóa) — api/index.js KHÔNG còn gọi thẳng db.reviewFsrsCard nữa (Phần 4 của audit).
@@ -29,7 +30,7 @@ const { runInBackground } = require('../lib/runInBackground');
 // đã CHUYỂN vào lib/fsrs/studyScope.js (dùng bởi reviewService.getTodayOverview/getStudySession).
 // api/index.js chỉ còn cần formatFsrsCard cho /api/study/weak-words (route KHÔNG chuyển, vì đây chỉ
 // là 1 view lọc theo lapses/difficulty, không phải quyết định "từ tiếp theo").
-const { formatFsrsCard } = require('../lib/fsrs/studyScope');
+const { formatFsrsCard, BOOKS_RANGES } = require('../lib/fsrs/studyScope');
 
 const app = express();
 
@@ -375,8 +376,9 @@ app.post('/api/progress', async (req, res) => {
           : (Number.isFinite(existingUi.dailyNewLimit) ? existingUi.dailyNewLimit : 10),
         newOnlyAfterDue: typeof src.newOnlyAfterDue === 'boolean' ? src.newOnlyAfterDue
           : (typeof existingUi.newOnlyAfterDue === 'boolean' ? existingUi.newOnlyAfterDue : true),
-        // unlimitedStudy: bật thì reviewService.getStudySession() bỏ qua dailyReviewLimit/
-        // dailyNewLimit hoàn toàn — CHUNG cho mọi tab luyện tập vì cùng đọc 1 field này.
+        // unlimitedStudy: bật thì reviewService.getDailyBudget() bỏ qua phần TRỪ theo số đã học
+        // hôm nay (không bị chặn lại vì "đã đủ hôm nay") — KHÔNG bỏ 2 giới hạn dailyReviewLimit/
+        // dailyNewLimit, vẫn là mức trần cho MỖI LƯỢT lấy phiên (V101 — theo đúng ý người dùng).
         unlimitedStudy: typeof src.unlimitedStudy === 'boolean' ? src.unlimitedStudy
           : (typeof existingUi.unlimitedStudy === 'boolean' ? existingUi.unlimitedStudy : false),
       };
@@ -595,6 +597,22 @@ app.get('/api/vocab/counts', async (req, res) => {
     const counts = await getVocabCounts();
     res.set('Cache-Control', 'public, max-age=60');
     res.json({ ok: true, counts });
+  } catch (e) { fail(res, e); }
+});
+
+// ── V102 (yêu cầu người dùng — "tự khai báo giáo trình, số bài ngay trên web, không phải sửa code
+//     mỗi lần thêm bài mới"): CHỈ trả các Quyển admin TỰ KHAI BÁO qua book_defs (id đã cộng 3000,
+//     xem lib/fsrs/studyScope.js) — KHÔNG gồm Quyển/HSK hardcoded (mảng BOOKS trong js/ui.js đã có
+//     sẵn). FE tự gộp (concat) danh sách này vào BOOKS lúc khởi động (xem loadBookDefs ở js/app.js).
+//     Công khai, không cần đăng nhập — giống /api/vocab/counts, chỉ là metadata hiển thị. ──
+app.get('/api/books', async (req, res) => {
+  try {
+    const defs = await getBookDefs();
+    const books = defs.map(d => ({
+      id: 3000 + d.id, name: d.name, group: d.group_name, from: d.lesson_from, to: d.lesson_to,
+    }));
+    res.set('Cache-Control', 'public, max-age=60');
+    res.json({ ok: true, books });
   } catch (e) { fail(res, e); }
 });
 
@@ -1970,6 +1988,62 @@ app.post('/api/admin/vocab/clear', async (req, res) => {
     const actingUser = authed.db.users[authed.username];
     logActivity(authed.username, actingUser.role, 'vocab', `Xoá toàn bộ từ vựng đã thêm (${removed} từ)`);
     res.json({ ok: true, removed });
+  } catch (e) { fail(res, e); }
+});
+
+// ── V102 (yêu cầu người dùng — "tự khai báo giáo trình, số bài ngay trên web, không phải sửa code
+//     mỗi lần thêm bài mới") — [ADMIN] Thêm/sửa/xoá 1 Quyển/giáo trình TỰ KHAI BÁO. Kiểm tra trùng
+//     khoảng bài với Quyển HARDCODED (BOOKS_RANGES) ở NGAY ĐÂY (lib/db.js chỉ tự kiểm tra trùng với
+//     book_defs khác, không có BOOKS_RANGES để tránh vòng lặp require ngược lại nó). ──
+function overlapsHardcodedBook(from, to) {
+  return BOOKS_RANGES.find(b => b.from <= to && b.to >= from) || null;
+}
+app.post('/api/admin/books/create', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const { name, group, from, to } = req.body || {};
+  const clash = overlapsHardcodedBook(parseInt(from, 10), parseInt(to, 10));
+  if (clash) {
+    return res.json({ ok: false, error: `Khoảng bài ${from}-${to} trùng với Quyển có sẵn của app (Bài ${clash.from}-${clash.to}) — hãy chọn khoảng bài khác.` });
+  }
+  try {
+    const def = await createBookDef({ name, groupName: group, lessonFrom: from, lessonTo: to });
+    const actingUser = authed.db.users[authed.username];
+    logActivity(authed.username, actingUser.role, 'books', `Thêm Quyển "${def.name}" (Bài ${def.lesson_from}-${def.lesson_to})`);
+    res.json({ ok: true, book: { id: 3000 + def.id, name: def.name, group: def.group_name, from: def.lesson_from, to: def.lesson_to } });
+  } catch (e) { fail(res, e); }
+});
+app.post('/api/admin/books/update', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const { id, name, group, from, to } = req.body || {};
+  const dbId = parseInt(id, 10) - 3000; // FE gửi lại đúng id đã +3000 lúc GET /api/books trả về
+  if (!Number.isFinite(dbId) || dbId < 1) return res.json({ ok: false, error: 'Thiếu hoặc sai id Quyển cần sửa.' });
+  const clash = overlapsHardcodedBook(parseInt(from, 10), parseInt(to, 10));
+  if (clash) {
+    return res.json({ ok: false, error: `Khoảng bài ${from}-${to} trùng với Quyển có sẵn của app (Bài ${clash.from}-${clash.to}) — hãy chọn khoảng bài khác.` });
+  }
+  try {
+    const def = await updateBookDef(dbId, { name, groupName: group, lessonFrom: from, lessonTo: to });
+    const actingUser = authed.db.users[authed.username];
+    logActivity(authed.username, actingUser.role, 'books', `Sửa Quyển "${def.name}" (Bài ${def.lesson_from}-${def.lesson_to})`);
+    res.json({ ok: true, book: { id: 3000 + def.id, name: def.name, group: def.group_name, from: def.lesson_from, to: def.lesson_to } });
+  } catch (e) { fail(res, e); }
+});
+app.post('/api/admin/books/delete', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const dbId = parseInt((req.body || {}).id, 10) - 3000;
+  if (!Number.isFinite(dbId) || dbId < 1) return res.json({ ok: false, error: 'Thiếu hoặc sai id Quyển cần xoá.' });
+  try {
+    const removed = await deleteBookDef(dbId);
+    if (!removed) return res.json({ ok: false, error: 'Không tìm thấy Quyển này (có thể đã bị xoá).' });
+    const actingUser = authed.db.users[authed.username];
+    logActivity(authed.username, actingUser.role, 'books', `Xoá khai báo Quyển id ${dbId}`);
+    res.json({ ok: true });
   } catch (e) { fail(res, e); }
 });
 
