@@ -73,19 +73,23 @@ function renderToday() {
       <span>♾️ Học không giới hạn mỗi ngày</span>
       <input type="checkbox" ${ui.unlimitedStudy ? 'checked' : ''} onchange="updateStudySetting('unlimitedStudy', this.checked)">
     </div>
-    <div class="study-settings-row" style="${ui.unlimitedStudy ? 'opacity:.4;' : ''}">
+    <div class="study-settings-row">
       <span>🔁 Giới hạn ôn tập / ngày</span>
-      <input type="number" min="1" value="${ui.dailyReviewLimit}" ${ui.unlimitedStudy ? 'disabled' : ''} onchange="updateStudySetting('dailyReviewLimit', this.value)">
+      <input type="number" min="1" value="${ui.dailyReviewLimit}" onchange="updateStudySetting('dailyReviewLimit', this.value)">
     </div>
-    <div class="study-settings-row" style="${ui.unlimitedStudy ? 'opacity:.4;' : ''}">
+    <div class="study-settings-row">
       <span>🆕 Giới hạn từ mới / ngày</span>
-      <input type="number" min="0" value="${ui.dailyNewLimit}" ${ui.unlimitedStudy ? 'disabled' : ''} onchange="updateStudySetting('dailyNewLimit', this.value)">
+      <input type="number" min="0" value="${ui.dailyNewLimit}" onchange="updateStudySetting('dailyNewLimit', this.value)">
     </div>
-    <div class="study-settings-row" style="${ui.unlimitedStudy ? 'opacity:.4;' : ''}">
+    <div class="study-settings-row">
       <span>Chỉ học từ mới sau khi hết backlog ôn tập</span>
-      <input type="checkbox" ${ui.newOnlyAfterDue ? 'checked' : ''} ${ui.unlimitedStudy ? 'disabled' : ''} onchange="updateStudySetting('newOnlyAfterDue', this.checked)">
+      <input type="checkbox" ${ui.newOnlyAfterDue ? 'checked' : ''} onchange="updateStudySetting('newOnlyAfterDue', this.checked)">
     </div>
-    ${ui.unlimitedStudy ? '<div style="font-size:.85rem;opacity:.7;margin-top:4px;">Áp dụng cho mọi tab luyện tập (Flashcard/Trắc nghiệm/Gõ chữ/Nghe-chọn) — không còn bị chặn lại trong ngày.</div>' : ''}
+    <div style="font-size:.85rem;opacity:.7;margin-top:4px;">
+      ${ui.unlimitedStudy
+        ? 'Bật: không bị chặn lại vì "đã học đủ hôm nay" — học được nhiều lượt tuỳ ý trong ngày. Mỗi lượt vẫn lấy đúng theo 2 giới hạn ôn tập/từ mới ở trên.'
+        : 'Tắt: mỗi ngày chỉ học tối đa đúng 2 giới hạn ở trên (trừ dần theo số đã học trong ngày), hết là phải đợi qua ngày mới.'}
+    </div>
   </div>`;
 }
 function bindToday() {
