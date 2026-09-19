@@ -18,7 +18,7 @@ const { readDB, updateDB, updateDBWithFsrsCleanup, getVocabByLessons, getVocabCo
   insertActivityLog, getActivityLogs, reserveGeminiSlot, bumpGeminiRateLimit,
   getWeakFsrsCards, getFsrsCardsDebug,
   getWordForAnswerCheck, countKnownFsrsWords, getKnownCountsForUsers, getKnownCountsByLesson,
-  getBookDefs, createBookDef, updateBookDef, deleteBookDef } = require('../lib/db');
+  getBookDefs, createBookDef, updateBookDef, deleteBookDef, getLessonsByWordIds } = require('../lib/db');
 const { getFsrsVerificationInfo } = require('../lib/fsrs');
 // V69: mọi review + toàn bộ analytics/optimizer/personal-retention giờ đi qua lib/fsrs/ (scheduler
 // layer chuẩn hóa) — api/index.js KHÔNG còn gọi thẳng db.reviewFsrsCard nữa (Phần 4 của audit).
@@ -784,9 +784,12 @@ app.get('/api/study/weak-words', async (req, res) => {
   if (!authed) return;
   try {
     const cards = await getWeakFsrsCards(authed.username, 200);
+    // V103 (hiện "từ này thuộc những bài nào" lúc đang học/ôn) — cùng cách làm với getStudySession
+    // ở reviewService.js: tra 1 lần cho CẢ danh sách, không phải mỗi thẻ 1 query riêng.
+    const lessonsMap = await getLessonsByWordIds(cards.map(c => c.resolved_word_id));
     // V71 (audit lặp từ): khử trùng theo hz, cùng lý do với /api/study/session ở trên.
     const seenHz = new Set();
-    const words = cards.map(formatFsrsCard).filter(w => {
+    const words = cards.map(c => formatFsrsCard(c, lessonsMap)).filter(w => {
       if (seenHz.has(w.hz)) return false;
       seenHz.add(w.hz);
       return true;
