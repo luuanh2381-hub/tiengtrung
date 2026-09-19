@@ -430,7 +430,7 @@ function renderReview() {
       `<button class="quiz-opt" data-v="${escapeHtml(o.vi)}" onclick="rvPick(this,'${escapeJsAttr(o.hz)}')" ${rvSubmitting ? 'disabled' : ''}>${escapeHtml(o.vi)}</button>`
     ).join('');
     body = `
-      <div class="rv-tag">${tagLabel} · Bài ${w.l}</div>
+      <div class="rv-tag">${tagLabel} · ${lessonsLabel(w)}</div>
       <div class="rv-hz">${escapeHtml(w.hz)}</div>
       ${showPinyin ? `<div class="rv-py">${escapeHtml(w.py || '')}</div>` : ''}
       <div class="rv-prompt">${escapeHtml(w.hz)} là gì?</div>
@@ -451,7 +451,7 @@ function renderReview() {
     if (rvRatingPhase === 'committing') savedLine = `<div class="rv-saved-line">⏳ Đang lưu...</div>`;
     else if (rvRatingPhase === 'done') savedLine = `<div class="rv-saved-line">${rvSavedLine(r)}</div>`;
     body = `
-      <div class="rv-tag">${tagLabel} · Bài ${w.l}</div>
+      <div class="rv-tag">${tagLabel} · ${lessonsLabel(w)}</div>
       <div class="rv-hz">${w.hz}</div>
       <div class="rv-feedback" style="color:${r && r.correct ? 'var(--l8a)' : 'var(--l10a)'};">
         ${r && r.correct ? '✅ Chính xác' : '❌ Chưa đúng'}

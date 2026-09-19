@@ -169,13 +169,13 @@ function fcUpdate() {
   const tagStyle2 = lessonTagStyle(w.l);
   const lyHopBadge = w.tag === 'ly_hop' ? `<span class="fc-lesson-tag" style="background:#fff0e0;color:#b5651d;margin-left:6px;">🧩 Ly hợp</span>` : '';
   document.getElementById('fc-front').innerHTML = `
-    <span class="fc-lesson-tag" style="${tagStyle2}">Bài ${w.l}</span>${lyHopBadge}
+    <span class="fc-lesson-tag" style="${tagStyle2}">${lessonsLabel(w)}</span>${lyHopBadge}
     <div class="fc-hz">${w.hz}</div>
     ${showPinyin ? `<div class="fc-py">${w.py}</div>` : ''}
     ${showHanViet && w.hanviet ? `<div class="fc-hv">Hán Việt: ${w.hanviet}</div>` : ''}
     <div class="fc-hint">Nhấn để lật thẻ</div>`;
   document.getElementById('fc-back').innerHTML = `
-    <span class="fc-lesson-tag" style="${tagStyle2}">Bài ${w.l}</span>${lyHopBadge}
+    <span class="fc-lesson-tag" style="${tagStyle2}">${lessonsLabel(w)}</span>${lyHopBadge}
     <div class="fc-hz-back">${w.hz}</div>
     ${showPinyin ? `<div class="fc-py">${w.py}</div>` : ''}
     ${showHanViet && w.hanviet ? `<div class="fc-hv">Hán Việt: ${w.hanviet}</div>` : ''}

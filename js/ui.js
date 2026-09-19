@@ -107,6 +107,16 @@ function lessonTagBg(l) { return `hsl(${lessonHue(l)},58%,86%)`; }
 function tagClass(l) { return 'tag-l'+l; } // giữ để tương thích, không còn dùng để tô màu
 function lessonTagStyle(l) { return `background:${lessonTagBg(l)};color:${lessonColor(l)};`; }
 
+// V103 (yêu cầu người dùng — hiện "từ này thuộc những bài nào" lúc đang học/ôn, vd 1 từ vừa ở Bài 5
+// vừa ở Bài 12): dùng chung cho js/review.js (rv-tag) + js/flashcard.js (fc-lesson-tag) — cả 2 đều
+// lấy từ CÙNG /api/study/session nên field `w.lessons` (mảng, xem formatFsrsCard/formatVocabWord ở
+// lib/fsrs/studyScope.js) luôn có sẵn; `w.l` là fallback cho dữ liệu cũ/nơi chưa gửi `lessons`.
+function lessonsLabel(w) {
+  const list = (Array.isArray(w.lessons) && w.lessons.length) ? w.lessons : [w.l];
+  if (list.length <= 6) return `Bài ${list.join(', ')}`;
+  return `Bài ${list.slice(0, 6).join(', ')} +${list.length - 6} bài khác`;
+}
+
 // Quyển (book) — Quyển 1: bài 1-15, Quyển 2: bài 16-30
 let BOOKS = [
   {id:1,  name:'Quyển 1',      from:1,   to:15,  group:'📗 Giáo trình cơ bản'},
