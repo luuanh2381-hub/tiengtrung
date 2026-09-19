@@ -135,10 +135,13 @@ hình (xem `getDailyBudget()` trong `lib/fsrs/reviewService.js`).
 Ưu tiên `progress.ui.currentLesson` (tự cập nhật ở bước 3 vòng đời thẻ). Nếu chưa có, lấy bài lớn
 nhất trong phạm vi Quyển/bài đang chọn của user (dữ liệu có sẵn, không tạo hệ thống mới).
 
-⚠️ **Lưu ý bảo trì**: ranh giới Quyển/HSK (`BOOKS`) hiện chỉ định nghĩa trong `index.html`
-(frontend). `api/index.js` có một bản sao rút gọn `BOOKS_RANGES` (chỉ `from/to`) để server biết
-phạm vi khi `lessonsAllMode = true`. Nếu bạn thêm/sửa Quyển trong `index.html`, nhớ cập nhật cả
-`BOOKS_RANGES` trong `api/index.js`.
+⚠️ **Lưu ý bảo trì**: ranh giới Quyển/HSK **có sẵn** (`BOOKS` trong `js/ui.js`, bản rút gọn
+`BOOKS_RANGES` trong `lib/fsrs/studyScope.js`) vẫn phải sửa thủ công ở cả 2 nơi khi thêm/sửa. Từ
+V102, **không cần sửa code để thêm 1 Quyển MỚI nữa** — admin tự khai báo tên + khoảng bài qua màn
+"📚 Quản lý Giáo trình / Quyển" (tab Quản lý từ vựng), lưu vào bảng `book_defs` (`lib/db.js`), được
+gộp thêm vào lúc chạy (`getEffectiveBookRanges()` ở server, `loadBookDefs()` ở `js/app.js`) — id
+được cộng thêm 3000 để không đụng namespace 1-16 (hardcoded) hay 2000+ (bài tự nhận diện, xem
+`mergeDiscoveredLessonsIntoBooks` ở `js/ui.js`).
 
 ## 6. API
 
