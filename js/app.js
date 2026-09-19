@@ -27,6 +27,24 @@ async function loadVocabCounts() {
   }
 }
 
+// V102 (yêu cầu người dùng — "tự khai báo giáo trình, số bài ngay trên web, không phải sửa code
+// mỗi lần thêm bài mới"): nạp các Quyển admin TỰ KHAI BÁO qua /api/admin/books/* (xem js/admin.js)
+// và GỘP thêm vào mảng BOOKS hardcoded sẵn có (js/ui.js) — PHẢI chạy xong TRƯỚC ensureVocabLoaded/
+// mergeDiscoveredLessonsIntoBooks/render lần đầu, vì các hàm đó đọc thẳng BOOKS.
+async function loadBookDefs() {
+  try {
+    const res = await fetch('/api/books');
+    const data = await res.json();
+    if (data.ok && Array.isArray(data.books)) {
+      // Tránh nhân đôi nếu hàm này lỡ được gọi lại (vd sau khi admin thêm/sửa/xoá 1 Quyển) — bỏ các
+      // mục custom (id >= 3000) cũ trước khi nạp lại đúng danh sách mới nhất từ server.
+      BOOKS = BOOKS.filter(b => b.id < 3000).concat(data.books);
+    }
+  } catch {
+    // Không tải được thì tạm không hiện Quyển tự khai báo, không chặn app — Quyển hardcoded vẫn hoạt động bình thường
+  }
+}
+
 // Bài nào đã tải nội dung từ vựng về máy rồi (tránh tải lại lần 2 khi chọn lại)
 let loadedLessonNumbers = new Set();
 
@@ -76,9 +94,13 @@ async function ensureVocabLoaded(bookIds) {
 // mới cần đợi bootAuth xong để biết đúng Quyển/bài đã chọn trước khi tải.
 const hasCachedProgress = isGuest || (authToken && authUsername && !!localStorage.getItem('progressCache_' + authUsername));
 const bootPromise = bootAuth();
+// V102: loadBookDefs() PHẢI xong TRƯỚC ensureVocabLoaded (đọc BOOKS để biết bài nào cần tải) — nếu
+// Quyển đang chọn là 1 Quyển tự khai báo (id >= 3000) mà BOOKS chưa kịp gộp thêm, ensureVocabLoaded
+// sẽ bỏ qua không tải được từ vựng của Quyển đó. loadVocabCounts() không phụ thuộc BOOKS nên vẫn
+// chạy song song bình thường.
 const vocabLoadPromise = hasCachedProgress
-  ? Promise.all([loadVocabCounts(), ensureVocabLoaded(selectedBookIds)])
-  : bootPromise.then(() => Promise.all([loadVocabCounts(), ensureVocabLoaded(selectedBookIds)]));
+  ? Promise.all([loadVocabCounts(), loadBookDefs().then(() => ensureVocabLoaded(selectedBookIds))])
+  : bootPromise.then(() => Promise.all([loadVocabCounts(), loadBookDefs().then(() => ensureVocabLoaded(selectedBookIds))]));
 
 bootPromise.then(async () => {
   await vocabLoadPromise;

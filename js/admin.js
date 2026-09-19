@@ -24,6 +24,22 @@ function renderVocabAdmin() {
     return `<div class="panel center" style="padding:40px">Bạn không có quyền truy cập mục này.</div>`;
   }
   return `<div class="panel">
+    <div class="panel-title">📚 Quản lý Giáo trình / Quyển</div>
+    <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px;">
+      Tự khai báo thêm 1 "Quyển"/giáo trình mới (tên hiển thị + khoảng số bài liên tục) để hiện ngay ở màn "Chọn bài học" — không cần sửa code. Các Quyển có sẵn của app (Quyển 1/2, HSK 1-6, Chuyên ngành...) không sửa/xoá được ở đây.
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+      <input type="text" id="bookdef-name" placeholder="Tên hiển thị (vd: Quyển 5)" style="padding:8px;border-radius:8px;border:1.5px solid #ddd;font-size:.9rem;grid-column:1 / -1;">
+      <select id="bookdef-group" style="padding:8px;border-radius:8px;border:1.5px solid #ddd;font-size:.9rem;grid-column:1 / -1;">${bookDefGroupOptions('📗 Giáo trình cơ bản')}</select>
+      <input type="number" id="bookdef-from" min="1" placeholder="Từ bài số (vd 40)" style="padding:8px;border-radius:8px;border:1.5px solid #ddd;font-size:.9rem;">
+      <input type="number" id="bookdef-to" min="1" placeholder="Đến bài số (vd 49)" style="padding:8px;border-radius:8px;border:1.5px solid #ddd;font-size:.9rem;">
+    </div>
+    <button class="btn btn-sm" style="background:var(--l11c);color:var(--l11a);" onclick="addBookDef()">➕ Thêm Quyển này</button>
+    <div id="bookdef-result" style="font-size:.8rem;color:var(--muted);margin-top:8px;"></div>
+    <div style="font-size:.72rem;color:var(--muted);margin:10px 0 4px;">Các Quyển tự khai báo hiện có:</div>
+    <div id="bookdef-list-area" style="color:var(--muted);padding:10px 0;text-align:center;">Đang tải...</div>
+  </div>
+  <div class="panel">
     <div class="panel-title">✍️ Thêm 1 từ thủ công</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
       <input type="text" id="vocab-manual-hz" placeholder="Chữ Hán (ví dụ 你好)" style="padding:8px;border-radius:8px;border:1.5px solid #ddd;font-size:.9rem;">
@@ -94,10 +110,147 @@ function renderVocabAdmin() {
 }
 function bindVocabAdmin() {
   if (isGuest || !isAdminRole()) return;
+  loadBookDefsAdminList();
   loadVocabAdminList();
   loadHanVietProgress();
   loadWordExampleProgress();
   loadHanziPartsProgress();
+}
+
+// ════════════════════════════════════════════════════
+// QUẢN LÝ GIÁO TRÌNH / QUYỂN (V102 — tự khai báo trên web, không cần sửa code)
+// ════════════════════════════════════════════════════
+let bookDefsAdminCache = []; // danh sách Quyển tự khai báo hiện tại (id đã +3000) — tra cứu khi Sửa/Xoá, khỏi phải nhúng chuỗi vào onclick
+const BOOK_DEF_GROUPS = ['📗 Giáo trình cơ bản', '🧩 Từ vựng mở rộng', '🎯 Luyện thi HSK', '🆕 Giáo trình tự thêm'];
+function bookDefGroupOptions(selected) {
+  // Luôn hiện đúng giá trị đang chọn dù nó không khớp 4 gợi ý mặc định (vd admin từng gõ 1 nhóm khác).
+  const opts = BOOK_DEF_GROUPS.includes(selected) ? BOOK_DEF_GROUPS : [selected, ...BOOK_DEF_GROUPS];
+  return opts.map(g => `<option value="${escapeAttr(g)}"${g === selected ? ' selected' : ''}>${escapeHtml(g)}</option>`).join('');
+}
+
+async function loadBookDefsAdminList() {
+  const area = document.getElementById('bookdef-list-area');
+  if (!area) return;
+  try {
+    const res = await fetch('/api/books');
+    const data = await res.json();
+    if (!data.ok) { area.textContent = data.error || 'Không tải được danh sách.'; return; }
+    bookDefsAdminCache = data.books;
+    if (data.books.length === 0) {
+      area.innerHTML = `<div style="color:var(--muted);text-align:center;padding:10px 0;font-size:.82rem;">Chưa có Quyển nào tự khai báo.</div>`;
+      return;
+    }
+    area.innerHTML = data.books.map(b => renderBookDefRow(b)).join('');
+  } catch (e) {
+    area.textContent = 'Không kết nối được máy chủ: ' + e.message;
+  }
+}
+
+function renderBookDefRow(b) {
+  return `<div style="border-bottom:1px solid var(--border);">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 2px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:160px;">
+        <div style="font-weight:700;">${escapeHtml(b.name)} <span style="color:var(--muted);font-weight:600;font-size:.8rem;">(Bài ${b.from}-${b.to})</span></div>
+        <div style="font-size:.72rem;color:var(--muted);">${escapeHtml(b.group)}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0;">
+        <button class="btn btn-sm" style="background:var(--l9c);color:var(--l9a);" id="bookdef-edit-btn-${b.id}" onclick="toggleBookDefEdit(${b.id})">✏️ Sửa</button>
+        <button class="btn btn-sm" style="background:#fdecea;color:#c0392b;" onclick="deleteBookDefAdmin(${b.id})">🗑️ Xoá</button>
+      </div>
+    </div>
+    <div id="bookdef-edit-${b.id}" style="display:none;padding:4px 0 10px;"></div>
+  </div>`;
+}
+
+function toggleBookDefEdit(id) {
+  const box = document.getElementById(`bookdef-edit-${id}`);
+  const btn = document.getElementById(`bookdef-edit-btn-${id}`);
+  if (!box) return;
+  const isOpen = box.style.display !== 'none';
+  if (isOpen) { box.style.display = 'none'; btn.textContent = '✏️ Sửa'; return; }
+  const b = bookDefsAdminCache.find(x => x.id === id);
+  if (!b) return;
+  box.style.display = 'block';
+  btn.textContent = '✖️ Đóng';
+  box.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+      <input type="text" id="bookdef-edit-name-${id}" value="${escapeAttr(b.name)}" placeholder="Tên hiển thị" style="padding:8px;border-radius:8px;border:1.5px solid #ddd;font-size:.9rem;grid-column:1 / -1;">
+      <select id="bookdef-edit-group-${id}" style="padding:8px;border-radius:8px;border:1.5px solid #ddd;font-size:.9rem;grid-column:1 / -1;">${bookDefGroupOptions(b.group)}</select>
+      <input type="number" id="bookdef-edit-from-${id}" min="1" value="${b.from}" placeholder="Từ bài số" style="padding:8px;border-radius:8px;border:1.5px solid #ddd;font-size:.9rem;">
+      <input type="number" id="bookdef-edit-to-${id}" min="1" value="${b.to}" placeholder="Đến bài số" style="padding:8px;border-radius:8px;border:1.5px solid #ddd;font-size:.9rem;">
+    </div>
+    <button class="btn btn-sm" style="background:var(--l11c);color:var(--l11a);" onclick="saveBookDefEdit(${id})">💾 Lưu</button>
+    <div id="bookdef-edit-result-${id}" style="font-size:.8rem;color:var(--muted);margin-top:6px;"></div>`;
+}
+
+async function addBookDef() {
+  const resultEl = document.getElementById('bookdef-result');
+  const name = document.getElementById('bookdef-name').value.trim();
+  const group = document.getElementById('bookdef-group').value;
+  const from = document.getElementById('bookdef-from').value;
+  const to = document.getElementById('bookdef-to').value;
+  resultEl.style.color = 'var(--muted)';
+  resultEl.textContent = 'Đang lưu...';
+  try {
+    const res = await fetch('/api/admin/books/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ name, group, from, to }),
+    });
+    const data = await res.json();
+    if (!data.ok) { resultEl.style.color = '#c0392b'; resultEl.textContent = '❌ ' + (data.error || 'Có lỗi xảy ra'); return; }
+    resultEl.style.color = 'var(--l11a)';
+    resultEl.textContent = `✅ Đã thêm "${data.book.name}". Tải lại trang để thấy ở màn chọn bài.`;
+    document.getElementById('bookdef-name').value = '';
+    document.getElementById('bookdef-from').value = '';
+    document.getElementById('bookdef-to').value = '';
+    loadBookDefsAdminList();
+  } catch (e) {
+    resultEl.style.color = '#c0392b';
+    resultEl.textContent = '❌ Không kết nối được máy chủ: ' + e.message;
+  }
+}
+
+async function saveBookDefEdit(id) {
+  const resultEl = document.getElementById(`bookdef-edit-result-${id}`);
+  const name = document.getElementById(`bookdef-edit-name-${id}`).value.trim();
+  const group = document.getElementById(`bookdef-edit-group-${id}`).value;
+  const from = document.getElementById(`bookdef-edit-from-${id}`).value;
+  const to = document.getElementById(`bookdef-edit-to-${id}`).value;
+  resultEl.style.color = 'var(--muted)';
+  resultEl.textContent = 'Đang lưu...';
+  try {
+    const res = await fetch('/api/admin/books/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ id, name, group, from, to }),
+    });
+    const data = await res.json();
+    if (!data.ok) { resultEl.style.color = '#c0392b'; resultEl.textContent = '❌ ' + (data.error || 'Có lỗi xảy ra'); return; }
+    alert(`Đã lưu "${data.book.name}". Tải lại trang để cập nhật màn chọn bài.`);
+    loadBookDefsAdminList();
+  } catch (e) {
+    resultEl.style.color = '#c0392b';
+    resultEl.textContent = '❌ Không kết nối được máy chủ: ' + e.message;
+  }
+}
+
+async function deleteBookDefAdmin(id) {
+  const b = bookDefsAdminCache.find(x => x.id === id);
+  const label = b ? `"${b.name}" (Bài ${b.from}-${b.to})` : 'Quyển này';
+  if (!confirm(`Xoá khai báo ${label}? Từ vựng của các bài này KHÔNG bị xoá — chỉ mất nhãn hiển thị (các bài đó sẽ rơi vào mục "Từ vựng mới tự nhận diện" ở màn chọn bài). Không thể hoàn tác.`)) return;
+  try {
+    const res = await fetch('/api/admin/books/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ id }),
+    });
+    const data = await res.json();
+    if (!data.ok) { alert(data.error || 'Có lỗi xảy ra'); return; }
+    loadBookDefsAdminList();
+  } catch (e) {
+    alert('Không kết nối được máy chủ: ' + e.message);
+  }
 }
 async function loadHanVietProgress() {
   const area = document.getElementById('hanviet-progress-area');

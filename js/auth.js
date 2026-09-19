@@ -14,8 +14,8 @@ function defaultProgress() {
     qzType: '漢→Việt', qzQuestionCount: 30, questionCount: 10,
     // Cài đặt hệ thống học FSRS (Phần 22): daily limit + current lesson tự động cập nhật.
     dailyReviewLimit: 50, dailyNewLimit: 10, newOnlyAfterDue: true, currentLesson: null,
-    // unlimitedStudy: bật thì bỏ hẳn 2 giới hạn trên (áp dụng CHUNG cho mọi tab luyện tập, vì tất
-    // cả cùng gọi /api/study/session) — học bao nhiêu lượt/ngày tuỳ ý, không bị chặn lại.
+    // unlimitedStudy: bật thì bỏ qua phần TRỪ theo số đã học hôm nay (không bị chặn "hết hạn mức,
+    // quay lại ngày mai") — KHÔNG bỏ 2 giới hạn trên, mỗi lượt lấy phiên vẫn đúng số đã đặt (V101).
     unlimitedStudy: false,
   } };
 }
