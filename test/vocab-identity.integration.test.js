@@ -315,6 +315,40 @@ async function main() {
       assert.deepStrictEqual(afterCounts, beforeCounts, 'chạy lại migration lần 2 KHÔNG được đổi bất kỳ con số nào (idempotent)');
     });
 
+    console.log('\n[Case 14 (V103) — getLessonsByWordIds(): tra đúng "1 từ thuộc những bài nào" cho nhiều từ cùng lúc]');
+    const L9 = 999109, L10 = 999110;
+    const hzMulti = HZ_PREFIX + 'H';
+    let wordMultiId;
+    await test('setup: từ H thuộc 2 bài (L9, L10)', async () => {
+      await db.importVocab([{ hz: hzMulti, py: 'py-h', vi: 'nghĩa H', l: L9 }], false);
+      await db.importVocab([{ hz: hzMulti, py: 'py-h', vi: 'nghĩa H', l: L10 }], false);
+      wordMultiId = (await db.findVocabWordByHz(hzMulti)).id;
+    });
+    await test('getLessonsByWordIds([id]) trả về ĐÚNG cả 2 bài, đã sắp xếp tăng dần', async () => {
+      const map = await db.getLessonsByWordIds([wordMultiId]);
+      assert.deepStrictEqual(map[wordMultiId], [L9, L10]);
+    });
+    await test('getLessonsByWordIds([]) (mảng rỗng) -> trả về {} ngay, KHÔNG query DB', async () => {
+      const map = await db.getLessonsByWordIds([]);
+      assert.deepStrictEqual(map, {});
+    });
+    await test('getLessonsByWordIds gộp đúng cho NHIỀU từ trong 1 lần gọi (batch, tránh N+1 query)', async () => {
+      const wordSingleId = (await db.findVocabWordByHz(hz1)).id; // hz1 từ Case 2, thuộc L1+L2
+      const map = await db.getLessonsByWordIds([wordMultiId, wordSingleId]);
+      assert.deepStrictEqual(map[wordMultiId], [L9, L10]);
+      assert.deepStrictEqual(map[wordSingleId], [L1, L2]);
+    });
+    await test('formatFsrsCard()/formatVocabWord() (lib/fsrs/studyScope.js) gắn đúng field `lessons` khi có lessonsMap, fallback về [row.l] khi KHÔNG truyền map', async () => {
+      const { formatVocabWord, formatFsrsCard } = require(path.join(__dirname, '..', 'lib', 'fsrs', 'studyScope'));
+      const map = await db.getLessonsByWordIds([wordMultiId]);
+      const w = formatVocabWord({ hz: hzMulti, py: 'py-h', vi: 'nghĩa H', l: L9, resolved_word_id: wordMultiId }, map);
+      assert.deepStrictEqual(w.lessons, [L9, L10]);
+      const wNoMap = formatVocabWord({ hz: hzMulti, py: 'py-h', vi: 'nghĩa H', l: L9, resolved_word_id: wordMultiId });
+      assert.deepStrictEqual(wNoMap.lessons, [L9], 'không truyền lessonsMap -> fallback về đúng [row.l] như hành vi TRƯỚC V103');
+      const c = formatFsrsCard({ hz: hzMulti, l: L9, py: 'py-h', vi: 'nghĩa H', resolved_word_id: wordMultiId, reps: 0, lapses: 0 }, map);
+      assert.deepStrictEqual(c.lessons, [L9, L10]);
+    });
+
     console.log('\n════════════════════════════════════════════════════');
     console.log(`Kết quả: ${passed} PASS, ${failed} FAIL`);
     console.log('════════════════════════════════════════════════════');
