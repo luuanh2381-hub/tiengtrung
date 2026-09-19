@@ -120,11 +120,16 @@ trắc nghiệm vẫn 100% do server tự so khớp DB, độc lập hoàn toàn
 Lesson-priority **không bao giờ** đụng vào `due/stability/difficulty` của FSRS card — chỉ quyết
 định NEW card nào được đưa vào session.
 
-### Daily limit (Phần 22)
+### Daily limit (Phần 22, sửa V101)
 `progress.ui.dailyReviewLimit` (mặc định 50) và `dailyNewLimit` (mặc định 10), đếm số đã làm "hôm
 nay" (giờ VN) trực tiếp từ `review_history` (không cần state riêng, không lệch khi refresh/nhiều
 tab). Nếu `newOnlyAfterDue = true` (mặc định) và tổng số due vượt quá số slot ôn còn lại trong
 ngày (tức còn backlog), session **không** lấy NEW word — tránh new cards đè thêm backlog FSRS.
+
+`unlimitedStudy`: **CHỈ** bỏ qua phần trừ theo số đã học hôm nay (`reviewToday`/`newToday`) — không
+bị chặn lại vì "đã học đủ hôm nay", học được nhiều LƯỢT tuỳ ý trong ngày. **KHÔNG** bỏ qua chính
+`dailyReviewLimit`/`dailyNewLimit` hay `newOnlyAfterDue` — mỗi lượt lấy phiên vẫn đúng số đã cấu
+hình (xem `getDailyBudget()` trong `lib/fsrs/reviewService.js`).
 
 ### Current lesson (Phần 6)
 Ưu tiên `progress.ui.currentLesson` (tự cập nhật ở bước 3 vòng đời thẻ). Nếu chưa có, lấy bài lớn
