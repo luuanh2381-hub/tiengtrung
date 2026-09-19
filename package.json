@@ -13,6 +13,7 @@
     "test:vocab-merge": "node test/vocab-merge.test.js",
     "test:visibility-timer": "node test/visibility-timer.test.js",
     "test:vocab-identity": "node test/vocab-identity.integration.test.js",
+    "test:book-defs": "node test/book-defs.integration.test.js",
     "test:distractor": "node test/heavy-distractor.test.js",
     "test:integration": "node test/fsrs.concurrency.integration.js",
     "test:optimizer": "node test/fsrs-optimizer.test.js",
