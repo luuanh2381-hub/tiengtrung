@@ -53,9 +53,14 @@ function saveReviewOutbox(list) {
 // xong hay không; gỡ khỏi outbox theo đúng idempotencyKey khi CÓ kết quả (thành công hoặc lỗi vĩnh
 // viễn). Luôn đọc lại localStorage MỚI NHẤT ngay trước khi ghi (KHÔNG giữ 1 bản list cũ qua await)
 // để không ghi đè mất các thay đổi đồng thời từ lượt submit/flush khác đang chạy song song.
-function addToOutbox(payload) {
+// V104: `endpoint` (tuỳ chọn) cho phép CHÍNH outbox này chở cả bài luyện kỹ năng bổ sung
+// (/api/skills/practice) — không có hệ thống đồng bộ thứ hai. Mục cũ không có endpoint → mặc định
+// /api/study/review như trước (tương thích ngược với outbox đã lưu sẵn trong localStorage).
+function addToOutbox(payload, endpoint) {
   const list = loadReviewOutbox();
-  list.push({ payload, queuedAt: Date.now() });
+  const entry = { payload, queuedAt: Date.now() };
+  if (endpoint) entry.endpoint = endpoint;
+  list.push(entry);
   saveReviewOutbox(list);
 }
 function removeFromOutbox(idempotencyKey) {
@@ -91,7 +96,7 @@ async function flushReviewOutbox() {
       const entry = list[0];
       let res, data;
       try {
-        res = await fetch('/api/study/review', {
+        res = await fetch(entry.endpoint || '/api/study/review', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify(entry.payload),
@@ -152,7 +157,7 @@ window.addEventListener('pagehide', () => {
   // dòng lịch sử / không chạy FSRS 2 lần.
   try {
     for (const entry of loadReviewOutbox()) {
-      fetch('/api/study/review', {
+      fetch(entry.endpoint || '/api/study/review', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify(entry.payload),
@@ -198,7 +203,7 @@ function submitFsrsReview(args) {
 // 'again'|'hard'|'good'|'easy' do NGƯỜI DÙNG bấm tay hoặc do countdown ở FE tự chọn khi hết giờ —
 // xem js/review.js:rvCommitRating(). Các tab khác (Flashcard/Trắc nghiệm/Gõ chữ/Nghe-chọn) không
 // truyền field này, server tự rơi về đúng hành vi V67 cũ (100% tự động, không override).
-async function _submitFsrsReviewImpl({ word, quizType, selectedAnswer, responseTimeMs, answerChanges, rating }) {
+async function _submitFsrsReviewImpl({ word, quizType, selectedAnswer, responseTimeMs, answerChanges, rating, exerciseType }) {
   // FIX (Vấn đề 1 — đúng thứ tự lên Neon): nếu outbox đang kẹt sẵn các lượt CŨ hơn (chưa gửi được
   // do mất mạng/lỗi tạm thời trước đó), tranh thủ thử gửi NỀN (không await, không chặn lượt hiện
   // tại) TRƯỚC KHI thêm lượt mới vào outbox — giảm tối đa khoảng thời gian các lượt cũ hơn bị "đứng
@@ -214,6 +219,7 @@ async function _submitFsrsReviewImpl({ word, quizType, selectedAnswer, responseT
     idempotencyKey: genIdempotencyKey(),
   };
   if (typeof rating === 'string' && rating) payload.rating = rating;
+  if (typeof exerciseType === 'string' && exerciseType) payload.exerciseType = exerciseType; // V104: nhãn kỹ năng (server tự kiểm tra khớp quizType)
   addToOutbox(payload);
   let res, data;
   try {
@@ -255,6 +261,59 @@ function submitFsrsReviewAwaited(args) {
     submitFsrsReview(args),
     new Promise(resolve => setTimeout(() => resolve({ ok: false, timedOut: true, queued: true }), SUBMIT_REVIEW_MAX_WAIT_MS)),
   ]);
+}
+
+// ── V104: nhãn bài tập → kỹ năng thực sự được kiểm tra (xem lib/skills.js EXERCISES). Flashcard tự
+//     chấm CỐ Ý không có nhãn. Server vẫn kiểm tra nhãn khớp quizType, đây chỉ là phía gửi. ──────────
+function exerciseTypeFor(tab, mode) {
+  if (tab === 'quiz') {
+    if (mode === 'Việt→漢') return 'quiz-vi2hz';
+    if (mode === 'Âm→漢') return 'quiz-py2hz';
+    return 'quiz-hz2vi';
+  }
+  if (tab === 'type') return 'type-vi2hz';
+  if (tab === 'listen') return 'listen-choose-hz';
+  return undefined;
+}
+// Bài nghe CHỈ khả dụng khi trình duyệt thật sự có giọng đọc tiếng Trung (ttsVoice — js/audio.js).
+function skillAudioAvailable() {
+  try { return ('speechSynthesis' in window) && typeof ttsVoice !== 'undefined' && !!ttsVoice; } catch { return false; }
+}
+
+// ── V104: gửi 1 lượt luyện kỹ năng BỔ SUNG (KHÔNG phải lượt ôn FSRS — không đổi lịch ôn). Dùng CHUNG
+//     outbox + write-ahead + idempotency với submitFsrsReview (cùng cơ chế chống mất/trùng dữ liệu). ──
+async function submitSkillPractice({ word, exerciseType, selectedAnswer, responseTimeMs }) {
+  flushReviewOutbox();
+  const key = genIdempotencyKey();
+  const payload = {
+    wordId: { hz: word.hz, l: word.l },
+    exerciseType,
+    selectedAnswer,
+    responseTimeMs: Number.isFinite(responseTimeMs) ? Math.round(responseTimeMs) : null,
+    attemptKey: key,
+    idempotencyKey: key, // dùng chung khoá này cho removeFromOutbox(); server chỉ đọc attemptKey
+  };
+  const endpoint = '/api/skills/practice';
+  addToOutbox(payload, endpoint);
+  let res, data;
+  try {
+    res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    });
+    data = await res.json().catch(() => null);
+  } catch (e) {
+    return { ok: false, error: e.message, queued: true }; // đã nằm sẵn trong outbox
+  }
+  if (!data || !data.ok) {
+    if (isRetryableReviewFailure(res, data)) return { ok: false, error: data && data.error, queued: true };
+    removeFromOutbox(key);
+    return data || { ok: false, error: 'Phản hồi không hợp lệ từ server' };
+  }
+  removeFromOutbox(key);
+  return data;
 }
 
 // ════════════════════════════════════════════════════
@@ -533,6 +592,7 @@ function sqResetAllQueuesAndSessionState() {
   if (typeof rvQueue !== 'undefined') { rvQueue.items = []; rvQueue.totalPlanned = 0; rvQueue.answeredCount = 0; rvQueue.completedCards = []; }
   sessionKnownHz = new Set();
   saveSessionKnownHz();
+  if (typeof skResetState === 'function') skResetState(); // V104: hồ sơ kỹ năng cũng bị server xoá khi reset
   // Outbox (Yêu cầu 4 — không double submit) có thể còn giữ review CHƯA gửi lên kịp từ TRƯỚC lúc
   // reset — nếu để nguyên, lần flush kế tiếp sẽ "hồi sinh" đúng những gì vừa xoá. Reset phải triệt
   // để nên bỏ luôn các review đang chờ gửi này, không cố gửi lại nữa.

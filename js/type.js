@@ -127,7 +127,7 @@ async function tyCheck() {
   if (okLocally) tyScore++;
   if (isLoggedIn()) {
     await Promise.all([
-      submitFsrsReviewAwaited({ word: w, quizType: fsrsQuizTypeFor('type'), selectedAnswer: val || '⨯ (bỏ trống) ⨯', responseTimeMs }),
+      submitFsrsReviewAwaited({ word: w, quizType: fsrsQuizTypeFor('type'), exerciseType: exerciseTypeFor('type'), selectedAnswer: val || '⨯ (bỏ trống) ⨯', responseTimeMs }),
       new Promise(r => setTimeout(r, 1600)),
     ]);
   } else {
@@ -151,7 +151,7 @@ async function tySkip() {
   // "Review nhiễu khi thoát ra vào lại": trừ tổng thời gian tab bị ẩn ra khỏi responseTimeMs.
   const responseTimeMs = Math.max(0, performance.now() - tyStartedAt - vtHiddenMs());
   if (isLoggedIn()) {
-    await submitFsrsReviewAwaited({ word: w, quizType: fsrsQuizTypeFor('type'), selectedAnswer: '⨯ (bỏ qua) ⨯', responseTimeMs });
+    await submitFsrsReviewAwaited({ word: w, quizType: fsrsQuizTypeFor('type'), exerciseType: exerciseTypeFor('type'), selectedAnswer: '⨯ (bỏ qua) ⨯', responseTimeMs });
   } else {
     guestMarkActivity();
   }

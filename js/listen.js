@@ -120,7 +120,7 @@ async function lsPickWord(btn, chosen, correct) {
   if (isCorrectLocally) lsScore++;
   if (isLoggedIn()) {
     await Promise.all([
-      submitFsrsReviewAwaited({ word: w, quizType: fsrsQuizTypeFor('listen'), selectedAnswer: chosen, responseTimeMs }),
+      submitFsrsReviewAwaited({ word: w, quizType: fsrsQuizTypeFor('listen'), exerciseType: exerciseTypeFor('listen'), selectedAnswer: chosen, responseTimeMs }),
       new Promise(r => setTimeout(r, 1400)),
     ]);
   } else {

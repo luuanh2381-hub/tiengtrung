@@ -40,6 +40,27 @@ let rvBlockedByBacklog = false; // server chặn từ mới vì còn backlog due
 let rvTotalDue = 0; // tổng số thẻ due TOÀN TÀI KHOẢN (không riêng phạm vi đang chọn) — dùng để giải thích lý do bị chặn ở trên
 const RV_QUIZ_TYPE = 'hz2vi'; // Phần 1: mặc định hỏi "chữ Hán → nghĩa", khớp đúng ví dụ trong yêu cầu V67
 
+// ── V104 — Cá nhân hoá DẠNG BÀI theo kỹ năng (bổ sung cho FSRS, không thay FSRS) ───────────────
+// Từ nào được hỏi, thứ tự, số lượng, lịch ôn: VẪN 100% do FSRS/server quyết định (không đổi). Chỉ
+// DẠNG câu hỏi của từng thẻ có thể đổi theo `suggestedSkill` server gắn kèm (lib/skill-adaptive.js):
+//   recognition: nhìn chữ Hán → chọn nghĩa (mặc định, y như trước)
+//   recall     : nhìn nghĩa → chọn chữ Hán
+//   listening  : nghe → chọn chữ Hán (CHỈ khi trình duyệt có giọng đọc tiếng Trung)
+// Thẻ MỚI luôn hỏi recognition. Không có gợi ý (vd tab "từ hay quên", server cũ) → recognition.
+const RV_EXERCISE_META = {
+  recognition: { quizType: 'hz2vi', exerciseType: 'review-hz2vi' },
+  recall:      { quizType: 'vi2hz', exerciseType: 'review-vi2hz' },
+  listening:   { quizType: 'vi2hz', exerciseType: 'review-listen' },
+};
+let rvExercise = 'recognition';
+function rvChooseExercise(item) {
+  if (!item || item.type === 'new') return 'recognition';
+  const sk = item.suggestedSkill;
+  if (sk === 'recall') return 'recall';
+  if (sk === 'listening' && typeof skillAudioAvailable === 'function' && skillAudioAvailable()) return 'listening';
+  return 'recognition';
+}
+
 // ── Bổ sung "Highlight System Rating" (revert V67's auto-only flow) ─────────────────────────────
 let rvRatingPhase = null;   // null (chưa tới lúc) | 'loading' (đang hỏi server gợi ý) | 'pending'
                              // (đang hiện 4 nút + đếm ngược, chờ user) | 'committing' (đã chốt rating,
@@ -225,7 +246,11 @@ function rvPrepareCurrentCard() {
   const w = rvQueue.items[0].word;
   // V86: review LUÔN hỏi hz→nghĩa (RV_QUIZ_TYPE='hz2vi' — xem đầu file), nên field chấm đáp án
   // luôn là 'vi'. Truyền THẲNG (không còn dựa ngầm vào biến qzType của quiz.js như trước V86).
-  rvOptions = rvMakeOpts(w, { answerField: 'vi', mode: 'text' });
+  rvExercise = rvChooseExercise(rvQueue.items[0]);
+  rvOptions = rvMakeOpts(w, {
+    answerField: rvExercise === 'recognition' ? 'vi' : 'hz',
+    mode: rvExercise === 'listening' ? 'listening' : 'text',
+  });
   rvAnswerChanges = 0;
   rvPhase = 'question';
   rvLastAnswer = null;
@@ -306,7 +331,7 @@ async function rvFetchSystemRating({ word, selectedAnswer, responseTimeMs, answe
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({
         wordId: { hz: word.hz, l: word.l },
-        quizType: RV_QUIZ_TYPE,
+        quizType: RV_EXERCISE_META[rvExercise].quizType,
         selectedAnswer,
         responseTimeMs: Number.isFinite(responseTimeMs) ? Math.round(responseTimeMs) : null,
         answerChanges: Number.isFinite(answerChanges) ? answerChanges : 0,
@@ -370,7 +395,8 @@ async function rvCommitRating(attemptId, chosenRating) {
   const item = rvQueue.items[0];
   const w = item.word;
   const reviewPromise = submitFsrsReviewAwaited({
-    word: w, quizType: RV_QUIZ_TYPE, selectedAnswer: pending.selectedAnswer,
+    word: w, quizType: RV_EXERCISE_META[rvExercise].quizType, exerciseType: RV_EXERCISE_META[rvExercise].exerciseType,
+    selectedAnswer: pending.selectedAnswer,
     responseTimeMs: pending.responseTimeMs, answerChanges: pending.answerChanges,
     rating: rvFinalRating,
   }).then(data => {
@@ -426,16 +452,34 @@ function renderReview() {
   if (rvPhase === 'question') {
     // Chỉ 1 bước duy nhất: nhìn chữ Hán → chọn nghĩa đúng (Phần 1/17). Không có bước "tự nhớ rồi
     // bấm Đúng/Sai" riêng như v66 — hệ thống tự xác định đúng/sai khi user chọn đáp án.
-    const optHtml = rvOptions.map(o =>
-      `<button class="quiz-opt" data-v="${escapeHtml(o.vi)}" onclick="rvPick(this,'${escapeJsAttr(o.hz)}')" ${rvSubmitting ? 'disabled' : ''}>${escapeHtml(o.vi)}</button>`
-    ).join('');
-    body = `
+    if (rvExercise === 'recognition') {
+      const optHtml = rvOptions.map(o =>
+        `<button class="quiz-opt" data-v="${escapeHtml(o.vi)}" onclick="rvPick(this,'${escapeJsAttr(o.hz)}')" ${rvSubmitting ? 'disabled' : ''}>${escapeHtml(o.vi)}</button>`
+      ).join('');
+      body = `
       <div class="rv-tag">${tagLabel} · ${lessonsLabel(w)}</div>
       <div class="rv-hz">${escapeHtml(w.hz)}</div>
       ${showPinyin ? `<div class="rv-py">${escapeHtml(w.py || '')}</div>` : ''}
       <div class="rv-prompt">${escapeHtml(w.hz)} là gì?</div>
       <div class="quiz-opts" id="rv-opts">${optHtml}</div>
       <div class="kbd-hint" style="text-align:center;margin-top:2px;">⌨️ 1-4 để chọn</div>`;
+    } else {
+      // recall / listening: đáp án cần chọn là CHỮ HÁN nên KHÔNG được hiện chữ Hán (hay pinyin) của
+      // từ ở phần câu hỏi — nếu không sẽ lộ đáp án và bài không còn kiểm tra đúng kỹ năng.
+      const optHtml = rvOptions.map(o =>
+        `<button class="quiz-opt" data-v="${escapeHtml(o.hz)}" onclick="rvPick(this,'${escapeJsAttr(o.hz)}')" ${rvSubmitting ? 'disabled' : ''}>${escapeHtml(o.hz)}</button>`
+      ).join('');
+      const stem = rvExercise === 'listening'
+        ? `<button id="rv-play" class="listen-play" onclick="speak('${escapeJsAttr(w.hz)}')" title="Phát lại">🔊</button>
+           <div class="rv-prompt">Nghe và chọn chữ Hán đúng</div>`
+        : `<div class="rv-vi" style="font-size:1.3rem;margin:10px 0">${escapeHtml(w.vi || '')}</div>
+           <div class="rv-prompt">Chữ Hán nào có nghĩa này?</div>`;
+      body = `
+      <div class="rv-tag">${tagLabel} · ${lessonsLabel(w)}</div>
+      ${stem}
+      <div class="quiz-opts" id="rv-opts">${optHtml}</div>
+      <div class="kbd-hint" style="text-align:center;margin-top:2px;">⌨️ 1-4 để chọn</div>`;
+    }
   } else {
     // Đã có kết quả trắc nghiệm: lộ đáp án đầy đủ + bổ sung "Highlight System Rating" — hiện lại 4
     // nút Again/Hard/Good/Easy, highlight nút hệ thống đề xuất, cho user xác nhận/đổi trước khi
@@ -478,9 +522,14 @@ function renderReview() {
 function bindReview() {
   if (rvPhase !== 'question' || !rvQueue.items.length) return;
   const w = rvQueue.items[0].word;
+  const correctVal = rvExercise === 'recognition' ? w.vi : w.hz;
   document.querySelectorAll('#rv-opts .quiz-opt').forEach(b => {
-    b._correct = (b.dataset.v === w.vi);
+    b._correct = (b.dataset.v === correctVal);
   });
+  // Bài nghe: tự phát âm thanh khi câu hỏi hiện ra (giống tab Nghe-chọn).
+  if (rvExercise === 'listening') {
+    setTimeout(() => { const pb = document.getElementById('rv-play'); if (pb) pb.click(); }, 400);
+  }
 }
 
 // ── Phần 1/3/4/17/20: user chọn 1 đáp án → khoá UI, hiện đúng/sai tức thời → gửi

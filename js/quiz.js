@@ -176,7 +176,7 @@ async function qzPick(btn, hz) {
   // đổi so với trước (vẫn 1400ms), mạng chậm thì đợi thêm chứ không chuyển câu "hụt".
   if (isLoggedIn()) {
     await Promise.all([
-      submitFsrsReviewAwaited({ word: w, quizType: fsrsQuizTypeFor(qzType), selectedAnswer: btn.dataset.v, responseTimeMs }),
+      submitFsrsReviewAwaited({ word: w, quizType: fsrsQuizTypeFor(qzType), exerciseType: exerciseTypeFor('quiz', qzType), selectedAnswer: btn.dataset.v, responseTimeMs }),
       new Promise(r => setTimeout(r, 1400)),
     ]);
   } else {

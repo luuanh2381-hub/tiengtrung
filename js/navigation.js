@@ -17,6 +17,7 @@ function render() {
   else if (currentTab === 'type')  { el.innerHTML = renderType(); bindType(); }
   else if (currentTab === 'listen'){ el.innerHTML = renderListen(); bindListen(); }
   else if (currentTab === 'stats') { el.innerHTML = renderStats(); bindStats(); }
+  else if (currentTab === 'skills') { el.innerHTML = renderSkills(); bindSkills(); }
   else if (currentTab === 'difficult'){ el.innerHTML = renderDifficult(); bindDifficult(); }
   else if (currentTab === 'compare'){ el.innerHTML = renderCompare(); bindCompare(); }
   else if (currentTab === 'admin') { el.innerHTML = renderAdmin(); bindAdmin(); }

@@ -50,7 +50,7 @@ let progressState = defaultProgress();
 function applyUIState() {
   normalizeProgress(progressState);
   const ui = progressState.ui;
-  const validTabs = ['home','today','flash','quiz','type','listen','stats','difficult','compare','admin','vocab'];
+  const validTabs = ['home','today','flash','quiz','type','listen','stats','skills','difficult','compare','admin','vocab'];
   currentTab = validTabs.includes(ui.lastTab) ? ui.lastTab : 'home';
   selectedBookIds = new Set(ui.selectedBookIds);
   selectedLessons = new Set(ui.selectedLessons);
@@ -219,6 +219,7 @@ async function authLogout() {
   // trong CÙNG NGÀY (Yêu cầu 3). authUsername đổi về null ngay dưới đây nên set trong bộ nhớ cũng
   // phải đổi theo (không còn ai đăng nhập -> không có "đã hoàn thành hôm nay" nào áp dụng).
   sessionKnownHz = new Set();
+  if (typeof skResetState === 'function') skResetState(); // V104: không giữ số liệu kỹ năng của người vừa đăng xuất
   localStorage.removeItem('authToken'); localStorage.removeItem('authUsername'); localStorage.removeItem('authGuest');
   progressState = defaultProgress();
   applyUIState();
