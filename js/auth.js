@@ -219,6 +219,7 @@ async function authLogout() {
   // trong CÙNG NGÀY (Yêu cầu 3). authUsername đổi về null ngay dưới đây nên set trong bộ nhớ cũng
   // phải đổi theo (không còn ai đăng nhập -> không có "đã hoàn thành hôm nay" nào áp dụng).
   sessionKnownHz = new Set();
+  if (typeof wnReset === 'function') wnReset(); // V105: không giữ mẹo nhớ của người vừa đăng xuất
   if (typeof skResetState === 'function') skResetState(); // V104: không giữ số liệu kỹ năng của người vừa đăng xuất
   localStorage.removeItem('authToken'); localStorage.removeItem('authUsername'); localStorage.removeItem('authGuest');
   progressState = defaultProgress();

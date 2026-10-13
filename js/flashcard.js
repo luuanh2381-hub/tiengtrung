@@ -181,7 +181,8 @@ function fcUpdate() {
     ${showHanViet && w.hanviet ? `<div class="fc-hv">Hán Việt: ${w.hanviet}</div>` : ''}
     ${showMeaning ? `<div class="fc-vi">${w.vi}</div>` : `<button class="btn btn-sm" style="background:var(--l9b);color:var(--l9a);margin-bottom:6px;" onclick="event.stopPropagation();toggleMeaning();fcUpdate();">👁️ Hiện nghĩa</button>`}
     <button class="btn btn-sound btn-sm" onclick="event.stopPropagation();speak('${w.hz}')">🔊 Nghe</button>
-    ${renderHanziParts(w.hz)}`;
+    ${renderHanziParts(w.hz)}
+    <div onclick="event.stopPropagation()">${typeof wnBlockHtml === 'function' ? wnBlockHtml(w.hz) : ''}</div>`;
   document.getElementById('fc-btns').innerHTML = `
     <button class="fc-btn btn-fail" onclick="fcAnswer(false)">❌ Chưa nhớ</button>
     <button class="fc-btn btn-ok" onclick="fcAnswer(true)">✅ Đã nhớ</button>`;

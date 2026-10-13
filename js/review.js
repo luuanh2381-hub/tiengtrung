@@ -52,8 +52,21 @@ const RV_EXERCISE_META = {
   recall:      { quizType: 'vi2hz', exerciseType: 'review-vi2hz' },
   listening:   { quizType: 'vi2hz', exerciseType: 'review-listen' },
 };
+// ── V105 — "NHỚ LẠI NGAY" cho từ mới ────────────────────────────────────────────────────────────
+// Lần đầu gặp từ mới chỉ có câu nhận diện (hán→nghĩa) — dạng dễ nhất. Ngay sau khi từ mới được ôn
+// ĐÚNG, ta chèn lại chính từ đó vào hàng đợi sau RV_DRILL_GAP thẻ khác, nhưng hỏi dạng NHỚ CHỦ ĐỘNG
+// (nghĩa → chọn chữ Hán): tự truy xuất khỏi trí nhớ ngắn hạn là yếu tố làm trí nhớ bền mạnh nhất.
+// Câu "drill" này KHÔNG phải lượt FSRS: không gọi preview/review, không đổi lịch ôn, không tính vào
+// tiến độ/số thẻ của phiên; chỉ ghi vào hồ sơ kỹ năng (recall) qua submitSkillPractice. Sai → hỏi lại
+// thêm 1 lần nữa rồi thôi (RV_DRILL_MAX_TRIES) để không kẹt người học. Từ mới trả lời SAI không cần
+// drill: thẻ đó vốn đã được FSRS đưa lại trong phiên.
+const RV_DRILL_ENABLED = true;
+const RV_DRILL_GAP = 3;
+const RV_DRILL_MAX_TRIES = 2;
+
 let rvExercise = 'recognition';
 function rvChooseExercise(item) {
+  if (item && item.type === 'drill') return 'recall';
   if (!item || item.type === 'new') return 'recognition';
   const sk = item.suggestedSkill;
   if (sk === 'recall') return 'recall';
@@ -149,7 +162,7 @@ async function startStudySession(weakMode, forceNew) {
     // trực tiếp vào rvQueue (thay vì trước đây copy tay từng field vào các biến rời rvSession/...).
     const saved = sqReadPersisted(savedKey);
     if (saved && saved.items.length && sqLessonFilterMatches(saved.lessonFilter)) {
-      const filteredItems = saved.items.filter(it => !sessionKnownHz.has(it.word.hz));
+      const filteredItems = saved.items.filter(it => it.type === 'drill' || !sessionKnownHz.has(it.word.hz)); // V105: giữ câu nhớ lại ngay
       const purged = saved.items.length - filteredItems.length;
       if (filteredItems.length) {
         rvQueue.items = filteredItems;
@@ -447,7 +460,8 @@ function renderReview() {
   const item = rvQueue.items[0];
   const w = item.word;
   const pct = Math.min(100, Math.round((rvQueue.answeredCount / (rvQueue.totalPlanned||1)) * 100));
-  const tagLabel = item.type === 'new' ? '🆕 Từ mới' : '🔁 Ôn tập';
+  const isDrill = item.type === 'drill';
+  const tagLabel = isDrill ? '🧠 Nhớ lại từ mới' : (item.type === 'new' ? '🆕 Từ mới' : '🔁 Ôn tập');
   let body;
   if (rvPhase === 'question') {
     // Chỉ 1 bước duy nhất: nhìn chữ Hán → chọn nghĩa đúng (Phần 1/17). Không có bước "tự nhớ rồi
@@ -480,6 +494,23 @@ function renderReview() {
       <div class="quiz-opts" id="rv-opts">${optHtml}</div>
       <div class="kbd-hint" style="text-align:center;margin-top:2px;">⌨️ 1-4 để chọn</div>`;
     }
+  } else if (isDrill) {
+    // Màn đáp án của câu nhớ lại ngay: không có thanh đánh giá FSRS (đây không phải lượt FSRS).
+    const r = rvLastAnswer;
+    const exD = rvFindExample(w.hz);
+    body = `
+      <div class="rv-tag">${tagLabel} · ${lessonsLabel(w)}</div>
+      <div class="rv-hz">${escapeHtml(w.hz)}</div>
+      <div class="rv-feedback" style="color:${r && r.correct ? 'var(--l8a)' : 'var(--l10a)'};">
+        ${r && r.correct ? '✅ Nhớ rồi!' : '❌ Chưa đúng — xem lại và thử lần nữa sau ít thẻ'}
+      </div>
+      <div class="rv-py">${escapeHtml(w.py || '')}</div>
+      ${showMeaning ? `<div class="rv-vi">${escapeHtml(w.vi || '')}</div>` : ''}
+      ${w.hanviet ? `<div class="rv-hv">Hán Việt: ${escapeHtml(w.hanviet)}</div>` : ''}
+      ${renderHanziParts(w.hz)}
+      ${exD ? `<div class="rv-ex">${exD.zh}<br><span style="color:var(--muted);font-size:.85rem;">${exD.vi}</span></div>` : ''}
+      ${wnBlockHtml(w.hz)}
+      <div style="text-align:center;margin-top:12px"><button class="btn btn-primary" onclick="rvDrillContinue()">Tiếp tục</button></div>`;
   } else {
     // Đã có kết quả trắc nghiệm: lộ đáp án đầy đủ + bổ sung "Highlight System Rating" — hiện lại 4
     // nút Again/Hard/Good/Easy, highlight nút hệ thống đề xuất, cho user xác nhận/đổi trước khi
@@ -505,13 +536,14 @@ function renderReview() {
       ${w.hanviet ? `<div class="rv-hv">Hán Việt: ${w.hanviet}</div>` : ''}
       ${renderHanziParts(w.hz)}
       ${ex ? `<div class="rv-ex">${ex.zh}<br><span style="color:var(--muted);font-size:.85rem;">${ex.vi}</span></div>` : ''}
+      ${wnBlockHtml(w.hz)}
       ${rvRenderRatingBar()}
       ${savedLine}
       ${(!isGuest && isAdminRole() && r && r.autoRating) ? `<div class="rv-saved-line">🐞 debug: auto rating = ${r.autoRating}</div>` : ''}`;
   }
   return `
     <div class="rv-progress-wrap"><div class="rv-progress-fill" style="width:${pct}%;"></div></div>
-    <div class="rv-counter">Câu ${rvQueue.answeredCount + 1} · còn ${rvQueue.items.length} trong hàng đợi</div>
+    <div class="rv-counter">${isDrill ? 'Nhớ lại nhanh · không tính vào lịch ôn' : `Câu ${rvQueue.answeredCount + 1} · còn ${rvQueue.items.filter(i => i.type !== 'drill').length} trong hàng đợi`}</div>
     <div class="rv-card">${body}</div>
   `;
 }
@@ -539,6 +571,7 @@ let rvAttemptId = 0; // FIX: đánh dấu lượt trả lời hiện tại — p
                       // đã sang câu khác) sẽ tự bị bỏ qua thay vì ghi đè nhầm màn hình câu sau.
 async function rvPick(btn, hz) {
   if (rvSubmitting || rvPhase !== 'question') return;
+  if (rvQueue.items[0] && rvQueue.items[0].type === 'drill') return rvPickDrill(btn); // V105: không đi đường FSRS
   rvSubmitting = true;
   // "Review nhiễu khi thoát ra vào lại": trừ đi tổng thời gian tab bị ẩn (chuyển app/khoá màn hình)
   // trong lúc câu hỏi này đang chờ trả lời — performance.now() vẫn chạy đều khi ẩn nên phải tự trừ.
@@ -581,6 +614,40 @@ async function rvPick(btn, hz) {
   rvStartCountdown(attemptId);
 }
 
+// V105: trả lời câu "nhớ lại ngay". KHÔNG gọi /api/study/review(/preview) → không đụng lịch FSRS.
+// Chỉ ghi vào hồ sơ kỹ năng (recall) bằng bài luyện bổ sung, đi qua outbox chung (không mất khi mất mạng).
+function rvPickDrill(btn) {
+  rvPhase = 'answered'; // chặn bấm đúp ngay lập tức (rvPick thoát sớm khi rvPhase !== 'question')
+  const item = rvQueue.items[0];
+  const w = item.word;
+  const responseTimeMs = Math.max(0, Math.round(performance.now() - rvStartedAt - vtHiddenMs()));
+  const ok = !!btn._correct;
+  const attemptId = ++rvAttemptId;
+  document.querySelectorAll('#rv-opts .quiz-opt').forEach(b => {
+    if (b._correct) b.classList.add('correct');
+    else if (b === btn && !ok) b.classList.add('wrong');
+    b.disabled = true;
+  });
+  if (ok) playDing(); else playBuzz();
+  speak(w.hz);
+  rvLastAnswer = { correct: ok, card: null, autoRating: null };
+  rvRatingPhase = null;
+  submitSkillPractice({ word: w, exerciseType: 'practice-recall', selectedAnswer: btn.dataset.v, responseTimeMs }).catch(() => {});
+  render();
+  if (ok) {
+    // Đúng → tự sang thẻ kế sau 1.5s (trừ khi đang mở khung viết mẹo nhớ). Sai → chờ bấm "Tiếp tục".
+    setTimeout(() => {
+      if (attemptId === rvAttemptId && currentTab === 'review' && rvQueue.items[0] === item
+          && rvPhase === 'answered' && !document.getElementById('wn-overlay')) rvAdvanceQueue();
+    }, 1500);
+  }
+}
+function rvDrillContinue() {
+  const item = rvQueue.items[0];
+  if (!item || item.type !== 'drill' || rvPhase !== 'answered') return;
+  rvAdvanceQueue();
+}
+
 // V71/V78: thẻ Ở ĐẦU hàng đợi (rvQueue.items[0] = currentIndex) bị loại NGAY LẬP TỨC sau khi có kết
 // quả server. Đúng → loại vĩnh viễn khỏi phiên. Sai (Again) → chèn lại cách tối thiểu REPEAT_GAP
 // thẻ khác, KHÔNG gọi lại server giữa phiên — hàng đợi cạn thật (kể cả các thẻ Again đã được xử lý
@@ -590,13 +657,24 @@ async function rvPick(btn, hz) {
 function rvAdvanceQueue() {
   if (currentTab !== 'review') return; // user đã rời màn hình, tránh render nhầm chỗ
   const it = rvQueue.items.shift();
-  if (it) {
+  if (it && it.type === 'drill') {
+    // Câu "nhớ lại ngay" (V105): KHÔNG tăng answeredCount/completedCards, KHÔNG đụng sessionKnownHz.
+    const okDrill = !!(rvLastAnswer && rvLastAnswer.correct);
+    if (!okDrill && (it.tries || 0) + 1 < RV_DRILL_MAX_TRIES) {
+      rvQueue.items.splice(Math.min(RV_DRILL_GAP, rvQueue.items.length), 0, { ...it, tries: (it.tries || 0) + 1 });
+    }
+  } else if (it) {
     rvQueue.answeredCount++;
     const isCorrect = !!(rvLastAnswer && rvLastAnswer.correct);
     if (!Array.isArray(rvQueue.completedCards)) rvQueue.completedCards = [];
     rvQueue.completedCards.push({ hz: it.word.hz, l: it.word.l, correct: isCorrect, at: Date.now() });
     if (isCorrect) { sessionKnownHz.add(it.word.hz); saveSessionKnownHz(); sqPurgeHzFromAllQueues(it.word.hz); } // V74: loại khỏi TẤT CẢ tab khác; FIX: persist qua reload; purge khỏi hàng đợi tab khác
     else rvQueue.items.splice(Math.min(REPEAT_GAP, rvQueue.items.length), 0, it);
+    // V105: từ MỚI vừa trả lời đúng → hỏi lại ngay dạng nhớ chủ động sau RV_DRILL_GAP thẻ (xem chú thích đầu file).
+    // Chèn SAU bước purge ở trên để câu này không bị loại cùng các bản sao của từ.
+    if (RV_DRILL_ENABLED && isCorrect && it.type === 'new') {
+      rvQueue.items.splice(Math.min(RV_DRILL_GAP, rvQueue.items.length), 0, { type: 'drill', word: it.word, tries: 0 });
+    }
   }
   const savedKey = rvStorageMode();
   if (!rvQueue.items.length) {

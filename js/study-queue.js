@@ -569,7 +569,8 @@ function sqPurgeHzFromAllQueues(hz) {
   // lọc theo w.word.hz thay vì w.hz.
   if (typeof rvQueue !== 'undefined' && rvQueue.items.length) {
     const head = rvQueue.items[0];
-    const rest = rvQueue.items.slice(1).filter(it => it.word.hz !== hz);
+    // V105: câu "nhớ lại ngay" (type 'drill') của từ mới KHÔNG bị loại — nó chính là để hỏi lại từ vừa đúng.
+    const rest = rvQueue.items.slice(1).filter(it => it.type === 'drill' || it.word.hz !== hz);
     rvQueue.items = [head, ...rest];
   }
 }
