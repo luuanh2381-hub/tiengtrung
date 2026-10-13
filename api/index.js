@@ -18,11 +18,14 @@ const { readDB, updateDB, updateDBWithFsrsCleanup, getVocabByLessons, getVocabCo
   insertActivityLog, getActivityLogs, reserveGeminiSlot, bumpGeminiRateLimit,
   getWeakFsrsCards, getFsrsCardsDebug,
   getWordForAnswerCheck, countKnownFsrsWords, getKnownCountsForUsers, getKnownCountsByLesson,
-  getBookDefs, createBookDef, updateBookDef, deleteBookDef, getLessonsByWordIds } = require('../lib/db');
+  getBookDefs, createBookDef, updateBookDef, deleteBookDef, getLessonsByWordIds,
+  countDueFsrsCards } = require('../lib/db'); // countDueFsrsCards: V104 (tổng quan phân tích năng lực)
 const { getFsrsVerificationInfo } = require('../lib/fsrs');
 // V69: mọi review + toàn bộ analytics/optimizer/personal-retention giờ đi qua lib/fsrs/ (scheduler
 // layer chuẩn hóa) — api/index.js KHÔNG còn gọi thẳng db.reviewFsrsCard nữa (Phần 4 của audit).
 const reviewService = require('../lib/fsrs/reviewService');
+const skillStore = require('../lib/skill-store');
+const { resolveExercise, isCountableAnswer, MEASURABLE_SKILLS } = require('../lib/skills');
 const fsrsAnalytics = require('../lib/fsrs/analytics');
 const fsrsOptimizer = require('../lib/fsrs/optimizer');
 const { runInBackground } = require('../lib/runInBackground');
@@ -698,7 +701,7 @@ app.post('/api/study/review/preview', async (req, res) => {
 app.post('/api/study/review', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
-  const { wordId, quizType, selectedAnswer, responseTimeMs, answerChanges, idempotencyKey, rating } = req.body || {};
+  const { wordId, quizType, selectedAnswer, responseTimeMs, answerChanges, idempotencyKey, rating, exerciseType } = req.body || {};
   const hz = wordId && wordId.hz;
   const l = wordId && Number(wordId.l);
   if (!hz || !Number.isFinite(l)) return res.json({ ok: false, error: 'Thiếu wordId {hz, l} hợp lệ' });
@@ -734,8 +737,14 @@ app.post('/api/study/review', async (req, res) => {
     // V69 (Phần 4): đi qua reviewService (scheduler layer) thay vì gọi thẳng db.reviewFsrsCard —
     // đây cũng là nơi desired_retention riêng của user (Phần 5) được áp dụng + study_sessions
     // (Phần 9) được cập nhật.
+    // Hồ sơ kỹ năng: chỉ ghi khi nhãn bài tập KHỚP với chiều câu hỏi thật (quizType) và đây là 1 bài
+    // tập thực sự kiểm tra kỹ năng (Flashcard tự chấm không có nhãn → không ghi). Server không tin mù
+    // quáng nhãn từ client: resolveExercise() loại mọi nhãn lạ/sai chiều.
+    const ex = resolveExercise(exerciseType, quizType);
+    const skillRecord = (ex && ex.fsrs && isCountableAnswer(selectedAnswer))
+      ? { skill: ex.skill, exerciseType: ex.exerciseType } : null;
     const result = await reviewService.reviewCard({
-      userId: authed.username, hz, l, answerCorrect, responseTimeMs: rt, answerChanges: changes, idempotencyKey: idemKey, ratingOverride,
+      userId: authed.username, hz, l, answerCorrect, responseTimeMs: rt, answerChanges: changes, idempotencyKey: idemKey, ratingOverride, skillRecord,
     });
     // Cập nhật "current lesson" CHỈ khi đây là 1 NEW word vừa được học lần đầu — tự động lùi/tiến
     // theo đúng bài user vừa thực sự học, không cần thao tác thủ công (Phần 6). Review của các từ
@@ -775,6 +784,100 @@ app.post('/api/study/review', async (req, res) => {
       // Debug data chi tiết hơn (Phần 22) — vẫn CHỈ trả về cho admin.
       debug: isAdmin ? result.debug : undefined,
     });
+  } catch (e) { fail(res, e); }
+});
+
+// ════════════════════════════════════════════════════
+// V104 — PHÂN TÍCH NĂNG LỰC THEO KỸ NĂNG (bổ sung cho FSRS, KHÔNG thay FSRS)
+// Mọi route dưới đây: bắt buộc đăng nhập, và CHỈ đọc/ghi dữ liệu của ĐÚNG user trong token
+// (authed.username) — không có tham số userId nào từ client, nên không thể đọc/sửa hồ sơ người khác.
+// ════════════════════════════════════════════════════
+
+// Tổng quan: số từ đã kiểm tra, số từ cần ôn theo FSRS, số từ yếu theo từng kỹ năng, số từ đủ dữ liệu.
+app.get('/api/skills/overview', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const [overview, dueCount] = await Promise.all([
+      skillStore.getOverview(authed.username),
+      countDueFsrsCards(authed.username),
+    ]);
+    res.json({
+      ok: true,
+      testedWords: overview.testedWords,
+      fsrsDueCount: dueCount,
+      skills: overview.skills,
+      // Kỹ năng CHƯA có bài tập kiểm tra đáng tin → UI hiện "chưa hỗ trợ", không bịa điểm.
+      unsupportedSkills: ['pronunciation', 'context'],
+    });
+  } catch (e) { fail(res, e); }
+});
+
+// Danh sách từ cần cải thiện (phân trang): mỗi dòng = 1 (từ, kỹ năng yếu) — chỉ gồm kỹ năng ĐỦ dữ liệu.
+app.get('/api/skills/weak-words', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const skill = MEASURABLE_SKILLS.includes(req.query.skill) ? req.query.skill : null;
+    const out = await skillStore.listWeakWords(authed.username, {
+      skill, limit: req.query.limit, offset: req.query.offset,
+    });
+    res.json({ ok: true, ...out });
+  } catch (e) { fail(res, e); }
+});
+
+// Xu hướng theo ngày/tuần, tách riêng từng kỹ năng.
+app.get('/api/skills/trend', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const bucket = req.query.bucket === 'week' ? 'week' : 'day';
+    const rows = await skillStore.getTrend(authed.username, { days: req.query.days, bucket });
+    res.json({ ok: true, bucket, rows });
+  } catch (e) { fail(res, e); }
+});
+
+// Chọn từ cho bài luyện kỹ năng bổ sung (recall | listening | mixed). `allowListening` do client báo
+// (chỉ client biết trình duyệt có giọng đọc tiếng Trung không) — "listening" chỉ được chọn khi có âm thanh.
+app.get('/api/skills/practice-words', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const wantListening = req.query.allowListening === '1';
+    const allowed = MEASURABLE_SKILLS.filter(s => s !== 'recognition' && (s !== 'listening' || wantListening));
+    const skill = req.query.skill === 'mixed' ? 'mixed' : req.query.skill;
+    if (skill !== 'mixed' && !allowed.includes(skill)) {
+      return res.json({ ok: false, error: 'Dạng luyện này hiện chưa khả dụng' });
+    }
+    const words = await skillStore.getPracticeWords(authed.username, { skill, limit: req.query.limit, allowedSkills: allowed });
+    res.json({ ok: true, words });
+  } catch (e) { fail(res, e); }
+});
+
+// Ghi 1 lượt luyện kỹ năng BỔ SUNG. KHÔNG phải lượt ôn FSRS: không đụng fsrs_cards/review_history,
+// không đổi lịch ôn. Server tự chấm đúng/sai (không tin client). Idempotent theo attemptKey.
+app.post('/api/skills/practice', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const { wordId, exerciseType, selectedAnswer, responseTimeMs, attemptKey } = req.body || {};
+  const hz = wordId && wordId.hz;
+  const l = wordId && Number(wordId.l);
+  if (!hz || !Number.isFinite(l)) return res.json({ ok: false, error: 'Thiếu wordId {hz, l} hợp lệ' });
+  if (typeof selectedAnswer !== 'string' || !selectedAnswer.trim()) return res.json({ ok: false, error: 'Thiếu selectedAnswer' });
+  const ex = resolveExercise(exerciseType, null);
+  if (!ex || ex.fsrs) return res.json({ ok: false, error: 'Dạng bài luyện không hợp lệ' });
+  const rtRaw = Number(responseTimeMs);
+  const rt = Number.isFinite(rtRaw) && rtRaw >= 0 ? Math.min(rtRaw, 10 * 60 * 1000) : null;
+  try {
+    const word = await getWordForAnswerCheck(hz, l);
+    if (!word) return res.json({ ok: false, error: 'Không tìm thấy từ vựng' });
+    const correctAnswer = correctAnswerForQuizType(word, ex.quizType);
+    const answerCorrect = String(selectedAnswer).trim() === String(correctAnswer).trim();
+    const out = await skillStore.recordPractice({
+      userId: authed.username, hz, exerciseType: ex.exerciseType, answerCorrect, selectedAnswer, responseTimeMs: rt, attemptKey,
+    });
+    if (!out.ok) return res.json(out);
+    res.json({ ok: true, answerCorrect, correctAnswer, recorded: !!out.recorded, duplicate: !!out.duplicate });
   } catch (e) { fail(res, e); }
 });
 
