@@ -25,6 +25,7 @@ const { getFsrsVerificationInfo } = require('../lib/fsrs');
 // layer chuẩn hóa) — api/index.js KHÔNG còn gọi thẳng db.reviewFsrsCard nữa (Phần 4 của audit).
 const reviewService = require('../lib/fsrs/reviewService');
 const skillStore = require('../lib/skill-store');
+const wordNotes = require('../lib/word-notes');
 const { resolveExercise, isCountableAnswer, MEASURABLE_SKILLS } = require('../lib/skills');
 const fsrsAnalytics = require('../lib/fsrs/analytics');
 const fsrsOptimizer = require('../lib/fsrs/optimizer');
@@ -878,6 +879,28 @@ app.post('/api/skills/practice', async (req, res) => {
     });
     if (!out.ok) return res.json(out);
     res.json({ ok: true, answerCorrect, correctAnswer, recorded: !!out.recorded, duplicate: !!out.duplicate });
+  } catch (e) { fail(res, e); }
+});
+
+// ════════════════════════════════════════════════════
+// V105 — "MẸO NHỚ CỦA BẠN": ghi chú liên tưởng riêng cho từng từ. Bắt buộc đăng nhập; chỉ đọc/ghi
+// ghi chú của ĐÚNG user trong token (authed.username) — không nhận userId từ client.
+// ════════════════════════════════════════════════════
+app.get('/api/notes', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    res.json({ ok: true, notes: await wordNotes.listNotes(authed.username) });
+  } catch (e) { fail(res, e); }
+});
+
+app.put('/api/notes', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const { hz, note } = req.body || {};
+  try {
+    const out = await wordNotes.setNote(authed.username, hz, note);
+    res.json(out);
   } catch (e) { fail(res, e); }
 });
 
