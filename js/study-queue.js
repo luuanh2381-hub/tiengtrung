@@ -570,7 +570,7 @@ function sqPurgeHzFromAllQueues(hz) {
   if (typeof rvQueue !== 'undefined' && rvQueue.items.length) {
     const head = rvQueue.items[0];
     // V105: câu "nhớ lại ngay" (type 'drill') của từ mới KHÔNG bị loại — nó chính là để hỏi lại từ vừa đúng.
-    const rest = rvQueue.items.slice(1).filter(it => it.type === 'drill' || it.word.hz !== hz);
+    const rest = rvQueue.items.slice(1).filter(it => (it.type !== 'review' && it.type !== 'new') || it.word.hz !== hz);
     rvQueue.items = [head, ...rest];
   }
 }

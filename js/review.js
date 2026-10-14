@@ -38,41 +38,87 @@ let rvAnswerChanges = 0; // UI hiện tại chọn là chốt ngay (không cho �
 let rvLastAnswer = null; // { correct, card, autoRating } — kết quả lượt vừa submit, để hiện feedback (Phần 18)
 let rvBlockedByBacklog = false; // server chặn từ mới vì còn backlog due (có thể ở Quyển/bài KHÁC phạm vi đang chọn) và cài đặt "Chỉ học từ mới sau khi hết backlog" đang bật
 let rvTotalDue = 0; // tổng số thẻ due TOÀN TÀI KHOẢN (không riêng phạm vi đang chọn) — dùng để giải thích lý do bị chặn ở trên
-const RV_QUIZ_TYPE = 'hz2vi'; // Phần 1: mặc định hỏi "chữ Hán → nghĩa", khớp đúng ví dụ trong yêu cầu V67
+const RV_QUIZ_TYPE = 'hz2vi'; // (giữ tên cũ cho tương thích)
 
-// ── V104 — Cá nhân hoá DẠNG BÀI theo kỹ năng (bổ sung cho FSRS, không thay FSRS) ───────────────
-// Từ nào được hỏi, thứ tự, số lượng, lịch ôn: VẪN 100% do FSRS/server quyết định (không đổi). Chỉ
-// DẠNG câu hỏi của từng thẻ có thể đổi theo `suggestedSkill` server gắn kèm (lib/skill-adaptive.js):
-//   recognition: nhìn chữ Hán → chọn nghĩa (mặc định, y như trước)
-//   recall     : nhìn nghĩa → chọn chữ Hán
-//   listening  : nghe → chọn chữ Hán (CHỈ khi trình duyệt có giọng đọc tiếng Trung)
-// Thẻ MỚI luôn hỏi recognition. Không có gợi ý (vd tab "từ hay quên", server cũ) → recognition.
-const RV_EXERCISE_META = {
-  recognition: { quizType: 'hz2vi', exerciseType: 'review-hz2vi' },
-  recall:      { quizType: 'vi2hz', exerciseType: 'review-vi2hz' },
-  listening:   { quizType: 'vi2hz', exerciseType: 'review-listen' },
-};
-// ── V105 — "NHỚ LẠI NGAY" cho từ mới ────────────────────────────────────────────────────────────
-// Lần đầu gặp từ mới chỉ có câu nhận diện (hán→nghĩa) — dạng dễ nhất. Ngay sau khi từ mới được ôn
-// ĐÚNG, ta chèn lại chính từ đó vào hàng đợi sau RV_DRILL_GAP thẻ khác, nhưng hỏi dạng NHỚ CHỦ ĐỘNG
-// (nghĩa → chọn chữ Hán): tự truy xuất khỏi trí nhớ ngắn hạn là yếu tố làm trí nhớ bền mạnh nhất.
-// Câu "drill" này KHÔNG phải lượt FSRS: không gọi preview/review, không đổi lịch ôn, không tính vào
-// tiến độ/số thẻ của phiên; chỉ ghi vào hồ sơ kỹ năng (recall) qua submitSkillPractice. Sai → hỏi lại
-// thêm 1 lần nữa rồi thôi (RV_DRILL_MAX_TRIES) để không kẹt người học. Từ mới trả lời SAI không cần
-// drill: thẻ đó vốn đã được FSRS đưa lại trong phiên.
-const RV_DRILL_ENABLED = true;
-const RV_DRILL_GAP = 3;
-const RV_DRILL_MAX_TRIES = 2;
+// ── V106 — HỆ THỐNG TRẮC NGHIỆM THÍCH ỨNG cho "Hôm nay học" ──────────────────────────────────────
+// Tách 3 lớp: (1) js/question-engine.js dựng câu hỏi hợp lệ (không DOM); (2) js/question-selector.js chọn
+// DẠNG bài theo kỹ năng yếu/thiếu dữ liệu + chống lặp; (3) file này chỉ lo giao diện + luồng buổi học.
+// FSRS: từ nào được học, thứ tự, số lượng, lịch ôn VẪN do server/FSRS quyết định. Mỗi thẻ FSRS chỉ được ôn
+// chính thức ĐÚNG 1 lần mỗi lượt (đi đường /api/study/review như cũ); mọi câu hỏi phụ (kiểm tra ngay sau khi
+// xem từ mới, từ hay sai, ghép cặp, luyện lại) là LUYỆN BỔ SUNG — chỉ ghi hồ sơ kỹ năng qua
+// submitSkillPractice, KHÔNG đổi lịch ôn.
+//
+// Loại phần tử trong hàng đợi (item.type):
+//   'review' / 'new' : thẻ FSRS chính thức (từ server). 'new' CHƯA học → hiện màn GIỚI THIỆU TỪ (xem chữ,
+//                      pinyin, nghĩa, nghe, ví dụ) rồi 1 câu 'check' dễ (hz→nghĩa, KHÔNG tính FSRS); sau
+//                      RV_NEW_GAP thẻ khác mới đến lượt ôn FSRS chính thức của từ đó (lúc này là nhớ lại
+//                      sau khoảng nghỉ, không bị "thổi phồng" bởi vừa xem đáp án xong).
+//   'check'          : câu kiểm tra ngay sau khi xem từ mới (luyện bổ sung).
+//   'extra'          : từ người học hay trả lời sai (từ hồ sơ kỹ năng) — luyện bổ sung, ≤ 25% buổi, ≤ RV_EXTRA_MAX.
+//   'redo'           : luyện lại câu sai (đổi DẠNG so với lần sai) — luyện bổ sung.
+//   'match'          : 1 bài ghép cặp từ chính các từ của buổi — luyện bổ sung.
+//   'drill'          : (cũ, V105) tương đương 'extra' dạng nghĩa→chữ Hán; chỉ còn để đọc phiên đã lưu.
+let rvQuestion = null;          // câu hỏi hiện tại (QE) — sinh 1 lần/câu, không sinh lại mỗi lần render
+let rvQSession = QS.newSession(); // lịch sử câu đã hỏi trong buổi (chống lặp, cân bằng vị trí đáp án)
+let rvLog = [];                 // nhật ký câu trả lời của buổi → màn Tổng kết
+let rvStage = 'run';            // 'start' (màn bắt đầu) | 'run'
+let rvStartInfo = null;         // số liệu THẬT của màn bắt đầu
+let rvMatch = null;             // trạng thái bài ghép cặp đang chơi
+const RV_NEW_GAP = 3;           // thẻ FSRS chính thức của từ mới đến sau ≥ 3 thẻ khác
+const RV_DRILL_GAP = 3;         // khoảng cách khi đưa câu luyện sai quay lại
+const RV_DRILL_MAX_TRIES = 2;   // tối đa 2 lần hỏi 1 từ ở chế độ luyện lại (không bắt người học lặp vô hạn)
+const RV_EXTRA_MAX = 6;
+const RV_PRACTICE_TYPES = ['drill', 'extra', 'check', 'redo'];
+function rvIsPractice(it) { return !!it && RV_PRACTICE_TYPES.includes(it.type); }
+function rvIsOfficial(it) { return !!it && (it.type === 'review' || it.type === 'new'); }
 
-let rvExercise = 'recognition';
-function rvChooseExercise(item) {
-  if (item && item.type === 'drill') return 'recall';
-  if (!item || item.type === 'new') return 'recognition';
-  const sk = item.suggestedSkill;
-  if (sk === 'recall') return 'recall';
-  if (sk === 'listening' && typeof skillAudioAvailable === 'function' && skillAudioAvailable()) return 'listening';
-  return 'recognition';
+function rvQCtx() {
+  return {
+    pool: WORDS.filter(x => isLoggedIn() || x.l <= GUEST_MAX_LESSON),
+    examples: rvExamplePool,
+    sentences: (typeof SENTENCES !== 'undefined') ? SENTENCES : [],
+    confuseGroups: (typeof CONFUSE_GROUPS !== 'undefined') ? CONFUSE_GROUPS : [],
+    audioOk: (typeof skillAudioAvailable === 'function') && skillAudioAvailable(),
+    heavy: (typeof pickHeavyDistractors === 'function') ? pickHeavyDistractors : null,
+  };
 }
+function rvSkillTypes(skill) { return QE.MCQ_ORDER.filter(t => QE.TYPES[t].skill === skill); }
+function rvBuildQuestionFor(item) {
+  const w = item.word, ctx = rvQCtx();
+  const base = { session: rvQSession, profile: item.skillProfile };
+  if (item.type === 'check') return QS.choose(w, ctx, Object.assign({}, base, { only: ['hz2vi'] }));
+  if (item.type === 'drill') return QS.choose(w, ctx, Object.assign({}, base, { only: ['vi2hz'] }));
+  if (item.type === 'extra' || item.type === 'redo') {
+    const opts = Object.assign({}, base, { allowPracticeOnly: true, exclude: item.failedTypes || [] });
+    const only = item.targetSkill ? rvSkillTypes(item.targetSkill) : [];
+    // Ưu tiên đúng kỹ năng đang yếu; nếu kỹ năng đó không dựng được câu hợp lệ thì thử bất kỳ dạng nào khác.
+    return (only.length && QS.choose(w, ctx, Object.assign({}, opts, { only }))) || QS.choose(w, ctx, opts)
+      || QS.choose(w, ctx, Object.assign({}, base, { allowPracticeOnly: true }));
+  }
+  return QS.choose(w, ctx, Object.assign({}, base, { fsrsOnly: true })); // thẻ FSRS chính thức: chỉ dạng server tự chấm được
+}
+function rvStageLabel(item) {
+  if (!item) return '';
+  if (item.type === 'review') return '🔁 Ôn nhanh';
+  if (item.type === 'new' || item.type === 'check') return '🆕 Học từ mới';
+  return '🎯 Luyện thích ứng';
+}
+function rvRecordAnswer(item, q, correct, ms, official) {
+  QS.record(rvQSession, q, correct);
+  rvLog.push({ hz: q.hz, l: q.l, typeId: q.typeId, skill: q.skill, correct: !!correct, ms: ms == null ? null : Math.round(ms), official: !!official, source: item.type });
+  if (rvLog.length > 400) rvLog.shift();
+}
+function rvRestoreQSession() {
+  rvQSession = QS.newSession();
+  for (const e of rvLog) {
+    rvQSession.asked[e.hz + '|' + e.typeId] = (rvQSession.asked[e.hz + '|' + e.typeId] || 0) + 1;
+    rvQSession.typeCount[e.typeId] = (rvQSession.typeCount[e.typeId] || 0) + 1;
+    rvQSession.history.push({ hz: e.hz, typeId: e.typeId, correct: !!e.correct });
+  }
+  rvQSession.history = rvQSession.history.slice(-60);
+}
+// Thời gian đọc phản hồi trước khi tự chọn rating: câu có giải thích dài (điền từ vào câu) cần lâu hơn.
+function rvAutoMs() { return (rvQuestion && rvQuestion.typeId === 'cloze') ? 6000 : RV_AUTO_COMMIT_MS; }
 
 // ── Bổ sung "Highlight System Rating" (revert V67's auto-only flow) ─────────────────────────────
 let rvRatingPhase = null;   // null (chưa tới lúc) | 'loading' (đang hỏi server gợi ý) | 'pending'
@@ -162,7 +208,7 @@ async function startStudySession(weakMode, forceNew) {
     // trực tiếp vào rvQueue (thay vì trước đây copy tay từng field vào các biến rời rvSession/...).
     const saved = sqReadPersisted(savedKey);
     if (saved && saved.items.length && sqLessonFilterMatches(saved.lessonFilter)) {
-      const filteredItems = saved.items.filter(it => it.type === 'drill' || !sessionKnownHz.has(it.word.hz)); // V105: giữ câu nhớ lại ngay
+      const filteredItems = saved.items.filter(it => (it.type !== 'review' && it.type !== 'new') || !sessionKnownHz.has(it.word.hz)); // V106: chỉ lọc thẻ FSRS đã biết; giữ câu luyện bổ sung
       const purged = saved.items.length - filteredItems.length;
       if (filteredItems.length) {
         rvQueue.items = filteredItems;
@@ -175,6 +221,8 @@ async function startStudySession(weakMode, forceNew) {
         rvQueue.lessonFilter = saved.lessonFilter || sqSnapshotLessonFilter();
         rvQueue.dayKey = saved.dayKey || todayKey();
         rvSummary = (saved.extra && saved.extra.summary) || rvSummary;
+        rvLog = (saved.extra && Array.isArray(saved.extra.log)) ? saved.extra.log : []; rvRestoreQSession();
+        rvStage = 'run'; rvStartInfo = null; rvMatch = null;
         rvBlockedByBacklog = false; rvTotalDue = 0; // phiên đang khôi phục chắc chắn có thẻ thật, không liên quan lý do "bị chặn"
         rvExamplePool = []; rvLastAnswer = null;
         goTab('review');
@@ -190,6 +238,7 @@ async function startStudySession(weakMode, forceNew) {
   }
   rvExamplePool = []; rvLastAnswer = null;
   rvQueue = sqCreate();
+  rvLog = []; rvQSession = QS.newSession(); rvMatch = null; rvStage = 'run'; rvStartInfo = null; // V106: buổi mới
   rvQueue.sessionId = genIdempotencyKey();
   rvQueue.startTime = Date.now();
   rvQueue.lessonFilter = sqSnapshotLessonFilter();
@@ -199,20 +248,31 @@ async function startStudySession(weakMode, forceNew) {
   if (el) el.innerHTML = `<div class="study-empty">Đang tải phiên học...</div>`;
   const { list, error, reviewCount, newCount, blockedByBacklog, totalDue } = await rvFetchFreshSession(false);
   if (error) { alert(error); goTab('today'); return; }
-  rvQueue.items = list;
+  // V106: thêm nguồn thứ 3 (từ hay trả lời sai) + 1 bài ghép cặp; thẻ FSRS chính thức giữ nguyên thứ tự.
+  let sessionItems = list, extraCount = 0;
+  if (!rvWeakMode) {
+    const ex = await rvAddExtras(sessionItems);
+    extraCount = ex.extraCount;
+    sessionItems = rvInsertMatch(ex.items);
+  }
+  rvQueue.items = sessionItems;
   rvSummary = { reviewCount: reviewCount || 0, newCount: newCount || 0 };
   rvBlockedByBacklog = !!blockedByBacklog;
   rvTotalDue = totalDue || 0;
-  rvQueue.totalPlanned = rvQueue.items.length;
+  rvQueue.totalPlanned = sessionItems.filter(rvIsOfficial).length;
   // Nạp trước kho ví dụ cho các bài xuất hiện trong session (Phần 24) — không chặn hiển thị.
-  const lessonsInSession = [...new Set(rvQueue.items.map(it => it.word.l))];
+  const lessonsInSession = [...new Set(rvQueue.items.filter(it => it.word).map(it => it.word.l))];
   if (lessonsInSession.length && !isGuest && authToken) {
     fetch('/api/word-examples?lessons=' + lessonsInSession.join(','), { headers: authHeaders() })
       .then(r => r.json()).then(d => { if (d.ok) rvExamplePool = d.examples || []; })
       .catch(() => {});
   }
-  sqPersist(savedKey, rvQueue, { summary: rvSummary });
-  rvPrepareCurrentCard();
+  sqPersist(savedKey, rvQueue, { summary: rvSummary, log: rvLog });
+  if (!rvWeakMode && sessionItems.length) {
+    rvStage = 'start'; rvStartInfo = rvBuildStartInfo(sessionItems, extraCount); // màn bắt đầu: chỉ số liệu thật
+  } else {
+    rvPrepareCurrentCard();
+  }
   render();
 }
 
@@ -227,6 +287,7 @@ async function rvRelearnFromStart() {
   sqClearPersisted(savedKey);
   rvExamplePool = []; rvLastAnswer = null;
   rvQueue = sqCreate();
+  rvLog = []; rvQSession = QS.newSession(); rvMatch = null; rvStage = 'run'; rvStartInfo = null; // V106: buổi mới
   rvQueue.sessionId = genIdempotencyKey();
   rvQueue.startTime = Date.now();
   rvQueue.lessonFilter = sqSnapshotLessonFilter();
@@ -252,27 +313,48 @@ function rvFindExample(hz) {
   return matches[Math.floor(Math.random() * matches.length)];
 }
 
-// Sinh 4 lựa chọn trắc nghiệm cho thẻ Ở ĐẦU hàng đợi (currentIndex = rvQueue.items[0]), và bắt đầu
-// đo responseTime NGAY tại đây (thời điểm câu hỏi thực sự sẵn sàng cho user — Phần 4).
+// Chuẩn bị phần tử Ở ĐẦU hàng đợi: màn giới thiệu từ mới | bài ghép cặp | câu trắc nghiệm do bộ chọn
+// chọn dạng + QE dựng (đã kiểm hợp lệ). Bắt đầu đo responseTime NGAY tại đây — thời điểm câu hỏi thực sự
+// sẵn sàng cho người học (Phần 4).
 function rvPrepareCurrentCard() {
-  if (!rvQueue.items.length) return;
-  const w = rvQueue.items[0].word;
-  // V86: review LUÔN hỏi hz→nghĩa (RV_QUIZ_TYPE='hz2vi' — xem đầu file), nên field chấm đáp án
-  // luôn là 'vi'. Truyền THẲNG (không còn dựa ngầm vào biến qzType của quiz.js như trước V86).
-  rvExercise = rvChooseExercise(rvQueue.items[0]);
-  rvOptions = rvMakeOpts(w, {
-    answerField: rvExercise === 'recognition' ? 'vi' : 'hz',
-    mode: rvExercise === 'listening' ? 'listening' : 'text',
-  });
-  rvAnswerChanges = 0;
-  rvPhase = 'question';
-  rvLastAnswer = null;
-  // Bổ sung "Highlight System Rating": dọn sạch trạng thái rating của câu TRƯỚC ĐÓ trước khi hiện
-  // câu mới — tránh còn sót highlight/countdown của câu cũ.
   rvClearCountdown();
+  rvQuestion = null; rvMatch = null;
+  rvAnswerChanges = 0;
+  rvLastAnswer = null;
+  rvPhase = 'question';
+  let guard = 0;
+  while (rvQueue.items.length && guard++ < 60) {
+    const item = rvQueue.items[0];
+    if (item.type === 'new' && !item.introduced) { rvPhase = 'intro'; break; }
+    if (item.type === 'match') {
+      const words = (item.hzs || []).map(h => WORDS.find(x => x.hz === h)).filter(Boolean);
+      const ctx = rvQCtx();
+      const m = QE.buildMatch(words, 'vi', ctx) || QE.buildMatch(words, 'py', ctx);
+      if (m) {
+        rvMatch = { m, solved: new Set(), solvedRights: new Set(), selected: null, wrong: new Set(), answers: {}, done: false };
+        rvPhase = 'match'; break;
+      }
+      rvQueue.items.shift(); continue; // không đủ dữ liệu ghép cặp không mơ hồ → bỏ qua, không tạo bài giả
+    }
+    const q = rvBuildQuestionFor(item);
+    if (q) { rvQuestion = q; rvPhase = 'question'; break; }
+    // Không dựng nổi câu hợp lệ nào cho từ này (kho từ quá ít): bỏ phần tử khỏi phiên thay vì kẹt vòng lặp.
+    rvQueue.items.shift();
+  }
+  // Bổ sung "Highlight System Rating": dọn sạch trạng thái rating của câu TRƯỚC ĐÓ.
   rvRatingPhase = null; rvSystemRating = null; rvUserRating = null; rvFinalRating = null; rvPendingReview = null;
   rvStartedAt = performance.now();
   vtMarkStart(); // "review nhiễu khi thoát ra vào lại" — reset bộ đếm ẩn cho câu hỏi MỚI này
+}
+
+// Người học xem xong từ mới → câu kiểm tra nhanh (luyện bổ sung, không tính FSRS). Thẻ FSRS chính thức của
+// từ này được đưa lại vào hàng đợi sau RV_NEW_GAP thẻ khi câu kiểm tra xong (xem rvAdvanceQueue).
+function rvIntroDone() {
+  const it = rvQueue.items[0];
+  if (!it || rvPhase !== 'intro') return;
+  rvQueue.items[0] = Object.assign({}, it, { type: 'check', introduced: true, origType: 'new' });
+  rvPrepareCurrentCard();
+  render();
 }
 
 function rvClearCountdown() {
@@ -327,7 +409,7 @@ function rvRenderRatingBar() {
   // bấm luôn, thay vì câu cũ khiến user tưởng phải đợi mới thao tác được.
   if (rvRatingPhase === 'loading') hint = 'Chọn đánh giá của bạn <span class="kbd-hint">· ⌨️ 1-4</span> <span style="opacity:.7">(đang tải gợi ý hệ thống...)</span>';
   else if (rvRatingPhase === 'pending' && rvSystemRating) {
-    hint = `Hệ thống đề xuất: <b>${RV_RATING_META[rvSystemRating].label}</b> · Tự động chọn sau <span id="rv-countdown-num">${Math.ceil(RV_AUTO_COMMIT_MS / 1000)}</span>s <span class="kbd-hint">· ⌨️ 1-4</span>`;
+    hint = `Hệ thống đề xuất: <b>${RV_RATING_META[rvSystemRating].label}</b> · Tự động chọn sau <span id="rv-countdown-num">${Math.ceil(rvAutoMs() / 1000)}</span>s <span class="kbd-hint">· ⌨️ 1-4</span>`;
   } else if (finalRating) {
     hint = `Đã chọn: <b>${RV_RATING_META[finalRating].label}</b>${rvUserRating ? '' : ' (hệ thống tự chọn)'}`;
   }
@@ -344,7 +426,7 @@ async function rvFetchSystemRating({ word, selectedAnswer, responseTimeMs, answe
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({
         wordId: { hz: word.hz, l: word.l },
-        quizType: RV_EXERCISE_META[rvExercise].quizType,
+        quizType: rvQuestion.quizType,
         selectedAnswer,
         responseTimeMs: Number.isFinite(responseTimeMs) ? Math.round(responseTimeMs) : null,
         answerChanges: Number.isFinite(answerChanges) ? answerChanges : 0,
@@ -369,7 +451,7 @@ function rvUpdateCountdownDisplay() {
 // mỗi tick) để tránh vẽ lại cả thẻ mỗi giây (Phần "Mobile UX" — không được gây layout shift/giật).
 function rvStartCountdown(attemptId) {
   rvClearCountdown();
-  rvCountdownEndAt = Date.now() + RV_AUTO_COMMIT_MS;
+  rvCountdownEndAt = Date.now() + rvAutoMs();
   rvUpdateCountdownDisplay();
   rvCountdownTimer = setInterval(() => {
     if (attemptId !== rvAttemptId || currentTab !== 'review' || rvRatingPhase !== 'pending') { rvClearCountdown(); return; }
@@ -408,7 +490,7 @@ async function rvCommitRating(attemptId, chosenRating) {
   const item = rvQueue.items[0];
   const w = item.word;
   const reviewPromise = submitFsrsReviewAwaited({
-    word: w, quizType: RV_EXERCISE_META[rvExercise].quizType, exerciseType: RV_EXERCISE_META[rvExercise].exerciseType,
+    word: w, quizType: rvQuestion.quizType, exerciseType: rvQuestion.exerciseFsrs,
     selectedAnswer: pending.selectedAnswer,
     responseTimeMs: pending.responseTimeMs, answerChanges: pending.answerChanges,
     rating: rvFinalRating,
@@ -431,13 +513,189 @@ async function rvCommitRating(attemptId, chosenRating) {
   rvAdvanceQueue();
 }
 
+let rvStyleInjected = false;
+function rvInjectStyle() {
+  if (rvStyleInjected || typeof document === 'undefined') return;
+  rvStyleInjected = true;
+  const st = document.createElement('style');
+  st.textContent = `
+  .rv-type-tag{font-size:.7rem;color:var(--muted);font-weight:700;text-align:center;margin-bottom:4px}
+  .rv-cloze{font-size:1.5rem;font-weight:800;text-align:center;margin:10px 0 4px;line-height:1.5;word-break:break-word}
+  .rv-cloze-vi{font-size:.9rem;color:var(--muted);text-align:center;margin-bottom:8px}
+  .rv-explain{font-size:.85rem;color:var(--muted);text-align:left;background:var(--paper);border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin:8px 0;line-height:1.5}
+  .rv-start-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}
+  .rv-start-cell{background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:10px;text-align:center}
+  .rv-start-num{font-size:1.5rem;font-weight:900}.rv-start-lbl{font-size:.72rem;color:var(--muted);font-weight:700}
+  .rv-match{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}
+  .rv-match-col{display:flex;flex-direction:column;gap:8px}
+  .rv-match-btn{min-height:48px;border:2px solid var(--border);border-radius:12px;background:var(--paper);color:var(--ink);font:inherit;font-weight:700;padding:8px;cursor:pointer;word-break:break-word}
+  .rv-match-btn.sel{border-color:var(--l10a,#2980b9);box-shadow:0 0 0 2px var(--l10c,#d6eaf8)}
+  .rv-match-btn.done{border-color:var(--l8a,#27ae60);background:var(--l8c,#d5f5e3);opacity:.85}
+  .rv-sum-table{width:100%;border-collapse:collapse;font-size:.85rem;margin:8px 0}
+  .rv-sum-table td,.rv-sum-table th{padding:5px 6px;border-bottom:1px solid var(--border);text-align:left}
+  .rv-sum-weak{display:flex;gap:10px;align-items:baseline;padding:4px 0;border-bottom:1px solid var(--border);text-align:left}`;
+  document.head.appendChild(st);
+}
+
+function rvExplainHtml() {
+  const q = rvQuestion;
+  if (!q || q.typeId === 'hz2vi' || q.typeId === 'vi2hz') return ''; // 2 dạng này màn đáp án đã hiện đủ chữ/pinyin/nghĩa
+  return `<div class="rv-explain">${q.explanation.map(l => `<div>${escapeHtml(l)}</div>`).join('')}</div>`;
+}
+
+function rvQuestionBodyHtml(tagLabel, w) {
+  const q = rvQuestion, p = q.prompt;
+  let stem;
+  if (p.kind === 'audio') {
+    stem = `<button id="rv-play" class="listen-play" onclick="speak('${escapeJsAttr(w.hz)}')" title="Phát lại">🔊</button>
+      <div class="rv-prompt">${escapeHtml(p.ask)}</div>`;
+  } else if (p.kind === 'cloze') {
+    stem = `<div class="rv-cloze">${escapeHtml(p.main)}</div>
+      ${p.sub ? `<div class="rv-cloze-vi">${escapeHtml(p.sub)}</div>` : ''}
+      <div class="rv-prompt">${escapeHtml(p.ask)}</div>`;
+  } else if (q.typeId === 'hz2vi') {
+    stem = `<div class="rv-hz">${escapeHtml(w.hz)}</div>
+      ${showPinyin ? `<div class="rv-py">${escapeHtml(w.py || '')}</div>` : ''}
+      <div class="rv-prompt">${escapeHtml(p.ask)}</div>`;
+  } else if (q.typeId === 'hz2py') {
+    // Chọn pinyin: KHÔNG hiện pinyin của từ ở đề dù người dùng đang bật "Hiện Pinyin" (sẽ lộ đáp án).
+    stem = `<div class="rv-hz">${escapeHtml(w.hz)}</div><div class="rv-prompt">${escapeHtml(p.ask)}</div>`;
+  } else {
+    stem = `<div class="rv-vi" style="font-size:1.3rem;margin:10px 0">${escapeHtml(p.main || '')}</div>
+      <div class="rv-prompt">${escapeHtml(p.ask)}</div>`;
+  }
+  const opts = q.options.map(o =>
+    `<button class="quiz-opt" data-v="${escapeHtml(o.key)}" onclick="rvPick(this)" ${rvSubmitting ? 'disabled' : ''}>${escapeHtml(o.label)}</button>`
+  ).join('');
+  return `
+      <div class="rv-tag">${tagLabel} · ${lessonsLabel(w)}</div>
+      <div class="rv-type-tag">${escapeHtml(QE.TYPES[q.typeId].label)}</div>
+      ${stem}
+      <div class="quiz-opts" id="rv-opts">${opts}</div>
+      <div class="kbd-hint" style="text-align:center;margin-top:2px;">⌨️ 1-4 để chọn</div>`;
+}
+
+function rvIntroHtml(tagLabel, w) {
+  const ex = rvFindExample(w.hz);
+  const audioOk = (typeof skillAudioAvailable === 'function') && skillAudioAvailable();
+  return `
+      <div class="rv-tag">${tagLabel} · ${lessonsLabel(w)}</div>
+      <div class="rv-type-tag">Xem kỹ từ mới trước khi được hỏi</div>
+      <div class="rv-hz">${escapeHtml(w.hz)}</div>
+      <div class="rv-py">${escapeHtml(w.py || '')}</div>
+      <div class="rv-vi">${escapeHtml(w.vi || '')}</div>
+      ${w.hanviet ? `<div class="rv-hv">Hán Việt: ${escapeHtml(w.hanviet)}</div>` : ''}
+      ${audioOk ? `<button id="rv-play" class="btn btn-sound btn-sm" onclick="speak('${escapeJsAttr(w.hz)}')">🔊 Nghe</button>` : ''}
+      ${renderHanziParts(w.hz)}
+      ${ex ? `<div class="rv-ex">${escapeHtml(ex.zh)}<br><span style="color:var(--muted);font-size:.85rem;">${escapeHtml(ex.vi || '')}</span></div>` : ''}
+      ${wnBlockHtml(w.hz)}
+      <div style="text-align:center;margin-top:14px"><button class="btn btn-primary" onclick="rvIntroDone()">Đã xem — kiểm tra ngay</button></div>`;
+}
+
+function rvMatchHtml(tagLabel) {
+  const st = rvMatch, m = st.m;
+  const leftBtns = m.lefts.map((hz, i) => {
+    const cls = st.solved.has(hz) ? ' done' : (st.selected === hz ? ' sel' : '');
+    return `<button class="rv-match-btn${cls}" ${st.solved.has(hz) || st.done ? 'disabled' : ''} onclick="rvMatchPick('L',${i})">${escapeHtml(hz)}</button>`;
+  }).join('');
+  const rightBtns = m.rights.map((r, i) => {
+    const cls = st.solvedRights.has(r) ? ' done' : '';
+    return `<button class="rv-match-btn${cls}" ${st.solvedRights.has(r) || st.done ? 'disabled' : ''} onclick="rvMatchPick('R',${i})">${escapeHtml(r)}</button>`;
+  }).join('');
+  const wrongN = st.wrong.size;
+  return `
+      <div class="rv-tag">${tagLabel}</div>
+      <div class="rv-type-tag">Ghép cặp</div>
+      <div class="rv-prompt">Ghép chữ Hán với ${m.kind === 'vi' ? 'nghĩa' : 'Pinyin'} tương ứng</div>
+      <div class="rv-match"><div class="rv-match-col">${leftBtns}</div><div class="rv-match-col">${rightBtns}</div></div>
+      ${st.done
+        ? `<div class="rv-feedback" style="color:${wrongN ? 'var(--l10a)' : 'var(--l8a)'}">${wrongN ? `Ghép xong · ${wrongN} cặp cần xem lại` : '✅ Ghép đúng hết'}</div>
+           <div style="text-align:center;margin-top:10px"><button class="btn btn-primary" onclick="rvMatchContinue()">Tiếp tục</button></div>`
+        : `<div class="kbd-hint" style="text-align:center">Chạm 1 chữ Hán bên trái, rồi chạm đáp án bên phải</div>`}`;
+}
+
+function rvStartHtml() {
+  const i = rvStartInfo;
+  const cell = (n, l) => `<div class="rv-start-cell"><div class="rv-start-num">${n}</div><div class="rv-start-lbl">${l}</div></div>`;
+  const lessons = i.lessons.length ? `Bài ${i.lessons.join(', ')}` : 'Phạm vi đang chọn';
+  return `<div class="rv-card">
+    <div class="rv-tag">🎓 Hôm nay học</div>
+    <div style="font-size:1.2rem;font-weight:800;margin:6px 0">${escapeHtml(lessons)}</div>
+    <div class="rv-start-grid">
+      ${cell(i.newCount, 'Từ mới')}
+      ${cell(i.reviewCount, 'Thẻ đến hạn ôn (FSRS)')}
+      ${i.extraCount > 0 ? cell(i.extraCount, 'Từ cần luyện thêm') : ''}
+      ${cell('~' + i.estimated, 'Số câu dự kiến')}
+    </div>
+    ${rvBlockedByBacklog ? `<div class="rv-explain">⏳ Đang có ${rvTotalDue} thẻ cần ôn, nên hệ thống tạm chặn học thêm từ mới cho đến khi ôn hết.</div>` : ''}
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+      <button class="btn btn-primary" onclick="rvBeginSession()">▶️ Bắt đầu học</button>
+      ${i.extraCount > 0 ? `<button class="btn" onclick="rvStartWeakPractice()">🎯 Chỉ luyện từ hay sai</button>` : ''}
+      <button class="btn" style="background:var(--border)" onclick="goTab('today')">Quay lại</button>
+    </div>
+  </div>`;
+}
+
+function rvSummaryHtml() {
+  const total = rvLog.length;
+  const right = rvLog.filter(e => e.correct).length;
+  const acc = total ? Math.round((right / total) * 100) : 0;
+  const end = rvQueue.endTime || Date.now();
+  const mins = rvQueue.startTime ? Math.max(1, Math.round((end - rvQueue.startTime) / 60000)) : null;
+  const typeLabel = (id) => id === 'match' ? 'Ghép cặp' : ((QE.TYPES[id] || {}).label || id);
+  const byType = {};
+  for (const e of rvLog) { const b = byType[e.typeId] || (byType[e.typeId] = { n: 0, ok: 0 }); b.n++; if (e.correct) b.ok++; }
+  const typeRows = Object.keys(byType).map(id => `<tr><td>${escapeHtml(typeLabel(id))}</td><td>${byType[id].ok}/${byType[id].n}</td><td>${Math.round(byType[id].ok / byType[id].n * 100)}%</td></tr>`).join('');
+  const SK = { recognition: 'Nhận diện', recall: 'Nhớ chủ động', listening: 'Nghe', pinyin: 'Pinyin', context: 'Từ trong câu' };
+  const bySkill = {};
+  for (const e of rvLog) { const b = bySkill[e.skill] || (bySkill[e.skill] = { n: 0, ok: 0 }); b.n++; if (e.correct) b.ok++; }
+  // Kỹ năng cần cải thiện: CHỈ khi có ≥3 câu của kỹ năng đó trong buổi và tỉ lệ đúng < 70%; còn lại "chưa đủ dữ liệu".
+  const weakSkills = Object.keys(bySkill).filter(k => bySkill[k].n >= 3 && bySkill[k].ok / bySkill[k].n < 0.7).map(k => SK[k] || k);
+  const thinSkills = Object.keys(bySkill).filter(k => bySkill[k].n < 3).map(k => SK[k] || k);
+  // Từ cần ôn lại: từ có lần trả lời CUỐI CÙNG trong buổi là sai.
+  const last = new Map();
+  for (const e of rvLog) last.set(e.hz, e);
+  const wrongWords = [...last.values()].filter(e => !e.correct);
+  const weakHtml = wrongWords.slice(0, 8).map(e => {
+    const w = WORDS.find(x => x.hz === e.hz && x.l === e.l) || WORDS.find(x => x.hz === e.hz) || { hz: e.hz };
+    return `<div class="rv-sum-weak"><b style="font-size:1.2rem">${escapeHtml(w.hz)}</b><span style="color:var(--muted)">${escapeHtml(w.py || '')}</span><span>${escapeHtml(w.vi || '')}</span></div>`;
+  }).join('');
+  const counts = (rvSummary.reviewCount || rvSummary.newCount) ? `Đã ôn ${rvSummary.reviewCount} từ, học ${rvSummary.newCount} từ mới.` : '';
+  return `<div class="rv-done" style="text-align:left">
+    <div style="text-align:center"><div class="rv-done-num">🎉</div>
+    <div style="font-size:1.3rem;font-weight:800;margin:10px 0;">Tổng kết buổi học</div>
+    ${counts ? `<div style="color:var(--muted);margin-bottom:10px;">${counts}</div>` : ''}</div>
+    <div class="rv-start-grid">
+      <div class="rv-start-cell"><div class="rv-start-num">${total}</div><div class="rv-start-lbl">Câu đã làm</div></div>
+      <div class="rv-start-cell"><div class="rv-start-num">${right} / ${total - right}</div><div class="rv-start-lbl">Đúng / Sai</div></div>
+      <div class="rv-start-cell"><div class="rv-start-num">${acc}%</div><div class="rv-start-lbl">Tỉ lệ đúng trong buổi</div></div>
+      <div class="rv-start-cell"><div class="rv-start-num">${mins == null ? '—' : mins + ' phút'}</div><div class="rv-start-lbl">Thời gian học</div></div>
+    </div>
+    <div style="font-weight:800;margin-top:6px">Kết quả theo dạng bài</div>
+    <table class="rv-sum-table"><tr><th>Dạng bài</th><th>Đúng</th><th>Tỉ lệ</th></tr>${typeRows}</table>
+    <div style="font-weight:800">Kỹ năng cần cải thiện</div>
+    <div style="font-size:.9rem;margin:4px 0 8px">${weakSkills.length ? escapeHtml(weakSkills.join(', ')) : 'Chưa phát hiện kỹ năng yếu trong buổi này.'}${thinSkills.length ? `<div style="color:var(--muted);font-size:.8rem">Chưa đủ dữ liệu (dưới 3 câu): ${escapeHtml(thinSkills.join(', '))}</div>` : ''}</div>
+    <div style="font-weight:800">Từ cần ôn lại ${wrongWords.length ? `(${wrongWords.length})` : ''}</div>
+    ${weakHtml || '<div style="color:var(--muted);font-size:.9rem;margin:4px 0 8px">Không có từ nào sai ở lần trả lời cuối.</div>'}
+    <div class="rv-explain">Tỉ lệ đúng trong một buổi chỉ cho biết bạn làm bài ra sao hôm nay — chưa phải mức độ ghi nhớ lâu dài. Độ nhớ dài hạn do lịch ôn FSRS theo dõi qua nhiều ngày.</div>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:10px">
+      ${wrongWords.length ? `<button class="btn btn-primary" onclick="rvStartRedoWrong()">🔁 Luyện lại câu sai</button>` : ''}
+      <button class="btn ${wrongWords.length ? '' : 'btn-primary'}" onclick="startStudySession(${rvWeakMode}, true)">▶️ Học tiếp</button>
+      <button class="btn" onclick="rvRelearnFromStart()">🔁 Học lại từ đầu</button>
+      <button class="btn" style="background:var(--border)" onclick="goTab('today')">✅ Kết thúc buổi học</button>
+    </div>
+  </div>`;
+}
+
 function renderReview() {
+  rvInjectStyle();
+  if (rvStage === 'start' && rvStartInfo) return rvStartHtml();
   if (!rvQueue.items.length) {
     // FIX (audit — màn "Xong phiên học! Đã ôn 0 từ, học 0 từ mới" gây hiểu lầm là lỗi): tách riêng
     // "chưa từng có gì để học" (kèm lý do cụ thể) khỏi "đã thật sự học xong 1 phiên có thẻ".
-    if (rvSummary.reviewCount === 0 && rvSummary.newCount === 0) {
+    if (rvLog.length === 0 && rvSummary.reviewCount === 0 && rvSummary.newCount === 0) {
       const reason = rvBlockedByBacklog
-        ? `⏳ Bạn đang có ${rvTotalDue} thẻ CẦN ÔN đến hạn (có thể ở Quyển/bài khác ngoài phạm vi đang chọn) — hệ thống đang chặn học từ mới cho tới khi ôn hết backlog này (cài đặt "Chỉ học từ mới sau khi hết backlog ôn tập" đang bật). Vào Cài đặt hằng ngày để tắt, hoặc chọn đúng Quyển/bài đang có thẻ due để ôn trước.`
+        ? `⏳ Bạn đang có ${rvTotalDue} thẻ CẦN ÔN đến hạn (có thể ở Quyển/bài khác ngoài phạm vi đang chọn) — hệ thống đang chặn học từ mới cho tới khi ôn hết backlog này`
         : `Không có thẻ nào đến hạn ôn hoặc còn trong ngân sách từ mới hôm nay ở phạm vi Quyển/bài đang chọn.`;
       return `<div class="rv-done">
         <div class="rv-done-num">📭</div>
@@ -446,82 +704,46 @@ function renderReview() {
         <button class="btn btn-primary" onclick="goTab('today')">Về Hôm nay học</button>
       </div>`;
     }
-    return `<div class="rv-done">
-      <div class="rv-done-num">🎉</div>
-      <div style="font-size:1.3rem;font-weight:800;margin:10px 0;">Xong phiên học!</div>
-      <div style="color:var(--muted);margin-bottom:20px;">Đã ôn ${rvSummary.reviewCount} từ, học ${rvSummary.newCount} từ mới.</div>
-      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
-        <button class="btn btn-primary" onclick="startStudySession(${rvWeakMode}, true)">▶️ Học tiếp</button>
-        <button class="btn" onclick="rvRelearnFromStart()">🔁 Học lại từ đầu</button>
-        <button class="btn" style="background:var(--border)" onclick="goTab('today')">Về Hôm nay học</button>
-      </div>
-    </div>`;
+    return rvSummaryHtml();
   }
   const item = rvQueue.items[0];
-  const w = item.word;
-  const pct = Math.min(100, Math.round((rvQueue.answeredCount / (rvQueue.totalPlanned||1)) * 100));
-  const isDrill = item.type === 'drill';
-  const tagLabel = isDrill ? '🧠 Nhớ lại từ mới' : (item.type === 'new' ? '🆕 Từ mới' : '🔁 Ôn tập');
+  const w = item.word || { hz: '', py: '', vi: '', l: 0 };
+  const official = rvQueue.items.filter(rvIsOfficial).length;
+  const pct = Math.min(100, Math.round((rvQueue.answeredCount / (rvQueue.totalPlanned || 1)) * 100));
+  const practice = rvIsPractice(item);
+  const tagLabel = rvStageLabel(item);
   let body;
-  if (rvPhase === 'question') {
-    // Chỉ 1 bước duy nhất: nhìn chữ Hán → chọn nghĩa đúng (Phần 1/17). Không có bước "tự nhớ rồi
-    // bấm Đúng/Sai" riêng như v66 — hệ thống tự xác định đúng/sai khi user chọn đáp án.
-    if (rvExercise === 'recognition') {
-      const optHtml = rvOptions.map(o =>
-        `<button class="quiz-opt" data-v="${escapeHtml(o.vi)}" onclick="rvPick(this,'${escapeJsAttr(o.hz)}')" ${rvSubmitting ? 'disabled' : ''}>${escapeHtml(o.vi)}</button>`
-      ).join('');
-      body = `
-      <div class="rv-tag">${tagLabel} · ${lessonsLabel(w)}</div>
-      <div class="rv-hz">${escapeHtml(w.hz)}</div>
-      ${showPinyin ? `<div class="rv-py">${escapeHtml(w.py || '')}</div>` : ''}
-      <div class="rv-prompt">${escapeHtml(w.hz)} là gì?</div>
-      <div class="quiz-opts" id="rv-opts">${optHtml}</div>
-      <div class="kbd-hint" style="text-align:center;margin-top:2px;">⌨️ 1-4 để chọn</div>`;
-    } else {
-      // recall / listening: đáp án cần chọn là CHỮ HÁN nên KHÔNG được hiện chữ Hán (hay pinyin) của
-      // từ ở phần câu hỏi — nếu không sẽ lộ đáp án và bài không còn kiểm tra đúng kỹ năng.
-      const optHtml = rvOptions.map(o =>
-        `<button class="quiz-opt" data-v="${escapeHtml(o.hz)}" onclick="rvPick(this,'${escapeJsAttr(o.hz)}')" ${rvSubmitting ? 'disabled' : ''}>${escapeHtml(o.hz)}</button>`
-      ).join('');
-      const stem = rvExercise === 'listening'
-        ? `<button id="rv-play" class="listen-play" onclick="speak('${escapeJsAttr(w.hz)}')" title="Phát lại">🔊</button>
-           <div class="rv-prompt">Nghe và chọn chữ Hán đúng</div>`
-        : `<div class="rv-vi" style="font-size:1.3rem;margin:10px 0">${escapeHtml(w.vi || '')}</div>
-           <div class="rv-prompt">Chữ Hán nào có nghĩa này?</div>`;
-      body = `
-      <div class="rv-tag">${tagLabel} · ${lessonsLabel(w)}</div>
-      ${stem}
-      <div class="quiz-opts" id="rv-opts">${optHtml}</div>
-      <div class="kbd-hint" style="text-align:center;margin-top:2px;">⌨️ 1-4 để chọn</div>`;
-    }
-  } else if (isDrill) {
-    // Màn đáp án của câu nhớ lại ngay: không có thanh đánh giá FSRS (đây không phải lượt FSRS).
+  if (rvPhase === 'intro') {
+    body = rvIntroHtml(tagLabel, w);
+  } else if (rvPhase === 'match' && rvMatch) {
+    body = rvMatchHtml(tagLabel);
+  } else if (rvPhase === 'question' && rvQuestion) {
+    body = rvQuestionBodyHtml(tagLabel, w);
+  } else if (practice) {
+    // Màn đáp án của câu LUYỆN BỔ SUNG: không có thanh đánh giá FSRS (đây không phải lượt FSRS).
     const r = rvLastAnswer;
     const exD = rvFindExample(w.hz);
     body = `
       <div class="rv-tag">${tagLabel} · ${lessonsLabel(w)}</div>
       <div class="rv-hz">${escapeHtml(w.hz)}</div>
       <div class="rv-feedback" style="color:${r && r.correct ? 'var(--l8a)' : 'var(--l10a)'};">
-        ${r && r.correct ? '✅ Nhớ rồi!' : '❌ Chưa đúng — xem lại và thử lần nữa sau ít thẻ'}
+        ${r && r.correct ? '✅ Chính xác' : '❌ Chưa đúng — xem lại và thử lại sau ít câu'}
       </div>
       <div class="rv-py">${escapeHtml(w.py || '')}</div>
       ${showMeaning ? `<div class="rv-vi">${escapeHtml(w.vi || '')}</div>` : ''}
       ${w.hanviet ? `<div class="rv-hv">Hán Việt: ${escapeHtml(w.hanviet)}</div>` : ''}
       ${renderHanziParts(w.hz)}
-      ${exD ? `<div class="rv-ex">${exD.zh}<br><span style="color:var(--muted);font-size:.85rem;">${exD.vi}</span></div>` : ''}
+      ${rvExplainHtml()}
+      ${(exD && !(rvQuestion && rvQuestion.typeId === 'cloze')) ? `<div class="rv-ex">${escapeHtml(exD.zh)}<br><span style="color:var(--muted);font-size:.85rem;">${escapeHtml(exD.vi || '')}</span></div>` : ''}
       ${wnBlockHtml(w.hz)}
-      <div style="text-align:center;margin-top:12px"><button class="btn btn-primary" onclick="rvDrillContinue()">Tiếp tục</button></div>`;
+      <div style="text-align:center;margin-top:12px"><button class="btn btn-primary" onclick="rvPracticeContinue()">Tiếp tục</button></div>`;
   } else {
     // Đã có kết quả trắc nghiệm: lộ đáp án đầy đủ + bổ sung "Highlight System Rating" — hiện lại 4
     // nút Again/Hard/Good/Easy, highlight nút hệ thống đề xuất, cho user xác nhận/đổi trước khi
     // commit thật lên FSRS (thay cho hành vi 100% tự động của V67).
     const r = rvLastAnswer;
     const ex = rvFindExample(w.hz);
-    // YÊU CẦU (theo yêu cầu người dùng): riêng ở màn "kết quả" (đã trả lời) của "Hôm nay học",
-    // Pinyin và Hán Việt LUÔN hiện để củng cố trí nhớ ngay sau khi biết đáp án — không theo nút
-    // "Ẩn Pinyin"/"Ẩn Hán Việt" ở thanh công cụ (2 nút đó vẫn áp dụng bình thường cho MỌI chỗ
-    // khác: màn câu hỏi ở trên, Flashcard, Trắc nghiệm, Gõ chữ, Nghe chọn). showMeaning (nghĩa
-    // tiếng Việt) không đổi — vẫn theo đúng nút "Ẩn nghĩa" như trước.
+    // Ở màn "kết quả" của "Hôm nay học", Pinyin và Hán Việt LUÔN hiện để củng cố trí nhớ ngay sau khi biết đáp án.
     let savedLine = '';
     if (rvRatingPhase === 'committing') savedLine = `<div class="rv-saved-line">⏳ Đang lưu...</div>`;
     else if (rvRatingPhase === 'done') savedLine = `<div class="rv-saved-line">${rvSavedLine(r)}</div>`;
@@ -535,15 +757,19 @@ function renderReview() {
       ${showMeaning ? `<div class="rv-vi">${w.vi || ''}</div>` : ''}
       ${w.hanviet ? `<div class="rv-hv">Hán Việt: ${w.hanviet}</div>` : ''}
       ${renderHanziParts(w.hz)}
-      ${ex ? `<div class="rv-ex">${ex.zh}<br><span style="color:var(--muted);font-size:.85rem;">${ex.vi}</span></div>` : ''}
+      ${rvExplainHtml()}
+      ${(ex && !(rvQuestion && rvQuestion.typeId === 'cloze')) ? `<div class="rv-ex">${ex.zh}<br><span style="color:var(--muted);font-size:.85rem;">${ex.vi}</span></div>` : ''}
       ${wnBlockHtml(w.hz)}
       ${rvRenderRatingBar()}
       ${savedLine}
       ${(!isGuest && isAdminRole() && r && r.autoRating) ? `<div class="rv-saved-line">🐞 debug: auto rating = ${r.autoRating}</div>` : ''}`;
   }
+  const counter = rvPhase === 'intro' ? 'Học từ mới · xem kỹ rồi làm câu kiểm tra'
+    : (practice || rvPhase === 'match') ? 'Luyện bổ sung · không tính vào lịch ôn'
+    : `Câu ${rvQueue.answeredCount + 1} · còn ${official} thẻ trong hàng đợi`;
   return `
     <div class="rv-progress-wrap"><div class="rv-progress-fill" style="width:${pct}%;"></div></div>
-    <div class="rv-counter">${isDrill ? 'Nhớ lại nhanh · không tính vào lịch ôn' : `Câu ${rvQueue.answeredCount + 1} · còn ${rvQueue.items.filter(i => i.type !== 'drill').length} trong hàng đợi`}</div>
+    <div class="rv-counter">${counter}</div>
     <div class="rv-card">${body}</div>
   `;
 }
@@ -552,14 +778,19 @@ function renderReview() {
 // làm cho tab Trắc nghiệm — để rvPick() biết ngay đáp án vừa chọn đúng hay sai mà không cần chờ
 // server trả lời (server vẫn là nguồn sự thật cuối cùng, việc này chỉ để phản hồi UI tức thời).
 function bindReview() {
-  if (rvPhase !== 'question' || !rvQueue.items.length) return;
-  const w = rvQueue.items[0].word;
-  const correctVal = rvExercise === 'recognition' ? w.vi : w.hz;
-  document.querySelectorAll('#rv-opts .quiz-opt').forEach(b => {
-    b._correct = (b.dataset.v === correctVal);
+  if (rvStage === 'start' || !rvQueue.items.length) return;
+  if (rvPhase === 'intro') {
+    // Từ mới: tự phát âm khi có giọng đọc (nếu không có giọng thì không có nút/âm thanh giả).
+    if (typeof skillAudioAvailable === 'function' && skillAudioAvailable()) {
+      setTimeout(() => { const pb = document.getElementById('rv-play'); if (pb) pb.click(); }, 400);
+    }
+    return;
+  }
+  if (rvPhase !== 'question' || !rvQuestion) return;
+  document.querySelectorAll('#rv-opts .quiz-opt').forEach((b, i) => {
+    b._correct = (i === rvQuestion.correctIndex);
   });
-  // Bài nghe: tự phát âm thanh khi câu hỏi hiện ra (giống tab Nghe-chọn).
-  if (rvExercise === 'listening') {
+  if (rvQuestion.prompt.kind === 'audio') {
     setTimeout(() => { const pb = document.getElementById('rv-play'); if (pb) pb.click(); }, 400);
   }
 }
@@ -569,12 +800,11 @@ function bindReview() {
 //     FSRS rating + gọi ts-fsrs + lưu). ──
 let rvAttemptId = 0; // FIX: đánh dấu lượt trả lời hiện tại — phản hồi server đến TRỄ (sau khi user
                       // đã sang câu khác) sẽ tự bị bỏ qua thay vì ghi đè nhầm màn hình câu sau.
-async function rvPick(btn, hz) {
-  if (rvSubmitting || rvPhase !== 'question') return;
-  if (rvQueue.items[0] && rvQueue.items[0].type === 'drill') return rvPickDrill(btn); // V105: không đi đường FSRS
+async function rvPick(btn) {
+  if (rvSubmitting || rvPhase !== 'question' || !rvQuestion) return;
+  if (rvIsPractice(rvQueue.items[0])) return rvPickPractice(btn); // luyện bổ sung: KHÔNG đi đường FSRS
   rvSubmitting = true;
-  // "Review nhiễu khi thoát ra vào lại": trừ đi tổng thời gian tab bị ẩn (chuyển app/khoá màn hình)
-  // trong lúc câu hỏi này đang chờ trả lời — performance.now() vẫn chạy đều khi ẩn nên phải tự trừ.
+  // "Review nhiễu khi thoát ra vào lại": trừ đi tổng thời gian tab bị ẩn trong lúc câu hỏi này chờ trả lời.
   const responseTimeMs = Math.max(0, Math.round(performance.now() - rvStartedAt - vtHiddenMs())); // Phần 4
   const item = rvQueue.items[0];
   const w = item.word;
@@ -589,13 +819,12 @@ async function rvPick(btn, hz) {
   });
   if (isCorrectLocally) playDing(); else playBuzz();
   speak(w.hz);
+  rvRecordAnswer(item, rvQuestion, isCorrectLocally, responseTimeMs, true);
 
-  // Hiện đáp án NGAY bằng kết quả đã biết ở client (đáp án đúng đã nhúng sẵn trong DOM) — không đợi
-  // Neon mới hiện đúng/sai, giữ UI phản hồi tức thời.
   rvLastAnswer = { correct: isCorrectLocally, card: null, autoRating: null };
   rvPhase = 'answered';
-  // Bổ sung "Highlight System Rating": KHÔNG commit thẳng lên FSRS nữa — trước tiên hỏi server gợi
-  // ý System Rating (chỉ đọc), rồi hiện 4 nút Again/Hard/Good/Easy + countdown cho user xác nhận.
+  // Bổ sung "Highlight System Rating": KHÔNG commit thẳng lên FSRS — trước tiên hỏi server gợi ý System
+  // Rating (chỉ đọc), rồi hiện 4 nút Again/Hard/Good/Easy + countdown cho user xác nhận.
   rvRatingPhase = 'loading';
   rvSystemRating = null; rvUserRating = null; rvFinalRating = null;
   rvPendingReview = { selectedAnswer, responseTimeMs, answerChanges: rvAnswerChanges };
@@ -603,10 +832,7 @@ async function rvPick(btn, hz) {
   render();
 
   const systemRating = await rvFetchSystemRating({ word: w, selectedAnswer, responseTimeMs, answerChanges: rvAnswerChanges });
-  // AUDIT V82: thêm điều kiện rvRatingPhase === 'loading' — vì nút đã bấm được ngay từ lúc 'loading'
-  // (xem rvChooseRating), user có thể đã tự bấm 1 rating VÀ rvCommitRating đã chuyển phase sang
-  // 'committing'/'done' TRƯỚC KHI fetch gợi ý hệ thống này kịp trả lời. Không được ghi đè ngược lại
-  // 'pending' trong trường hợp đó (sẽ làm "sống lại" màn hình chờ countdown cho 1 lượt ĐÃ commit).
+  // AUDIT V82: chỉ tiếp tục khi vẫn đang 'loading' (user có thể đã tự bấm rating và commit trước khi gợi ý về).
   if (attemptId !== rvAttemptId || currentTab !== 'review' || rvRatingPhase !== 'loading') return;
   rvSystemRating = systemRating;
   rvRatingPhase = 'pending';
@@ -614,12 +840,13 @@ async function rvPick(btn, hz) {
   rvStartCountdown(attemptId);
 }
 
-// V105: trả lời câu "nhớ lại ngay". KHÔNG gọi /api/study/review(/preview) → không đụng lịch FSRS.
-// Chỉ ghi vào hồ sơ kỹ năng (recall) bằng bài luyện bổ sung, đi qua outbox chung (không mất khi mất mạng).
-function rvPickDrill(btn) {
+// Trả lời câu LUYỆN BỔ SUNG (check/extra/redo/drill). KHÔNG gọi /api/study/review(/preview) → không đụng
+// lịch FSRS. Chỉ ghi hồ sơ kỹ năng bằng bài luyện bổ sung, đi qua outbox chung (không mất khi mất mạng,
+// không ghi trùng khi gửi lại).
+function rvPickPractice(btn) {
   rvPhase = 'answered'; // chặn bấm đúp ngay lập tức (rvPick thoát sớm khi rvPhase !== 'question')
   const item = rvQueue.items[0];
-  const w = item.word;
+  const w = item.word, q = rvQuestion;
   const responseTimeMs = Math.max(0, Math.round(performance.now() - rvStartedAt - vtHiddenMs()));
   const ok = !!btn._correct;
   const attemptId = ++rvAttemptId;
@@ -632,58 +859,192 @@ function rvPickDrill(btn) {
   speak(w.hz);
   rvLastAnswer = { correct: ok, card: null, autoRating: null };
   rvRatingPhase = null;
-  submitSkillPractice({ word: w, exerciseType: 'practice-recall', selectedAnswer: btn.dataset.v, responseTimeMs }).catch(() => {});
+  rvRecordAnswer(item, q, ok, responseTimeMs, false);
+  submitSkillPractice({ word: w, exerciseType: q.exercisePractice, selectedAnswer: btn.dataset.v, responseTimeMs }).catch(() => {});
   render();
-  if (ok) {
-    // Đúng → tự sang thẻ kế sau 1.5s (trừ khi đang mở khung viết mẹo nhớ). Sai → chờ bấm "Tiếp tục".
+  // Đúng và không có giải thích dài → tự sang câu kế sau 2s (đủ đọc). Có giải thích (điền từ, dễ nhầm) hoặc sai
+  // → chờ người học bấm "Tiếp tục" để kịp đọc.
+  const needsReading = !ok || q.typeId === 'cloze' || q.typeId === 'confusable' || q.typeId === 'hz2py';
+  if (!needsReading) {
     setTimeout(() => {
       if (attemptId === rvAttemptId && currentTab === 'review' && rvQueue.items[0] === item
           && rvPhase === 'answered' && !document.getElementById('wn-overlay')) rvAdvanceQueue();
-    }, 1500);
+    }, 2000);
   }
 }
-function rvDrillContinue() {
+function rvPracticeContinue() {
   const item = rvQueue.items[0];
-  if (!item || item.type !== 'drill' || rvPhase !== 'answered') return;
+  if (!item || !rvIsPractice(item) || rvPhase !== 'answered') return;
+  rvAdvanceQueue();
+}
+function rvDrillContinue() { rvPracticeContinue(); } // tên cũ (V105)
+
+// ── Ghép cặp (dạng 7) ──────────────────────────────────────────────────────────────────────────
+function rvMatchPick(side, idx) {
+  const st = rvMatch;
+  if (!st || st.done || rvPhase !== 'match') return;
+  if (side === 'L') {
+    const hz = st.m.lefts[idx];
+    if (st.solved.has(hz)) return;
+    st.selected = hz; render(); return;
+  }
+  const right = st.m.rights[idx];
+  if (!st.selected || st.solvedRights.has(right)) return;
+  const pair = st.m.pairs.find(p => p.hz === st.selected);
+  if (!pair) return;
+  if (!(pair.hz in st.answers)) st.answers[pair.hz] = right; // lần chọn ĐẦU TIÊN của chữ này là thứ được ghi nhận
+  if (pair.right === right) { st.solved.add(pair.hz); st.solvedRights.add(right); playDing(); }
+  else { st.wrong.add(pair.hz); playBuzz(); }
+  st.selected = null;
+  if (st.solved.size === st.m.pairs.length) rvMatchFinish();
+  render();
+}
+function rvMatchFinish() {
+  const st = rvMatch; st.done = true;
+  for (const p of st.m.pairs) {
+    const ok = !st.wrong.has(p.hz);
+    rvLog.push({ hz: p.hz, l: p.l, typeId: 'match', skill: st.m.skill, correct: ok, ms: null, official: false, source: 'match' });
+    submitSkillPractice({ word: p.word, exerciseType: st.m.exercisePractice, selectedAnswer: st.answers[p.hz], responseTimeMs: null }).catch(() => {});
+  }
+}
+function rvMatchContinue() {
+  if (!rvMatch || !rvMatch.done) return;
+  rvLastAnswer = { correct: true, card: null, autoRating: null };
   rvAdvanceQueue();
 }
 
 // V71/V78: thẻ Ở ĐẦU hàng đợi (rvQueue.items[0] = currentIndex) bị loại NGAY LẬP TỨC sau khi có kết
 // quả server. Đúng → loại vĩnh viễn khỏi phiên. Sai (Again) → chèn lại cách tối thiểu REPEAT_GAP
 // thẻ khác, KHÔNG gọi lại server giữa phiên — hàng đợi cạn thật (kể cả các thẻ Again đã được xử lý
-// xong) mới coi là hết. Hàm này tương đương sqAdvance() ở study-queue.js nhưng thao tác trên item
-// dạng {type,word} thay vì thẳng word — vẫn dùng CHUNG đúng field completedCards/answeredCount/
-// endTime/sessionKnownHz với 4 tab kia (Vấn đề 6/7), chỉ khác cách truy cập .word.hz.
+// xong) mới coi là hết. Dùng CHUNG field completedCards/answeredCount/endTime/sessionKnownHz với 4 tab kia.
 function rvAdvanceQueue() {
   if (currentTab !== 'review') return; // user đã rời màn hình, tránh render nhầm chỗ
   const it = rvQueue.items.shift();
-  if (it && it.type === 'drill') {
-    // Câu "nhớ lại ngay" (V105): KHÔNG tăng answeredCount/completedCards, KHÔNG đụng sessionKnownHz.
-    const okDrill = !!(rvLastAnswer && rvLastAnswer.correct);
-    if (!okDrill && (it.tries || 0) + 1 < RV_DRILL_MAX_TRIES) {
-      rvQueue.items.splice(Math.min(RV_DRILL_GAP, rvQueue.items.length), 0, { ...it, tries: (it.tries || 0) + 1 });
+  const ok = !!(rvLastAnswer && rvLastAnswer.correct);
+  if (it && it.type === 'match') {
+    // bài ghép cặp: luyện bổ sung, không tính tiến độ FSRS.
+  } else if (it && it.type === 'check') {
+    // Xong câu kiểm tra ngay sau khi xem từ mới → đưa THẺ FSRS CHÍNH THỨC của từ này vào lại sau RV_NEW_GAP thẻ.
+    rvQueue.items.splice(Math.min(RV_NEW_GAP, rvQueue.items.length), 0,
+      { type: 'new', word: it.word, introduced: true, skillProfile: it.skillProfile, suggestedSkill: it.suggestedSkill });
+  } else if (it && rvIsPractice(it)) {
+    // extra/redo/drill: sai → hỏi lại tối đa RV_DRILL_MAX_TRIES lần, mỗi lần ĐỔI dạng so với lần sai.
+    if (!ok && (it.tries || 0) + 1 < RV_DRILL_MAX_TRIES) {
+      const failed = (it.failedTypes || []).concat(rvQuestion ? [rvQuestion.typeId] : []);
+      rvQueue.items.splice(Math.min(RV_DRILL_GAP, rvQueue.items.length), 0, Object.assign({}, it, { tries: (it.tries || 0) + 1, failedTypes: failed }));
     }
   } else if (it) {
     rvQueue.answeredCount++;
-    const isCorrect = !!(rvLastAnswer && rvLastAnswer.correct);
     if (!Array.isArray(rvQueue.completedCards)) rvQueue.completedCards = [];
-    rvQueue.completedCards.push({ hz: it.word.hz, l: it.word.l, correct: isCorrect, at: Date.now() });
-    if (isCorrect) { sessionKnownHz.add(it.word.hz); saveSessionKnownHz(); sqPurgeHzFromAllQueues(it.word.hz); } // V74: loại khỏi TẤT CẢ tab khác; FIX: persist qua reload; purge khỏi hàng đợi tab khác
+    rvQueue.completedCards.push({ hz: it.word.hz, l: it.word.l, correct: ok, at: Date.now() });
+    if (ok) { sessionKnownHz.add(it.word.hz); saveSessionKnownHz(); sqPurgeHzFromAllQueues(it.word.hz); } // V74: loại khỏi TẤT CẢ tab khác; FIX: persist qua reload; purge khỏi hàng đợi tab khác
     else rvQueue.items.splice(Math.min(REPEAT_GAP, rvQueue.items.length), 0, it);
-    // V105: từ MỚI vừa trả lời đúng → hỏi lại ngay dạng nhớ chủ động sau RV_DRILL_GAP thẻ (xem chú thích đầu file).
-    // Chèn SAU bước purge ở trên để câu này không bị loại cùng các bản sao của từ.
-    if (RV_DRILL_ENABLED && isCorrect && it.type === 'new') {
-      rvQueue.items.splice(Math.min(RV_DRILL_GAP, rvQueue.items.length), 0, { type: 'drill', word: it.word, tries: 0 });
-    }
   }
   const savedKey = rvStorageMode();
   if (!rvQueue.items.length) {
     rvQueue.endTime = Date.now();
-    ssArchiveSession(savedKey, rvQueue);
-    refreshServerMeta(); sqClearPersisted(savedKey); // hết phiên — làm mới streak/known thật, dọn session đã lưu
-  } else {
-    sqPersist(savedKey, rvQueue, { summary: rvSummary }); // FIX (Bug 2 — session persistence): lưu lại sau mỗi câu để refresh không mất tiến trình
+    if (!rvQueue.practiceOnly) {
+      ssArchiveSession(savedKey, rvQueue);
+      refreshServerMeta(); sqClearPersisted(savedKey); // hết phiên — làm mới streak/known thật, dọn session đã lưu
+    }
+  } else if (!rvQueue.practiceOnly) {
+    sqPersist(savedKey, rvQueue, { summary: rvSummary, log: rvLog }); // FIX (Bug 2 — session persistence): lưu lại sau mỗi câu để refresh không mất tiến trình
   }
   rvPrepareCurrentCard();
   render();
+}
+
+// ── V106: nguồn thứ 3 — từ người học hay trả lời sai (từ hồ sơ kỹ năng), trộn xen kẽ vào buổi học ──────
+// Giới hạn: ≤ 25% số thẻ chính thức (tối thiểu 1 khi buổi có ≥4 thẻ), ≤ RV_EXTRA_MAX. KHÔNG thay thế và KHÔNG
+// chen lên trước thẻ FSRS nào: thẻ chính thức giữ nguyên thứ tự, extra chỉ xen vào giữa.
+async function rvFetchWeakWords(limit) {
+  if (isGuest || !authToken) return [];
+  try {
+    const audio = (typeof skillAudioAvailable === 'function' && skillAudioAvailable()) ? 1 : 0;
+    const res = await fetch(`/api/skills/practice-words?skill=mixed&weakOnly=1&limit=${limit}&allowListening=${audio}`, { headers: authHeaders() });
+    const d = await res.json().catch(() => null);
+    if (!d || !d.ok || !Array.isArray(d.words)) return [];
+    return d.words;
+  } catch { return []; }
+}
+function rvWordOf(row) { return WORDS.find(x => x.hz === row.hz && x.l === row.l) || WORDS.find(x => x.hz === row.hz) || null; }
+async function rvAddExtras(items) {
+  const officialN = items.length;
+  const cap = officialN ? Math.min(RV_EXTRA_MAX, Math.max(officialN >= 4 ? 1 : 0, Math.floor(officialN / 4))) : RV_EXTRA_MAX;
+  if (cap <= 0) return { items, extraCount: 0 };
+  const rows = await rvFetchWeakWords(cap + 3);
+  const inQueue = new Set(items.map(i => i.word.hz));
+  const extras = [];
+  for (const r of rows) {
+    if (inQueue.has(r.hz) || extras.length >= cap) continue;
+    const w = rvWordOf(r); if (!w) continue;
+    inQueue.add(r.hz);
+    extras.push({ type: 'extra', word: w, targetSkill: r.skill });
+  }
+  if (!extras.length) return { items, extraCount: 0 };
+  const out = []; const step = Math.max(1, Math.ceil(items.length / (extras.length + 1)));
+  let ei = 0;
+  items.forEach((it, i) => { out.push(it); if ((i + 1) % step === 0 && ei < extras.length) out.push(extras[ei++]); });
+  while (ei < extras.length) out.push(extras[ei++]);
+  return { items: out, extraCount: extras.length };
+}
+// Chèn 1 bài ghép cặp (từ chính các từ chính thức của buổi) ở ~70% buổi học — chỉ khi có ≥4 từ khác nhau.
+function rvInsertMatch(items) {
+  const hzs = [...new Set(items.filter(rvIsOfficial).map(i => i.word.hz))];
+  if (hzs.length < 4) return items;
+  const pick = hzs.slice(0, 4);
+  const out = items.slice();
+  out.splice(Math.min(out.length, Math.max(1, Math.floor(out.length * 0.7))), 0, { type: 'match', hzs: pick });
+  return out;
+}
+function rvBuildStartInfo(items, extraCount) {
+  const lessons = [...new Set(items.filter(rvIsOfficial).map(i => i.word.l))].sort((a, b) => a - b);
+  const newCount = items.filter(i => i.type === 'new').length;
+  const reviewCount = items.filter(i => i.type === 'review').length;
+  const matchN = items.filter(i => i.type === 'match').length;
+  return { lessons, newCount, reviewCount, extraCount, estimated: reviewCount + newCount * 2 + extraCount + matchN };
+}
+function rvBeginSession() {
+  if (rvStage !== 'start') return;
+  rvStage = 'run';
+  rvPrepareCurrentCard(); // đo lại responseTime từ lúc người học thực sự bấm "Bắt đầu"
+  render();
+}
+
+// Luyện bổ sung độc lập (không FSRS, không lưu phiên): từ hay sai / luyện lại câu sai.
+function rvBeginPracticeOnly(items) {
+  rvQueue = sqCreate();
+  rvQueue.practiceOnly = true;
+  rvQueue.sessionId = genIdempotencyKey();
+  rvQueue.startTime = Date.now();
+  rvQueue.dayKey = todayKey();
+  rvQueue.lessonFilter = sqSnapshotLessonFilter();
+  rvQueue.items = items;
+  rvQueue.totalPlanned = items.length;
+  rvStage = 'run'; rvStartInfo = null;
+  rvPrepareCurrentCard();
+  render();
+}
+async function rvStartWeakPractice() {
+  const rows = await rvFetchWeakWords(10);
+  const items = [];
+  for (const r of rows) { const w = rvWordOf(r); if (w) items.push({ type: 'redo', word: w, targetSkill: r.skill }); }
+  if (!items.length) { alert('Chưa có từ nào đủ dữ liệu để kết luận là hay trả lời sai.'); return; }
+  rvBeginPracticeOnly(items);
+}
+// Luyện lại câu sai (dạng 10): các từ có lần trả lời CUỐI trong buổi là sai; hỏi bằng DẠNG KHÁC lần sai.
+function rvStartRedoWrong() {
+  const last = new Map();
+  for (const e of rvLog) last.set(e.hz, e);
+  const failedByHz = new Map();
+  for (const e of rvLog) if (!e.correct && e.typeId !== 'match') { (failedByHz.get(e.hz) || failedByHz.set(e.hz, new Set()).get(e.hz)).add(e.typeId); }
+  const items = [];
+  for (const e of last.values()) {
+    if (e.correct) continue;
+    const w = WORDS.find(x => x.hz === e.hz && x.l === e.l) || WORDS.find(x => x.hz === e.hz);
+    if (!w) continue;
+    items.push({ type: 'redo', word: w, failedTypes: [...(failedByHz.get(e.hz) || [])], targetSkill: e.skill });
+  }
+  if (!items.length) { alert('Không có câu sai nào để luyện lại.'); return; }
+  rvBeginPracticeOnly(items);
 }

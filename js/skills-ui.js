@@ -3,7 +3,8 @@
 // đang đăng nhập. Bài luyện ở đây là luyện BỔ SUNG: gửi qua submitSkillPractice() (study-queue.js,
 // dùng chung outbox) → KHÔNG đổi lịch ôn FSRS.
 
-const SK_LABEL = { recognition: 'Nhận diện', recall: 'Nhớ chủ động', listening: 'Nghe', pronunciation: 'Phát âm', context: 'Từ trong câu' };
+const SK_LABEL = { recognition: 'Nhận diện', recall: 'Nhớ chủ động', listening: 'Nghe', pinyin: 'Pinyin', pronunciation: 'Phát âm', context: 'Từ trong câu' };
+const SK_MEASURED = ['recognition', 'recall', 'listening', 'pinyin', 'context'];
 let skState = { loaded: false, loading: false, error: null, overview: null, weak: [], weakHasMore: false, weakOffset: 0, trend: null, bucket: 'week', practice: null };
 
 function skAudioOk() { return typeof skillAudioAvailable === 'function' && skillAudioAvailable(); }
@@ -75,7 +76,7 @@ function skRenderOverview() {
     const s = sk[key] || { enough: 0, weak: 0 };
     return s.enough > 0 ? `${s.weak}<div class="sk-sub">trong ${s.enough} từ đủ dữ liệu</div>` : `<span class="sk-nodata">Chưa đủ dữ liệu</span>`;
   };
-  const enoughLine = ['recognition', 'recall', 'listening'].map(k => `${SK_LABEL[k]}: ${(sk[k] && sk[k].enough) || 0}`).join(' · ');
+  const enoughLine = SK_MEASURED.map(k => `${SK_LABEL[k]}: ${(sk[k] && sk[k].enough) || 0}`).join(' · ');
   const cell = (label, val) => `<div class="sk-cell"><div class="sk-val">${val}</div><div class="sk-lbl">${label}</div></div>`;
   return `
   <style>
@@ -98,7 +99,7 @@ function skRenderOverview() {
     </div>
     <div style="font-size:.75rem;color:var(--muted);margin-top:10px;line-height:1.5">
       Số từ đủ dữ liệu để đánh giá (≥3 lượt/kỹ năng) — ${enoughLine}.<br>
-      Từ chưa có đủ dữ liệu không bị tính là yếu. Phát âm và "từ trong câu" chưa có bài kiểm tra đáng tin nên chưa được đánh giá.
+      Từ chưa có đủ dữ liệu không bị tính là yếu. Phát âm chưa có bài kiểm tra đáng tin nên chưa được đánh giá.
     </div>
   </div>`;
 }
@@ -114,7 +115,8 @@ function skRenderPracticeLauncher() {
     <div class="panel-title">🎯 Luyện theo kỹ năng</div>
     ${btn('🧠 Luyện nhớ chủ động', "skStartPractice('recall')", true, '')}
     ${btn('🎧 Luyện nghe', "skStartPractice('listening')", audioOk, 'Trình duyệt này không có giọng đọc tiếng Trung')}
-    ${btn('📖 Luyện từ trong câu', '', false, 'Chưa có bài điền từ vào câu')}
+    ${btn('📖 Luyện từ trong câu', "skStartPractice('context')", true, '')}
+    ${btn('🔤 Luyện Pinyin', "skStartPractice('pinyin')", true, '')}
     ${btn('🔀 Luyện tổng hợp', "skStartPractice('mixed')", true, '')}
     <div style="font-size:.72rem;color:var(--muted);line-height:1.5">Luyện bổ sung không thay đổi lịch ôn FSRS. Chỉ dùng các từ bạn đã ôn ít nhất 1 lần.</div>
   </div>`;
@@ -147,7 +149,7 @@ function skRenderTrend() {
     <button class="quiz-type-btn${skState.bucket === 'day' ? ' active' : ''}" onclick="skSetBucket('day')">Theo ngày</button>
     <button class="quiz-type-btn${skState.bucket === 'week' ? ' active' : ''}" onclick="skSetBucket('week')">Theo tuần</button></div>`;
   const rows = (t && t.rows) || [];
-  const blocks = ['recognition', 'recall', 'listening'].map(k => {
+  const blocks = SK_MEASURED.map(k => {
     const pts = rows.filter(r => r.skill === k);
     const total = pts.reduce((a, r) => a + r.attempts, 0);
     // Chỉ vẽ khi đủ nhiều điểm + đủ lượt, tránh biểu đồ gây hiểu nhầm từ vài câu lẻ.
@@ -168,81 +170,122 @@ function skRenderTrend() {
 }
 
 // ── Chạy bài luyện bổ sung ───────────────────────────────────────────────────────────────────
+// Dùng CHUNG bộ tạo/chọn câu hỏi với tab "Hôm nay học" (QE/QS). Câu nào không dựng được hợp lệ (vd từ chưa có
+// câu ví dụ cho bài "từ trong câu") thì bị bỏ qua, không tạo câu giả.
+let skExamples = [];
+function skQCtx() {
+  return {
+    pool: WORDS.filter(x => isLoggedIn() || x.l <= GUEST_MAX_LESSON),
+    examples: skExamples,
+    sentences: (typeof SENTENCES !== 'undefined') ? SENTENCES : [],
+    confuseGroups: (typeof CONFUSE_GROUPS !== 'undefined') ? CONFUSE_GROUPS : [],
+    audioOk: skAudioOk(),
+    heavy: (typeof pickHeavyDistractors === 'function') ? pickHeavyDistractors : null,
+  };
+}
+function skTypesFor(skill) { return QE.MCQ_ORDER.filter(t => QE.TYPES[t].skill === skill); }
+
+async function skLoadExamplesFor(words) {
+  const lessons = [...new Set(words.map(w => w.l))];
+  if (!lessons.length || isGuest) { skExamples = []; return; }
+  try {
+    const res = await fetch('/api/word-examples?lessons=' + lessons.join(','), { headers: authHeaders() });
+    const d = await res.json().catch(() => null);
+    skExamples = (d && d.ok && d.examples) || [];
+  } catch { skExamples = []; }
+}
+
 async function skStartPractice(kind) {
   const audioOk = skAudioOk();
   try {
     const d = await skFetchJson(`/api/skills/practice-words?skill=${encodeURIComponent(kind)}&limit=10&allowListening=${audioOk ? 1 : 0}`);
     if (!d.words.length) { alert('Chưa có từ phù hợp để luyện kỹ năng này. Hãy ôn thêm từ ở các tab học trước.'); return; }
-    skState.practice = { items: d.words, idx: 0, correct: 0, answered: 0, locked: false, opts: null, startedAt: 0 };
-    skPrepareQuestion();
+    await skLoadExamplesFor(d.words);
+    skState.practice = { items: d.words.map(w => ({ ...w })), idx: 0, correct: 0, answered: 0, locked: false, q: null, startedAt: 0 };
+    skAdvanceToValid();
+    if (!skState.practice.q) { skState.practice = null; alert('Chưa tạo được câu hỏi hợp lệ cho kỹ năng này (có thể thiếu câu ví dụ hoặc âm thanh).'); return; }
     render();
   } catch (e) { alert(e.message); }
 }
 
-function skStartPracticeWord(i) {
+async function skStartPracticeWord(i) {
   const it = skState.weak[i]; if (!it) return;
-  skState.practice = { items: [{ ...it, skill: it.skill }], idx: 0, correct: 0, answered: 0, locked: false, opts: null, startedAt: 0 };
-  skPrepareQuestion();
+  await skLoadExamplesFor([it]);
+  skState.practice = { items: [{ ...it }], idx: 0, correct: 0, answered: 0, locked: false, q: null, startedAt: 0 };
+  skAdvanceToValid();
+  if (!skState.practice.q) { skState.practice = null; alert('Chưa tạo được câu hỏi hợp lệ cho từ này.'); return; }
   render();
 }
 
-function skPrepareQuestion() {
-  const p = skState.practice; if (!p || p.idx >= p.items.length) return;
-  const it = p.items[p.idx];
-  p.opts = rvMakeOpts(it, { answerField: 'hz', mode: it.skill === 'listening' ? 'listening' : 'text' });
-  p.locked = false;
-  p.startedAt = performance.now();
-  vtMarkStart();
+// Dựng câu cho phần tử hiện tại; nếu không dựng được thì bỏ qua sang phần tử kế (không kẹt).
+function skAdvanceToValid() {
+  const p = skState.practice;
+  p.q = null;
+  while (p.idx < p.items.length) {
+    const it = p.items[p.idx];
+    const w = WORDS.find(x => x.hz === it.hz && x.l === it.l) || WORDS.find(x => x.hz === it.hz);
+    const ctx = skQCtx();
+    const only = skTypesFor(it.skill);
+    const q = w && ((only.length && QS.choose(w, ctx, { only, allowPracticeOnly: true })) || QS.choose(w, ctx, { allowPracticeOnly: true }));
+    if (q) { p.q = q; p.locked = false; p.startedAt = performance.now(); vtMarkStart(); return; }
+    p.idx++;
+  }
 }
 
 function skRenderPractice() {
   const p = skState.practice;
-  if (p.idx >= p.items.length) {
+  if (p.idx >= p.items.length || !p.q) {
     return `<div class="panel exam-result">
       <div class="exam-score">${p.correct}/${p.answered}</div>
       <div style="color:var(--muted);margin:6px 0 12px">Đã ghi nhận vào hồ sơ kỹ năng. Lịch ôn FSRS không thay đổi.</div>
       <button class="btn btn-primary" onclick="skEndPractice()">Quay lại phân tích</button></div>`;
   }
-  const it = p.items[p.idx];
-  const listening = it.skill === 'listening';
-  const stem = listening
-    ? `<button id="sk-play" class="listen-play" onclick="speak('${escapeJsAttr(it.hz)}')" title="Phát lại">🔊</button><div class="rv-prompt" style="text-align:center">Nghe và chọn chữ Hán đúng</div>`
-    : `<div style="font-size:1.4rem;font-weight:800;text-align:center;margin:10px 0">${escapeHtml(it.vi || '')}</div><div class="rv-prompt" style="text-align:center">Chữ Hán nào có nghĩa này?</div>`;
-  const opts = p.opts.map(o => `<button class="quiz-opt" data-v="${escapeHtml(o.hz)}" onclick="skPick(this)">${escapeHtml(o.hz)}</button>`).join('');
+  const q = p.q, pr = q.prompt, w = q.word;
+  let stem;
+  if (pr.kind === 'audio') {
+    stem = `<button id="sk-play" class="listen-play" onclick="speak('${escapeJsAttr(w.hz)}')" title="Phát lại">🔊</button><div class="rv-prompt" style="text-align:center">${escapeHtml(pr.ask)}</div>`;
+  } else if (pr.kind === 'cloze') {
+    stem = `<div style="font-size:1.4rem;font-weight:800;text-align:center;margin:10px 0">${escapeHtml(pr.main)}</div>${pr.sub ? `<div style="text-align:center;color:var(--muted);font-size:.9rem">${escapeHtml(pr.sub)}</div>` : ''}<div class="rv-prompt" style="text-align:center">${escapeHtml(pr.ask)}</div>`;
+  } else if (q.typeId === 'hz2vi' || q.typeId === 'hz2py') {
+    stem = `<div style="font-size:2rem;font-weight:800;text-align:center;margin:10px 0">${escapeHtml(w.hz)}</div><div class="rv-prompt" style="text-align:center">${escapeHtml(pr.ask)}</div>`;
+  } else {
+    stem = `<div style="font-size:1.4rem;font-weight:800;text-align:center;margin:10px 0">${escapeHtml(pr.main || '')}</div><div class="rv-prompt" style="text-align:center">${escapeHtml(pr.ask)}</div>`;
+  }
+  const opts = q.options.map(o => `<button class="quiz-opt" data-v="${escapeHtml(o.key)}" onclick="skPick(this)">${escapeHtml(o.label)}</button>`).join('');
   return `<div class="panel">
-    <div style="font-size:.75rem;color:var(--muted);font-weight:700;margin-bottom:6px">Luyện ${SK_LABEL[it.skill]} · Câu ${p.idx + 1}/${p.items.length}</div>
+    <div style="font-size:.75rem;color:var(--muted);font-weight:700;margin-bottom:6px">Luyện ${SK_LABEL[q.skill]} · Câu ${p.idx + 1}/${p.items.length}</div>
     ${stem}<div class="quiz-opts" id="sk-opts">${opts}</div>
+    <div id="sk-explain" style="font-size:.85rem;color:var(--muted);margin-top:8px"></div>
     <button class="btn" style="margin-top:12px" onclick="skEndPractice()">Dừng luyện</button></div>`;
 }
 
 async function skPick(btn) {
-  const p = skState.practice; if (!p || p.locked) return;
+  const p = skState.practice; if (!p || p.locked || !p.q) return;
   p.locked = true;
-  const it = p.items[p.idx];
+  const q = p.q, w = q.word;
   const responseTimeMs = Math.max(0, performance.now() - p.startedAt - vtHiddenMs());
   const chosen = btn.dataset.v;
-  const ok = chosen === it.hz;
+  const ok = chosen === q.correctKey;
   document.querySelectorAll('#sk-opts .quiz-opt').forEach(b => {
-    if (b.dataset.v === it.hz) b.classList.add('correct');
+    if (b.dataset.v === q.correctKey) b.classList.add('correct');
     else if (b === btn && !ok) b.classList.add('wrong');
     b.disabled = true;
   });
+  const ex = document.getElementById('sk-explain');
+  if (ex) ex.innerHTML = q.explanation.map(l => `<div>${escapeHtml(l)}</div>`).join('');
   if (ok) playDing(); else playBuzz();
-  speak(it.hz);
+  speak(w.hz);
   p.answered++; if (ok) p.correct++;
+  const reading = q.explanation.length > 1 ? 3500 : 1500; // câu có giải thích dài cần thời gian đọc
   await Promise.all([
-    submitSkillPractice({
-      word: { hz: it.hz, l: it.l },
-      exerciseType: it.skill === 'listening' ? 'practice-listening' : 'practice-recall',
-      selectedAnswer: chosen, responseTimeMs,
-    }),
-    new Promise(r => setTimeout(r, 1300)),
+    submitSkillPractice({ word: { hz: w.hz, l: w.l }, exerciseType: q.exercisePractice, selectedAnswer: chosen, responseTimeMs }),
+    new Promise(r => setTimeout(r, reading)),
   ]);
   if (currentTab !== 'skills' || skState.practice !== p) return;
   p.idx++;
-  skPrepareQuestion();
+  skAdvanceToValid();
   render();
-  if (p.idx < p.items.length && p.items[p.idx].skill === 'listening') setTimeout(() => { const b = document.getElementById('sk-play'); if (b) b.click(); }, 400);
+  if (p.q && p.q.prompt.kind === 'audio') setTimeout(() => { const b = document.getElementById('sk-play'); if (b) b.click(); }, 400);
 }
 
 function skEndPractice() {
