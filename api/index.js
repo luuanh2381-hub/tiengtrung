@@ -660,6 +660,7 @@ app.get('/api/study/session', async (req, res) => {
 //     đúng/sai, không tin giá trị answerCorrect nào từ client).
 function correctAnswerForQuizType(word, quizType) {
   if (quizType === 'vi2hz' || quizType === 'py2hz') return word.hz;
+  if (quizType === 'hz2py') return word.py; // V106: chữ Hán → chọn Pinyin (đối chiếu đúng chuỗi pinyin lưu trong DB)
   return word.vi; // mặc định/'hz2vi': nhìn chữ Hán → chọn nghĩa
 }
 
@@ -850,7 +851,7 @@ app.get('/api/skills/practice-words', async (req, res) => {
     if (skill !== 'mixed' && !allowed.includes(skill)) {
       return res.json({ ok: false, error: 'Dạng luyện này hiện chưa khả dụng' });
     }
-    const words = await skillStore.getPracticeWords(authed.username, { skill, limit: req.query.limit, allowedSkills: allowed });
+    const words = await skillStore.getPracticeWords(authed.username, { skill, limit: req.query.limit, allowedSkills: allowed, weakOnly: req.query.weakOnly === '1' });
     res.json({ ok: true, words });
   } catch (e) { fail(res, e); }
 });
