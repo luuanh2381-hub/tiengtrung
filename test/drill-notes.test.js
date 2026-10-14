@@ -47,74 +47,11 @@ function makeRv(items, lastAnswer) {
 const W = (hz) => ({ hz, l: 1 });
 const item = (type, hz, extra) => ({ type, word: W(hz), ...(extra || {}) });
 
-console.log('\n[1] Nhớ lại ngay cho từ mới');
-test('Từ MỚI trả lời đúng → chèn 1 câu drill sau RV_DRILL_GAP thẻ; thẻ chính được tính, drill chưa tính', () => {
-  const r = makeRv([item('new', 'A'), item('review', 'B'), item('review', 'C'), item('review', 'D'), item('review', 'E')], { correct: true });
-  r.adv();
-  const q = r.ctx.rvQueue;
-  assert.strictEqual(q.answeredCount, 1);
-  assert.strictEqual(q.completedCards.length, 1);
-  assert.strictEqual(q.items[3].type, 'drill');
-  assert.strictEqual(q.items[3].word.hz, 'A');
-  assert.strictEqual(q.items.filter(i => i.type === 'drill').length, 1);
-});
-test('Từ mới trả lời SAI → không drill (thẻ vốn đã được chèn lại như cũ)', () => {
-  const r = makeRv([item('new', 'A'), item('review', 'B'), item('review', 'C'), item('review', 'D')], { correct: false });
-  r.adv();
-  assert.strictEqual(r.ctx.rvQueue.items.filter(i => i.type === 'drill').length, 0);
-  assert.ok(r.ctx.rvQueue.items.some(i => i.type === 'new' && i.word.hz === 'A'));
-});
-test('Thẻ ÔN TẬP trả lời đúng → không drill', () => {
-  const r = makeRv([item('review', 'A'), item('review', 'B')], { correct: true });
-  r.adv();
-  assert.strictEqual(r.ctx.rvQueue.items.filter(i => i.type === 'drill').length, 0);
-});
-test('Hàng đợi chỉ còn từ mới đó: drill đứng ngay sau và phiên KHÔNG kết thúc sớm', () => {
-  const r = makeRv([item('new', 'A')], { correct: true });
-  r.adv();
-  assert.strictEqual(r.ctx.rvQueue.items.length, 1);
-  assert.strictEqual(r.ctx.rvQueue.items[0].type, 'drill');
-  assert.strictEqual(r.calls.archived, 0);
-});
-test('Drill trả lời đúng → bị loại, KHÔNG tăng answeredCount/completedCards, KHÔNG đụng sessionKnownHz', () => {
-  const r = makeRv([item('drill', 'A', { tries: 0 }), item('review', 'B')], { correct: true });
-  r.adv();
-  const q = r.ctx.rvQueue;
-  assert.strictEqual(q.answeredCount, 0); assert.strictEqual(q.completedCards.length, 0);
-  assert.strictEqual(r.ctx.sessionKnownHz.size, 0); assert.deepStrictEqual(r.calls.purged, []);
-  assert.strictEqual(q.items.length, 1);
-});
-test('Drill sai lần 1 → hỏi lại 1 lần nữa; sai lần 2 → bỏ (không kẹt người học)', () => {
-  const r1 = makeRv([item('drill', 'A', { tries: 0 }), item('review', 'B'), item('review', 'C'), item('review', 'D'), item('review', 'E')], { correct: false });
-  r1.adv();
-  const again = r1.ctx.rvQueue.items.find(i => i.type === 'drill');
-  assert.ok(again && again.tries === 1);
-  const r2 = makeRv([item('drill', 'A', { tries: 1 }), item('review', 'B')], { correct: false });
-  r2.adv();
-  assert.strictEqual(r2.ctx.rvQueue.items.filter(i => i.type === 'drill').length, 0);
-});
-test('Mỗi từ mới chỉ sinh đúng 1 drill ban đầu (không nhân bản khi drill sai rồi lặp)', () => {
-  const r = makeRv([item('new', 'A'), item('review', 'B'), item('review', 'C'), item('review', 'D')], { correct: true });
-  r.adv();
-  assert.strictEqual(r.ctx.rvQueue.items.filter(i => i.type === 'drill').length, 1);
-});
-test('Drill luôn hỏi dạng nhớ chủ động (recall) và rvPickDrill KHÔNG gọi đường FSRS', () => {
-  const choose = grabFn(reviewSrc, 'rvChooseExercise');
-  const ctx = { skillAudioAvailable: () => true }; vm.createContext(ctx);
-  vm.runInContext(choose + ';globalThis.f = rvChooseExercise;', ctx);
-  assert.strictEqual(ctx.f({ type: 'drill', suggestedSkill: 'listening' }), 'recall');
-  const pick = grabFn(reviewSrc, 'rvPickDrill');
-  assert.ok(!/submitFsrsReview|rvFetchSystemRating|api\/study\/review/.test(pick), 'drill không được đi đường FSRS');
-  assert.ok(/submitSkillPractice\(\{[^}]*practice-recall/.test(pick));
-  assert.ok(/rvRatingPhase = null/.test(pick));
-});
-test('Khôi phục phiên và purge hàng đợi giữ nguyên câu drill', () => {
-  assert.ok(/it\.type === 'drill' \|\| !sessionKnownHz\.has/.test(reviewSrc));
-  assert.ok(/it\.type === 'drill' \|\| it\.word\.hz !== hz/.test(read('js/study-queue.js')));
-});
+// (Phần "nhớ lại ngay" kiểu V105 được thay bằng luồng giới thiệu → kiểm tra → ôn FSRS sau khoảng nghỉ của V106;
+//  xem test/adaptive-session.test.js.)
 
 // ── Mẹo nhớ: phía server ────────────────────────────────────────────────────────────────────────
-console.log('\n[2] Mẹo nhớ — server');
+console.log('\n[1] Mẹo nhớ — server');
 const N = require(path.join(ROOT, 'lib', 'word-notes'));
 test('sanitizeNote: bỏ ký tự điều khiển, gộp khoảng trắng; rỗng/null = xoá', () => {
   assert.strictEqual(N.sanitizeNote('  a\n\tb\u0000  c ').note, 'a b c');
@@ -183,7 +120,7 @@ test('Migration V105 chỉ cộng thêm, kiểu user_id TEXT / word_id INT', () 
 });
 
 // ── Mẹo nhớ: phía client (XSS) ──────────────────────────────────────────────────────────────────
-console.log('\n[3] Mẹo nhớ — client');
+console.log('\n[2] Mẹo nhớ — client');
 function loadWn() {
   const els = {};
   const doc = { getElementById: id => els[id] || null, createElement: () => ({ style: {}, appendChild() {} }), head: { appendChild() {} }, body: { appendChild() {} } };
@@ -210,7 +147,7 @@ test('hz chứa dấu nháy không phá thuộc tính onclick', () => {
   assert.ok(!/onclick="wnOpenEditor\('a'b/.test(html));
 });
 test('Khối ghi chú có mặt ở Review (đáp án + drill) và Flashcard; khách không thấy', () => {
-  assert.strictEqual((reviewSrc.match(/wnBlockHtml\(w\.hz\)/g) || []).length, 2);
+  assert.strictEqual((reviewSrc.match(/wnBlockHtml\(w\.hz\)/g) || []).length, 3); // màn giới thiệu + đáp án luyện bổ sung + đáp án FSRS
   assert.ok(/wnBlockHtml\(w\.hz\)/.test(read('js/flashcard.js')));
   assert.ok(/js\/word-notes\.js/.test(read('index.html')));
 });

@@ -77,7 +77,9 @@ console.log('\n[Xác nhận TĨNH — các điểm interpolation hz/py/vi/hanvie
 
 const FILES_TO_CHECK = {
   'js/quiz.js': [/data-v="\$\{escapeHtml\(o\.(vi|hz)\)\}"/, /onclick="qzPick\(this,'\$\{escapeJsAttr\(o\.hz\)\}'\)"/],
-  'js/review.js': [/data-v="\$\{escapeHtml\(o\.vi\)\}"/, /onclick="rvPick\(this,'\$\{escapeJsAttr\(o\.hz\)\}'\)"/],
+  // V106: nút đáp án của review.js do bộ tạo câu hỏi sinh (key/label) → escapeHtml cả hai; onclick="rvPick(this)" không còn nhúng dữ liệu.
+  'js/review.js': [/data-v="\$\{escapeHtml\(o\.key\)\}"/, />\$\{escapeHtml\(o\.label\)\}<\/button>/, /onclick="speak\('\$\{escapeJsAttr\(w\.hz\)\}'\)"/],
+  'js/skills-ui.js': [/data-v="\$\{escapeHtml\(o\.key\)\}"/, />\$\{escapeHtml\(o\.label\)\}<\/button>/],
   'js/listen.js': [/onclick="lsPickWord\(this,'\$\{escapeJsAttr\(o\.hz\)\}','\$\{escapeJsAttr\(w\.hz\)\}'\)"/, /onclick="speak\('\$\{escapeJsAttr\(w\.hz\)\}'\)"/],
   'js/stats.js': [/onclick="speak\('\$\{escapeJsAttr\(w\.hz\)\}'\)"/],
   'js/translate.js': [/onclick="speak\('\$\{escapeJsAttr\(s\.hz\)\}'\)"/],

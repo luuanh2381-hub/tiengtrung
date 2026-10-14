@@ -99,10 +99,28 @@ test('Nhãn lạ / thiếu → null; Flashcard (tự chấm) không có nhãn', 
   assert.strictEqual(S.resolveExercise(undefined, 'hz2vi'), null);
   assert.strictEqual(S.resolveExercise('flashcard', 'hz2vi'), null);
 });
-test('pronunciation / context KHÔNG có bài tập nào ghi nhận (chưa có bài kiểm tra đáng tin)', () => {
+test('pronunciation KHÔNG có bài tập nào ghi nhận (chưa có chấm phát âm đáng tin); pinyin/context có (V106)', () => {
   const skills = new Set(Object.values(S.EXERCISES).map(e => e.skill));
-  assert.ok(!skills.has('pronunciation') && !skills.has('context'));
-  assert.ok(!S.MEASURABLE_SKILLS.includes('pronunciation') && !S.MEASURABLE_SKILLS.includes('context'));
+  assert.ok(!skills.has('pronunciation'));
+  assert.ok(!S.MEASURABLE_SKILLS.includes('pronunciation'));
+  assert.ok(skills.has('pinyin') && skills.has('context'));
+  assert.ok(S.MEASURABLE_SKILLS.includes('pinyin') && S.MEASURABLE_SKILLS.includes('context'));
+});
+test('Dạng bài V106: nhãn ↔ quizType ↔ kỹ năng đúng; server chấm hz2py theo pinyin', () => {
+  const k = (e, q) => (S.resolveExercise(e, q) || {});
+  assert.strictEqual(k('review-hz2py', 'hz2py').skill, 'pinyin');
+  assert.strictEqual(k('review-cloze', 'vi2hz').skill, 'context');
+  assert.strictEqual(k('review-listen-vi', 'hz2vi').skill, 'listening');
+  assert.strictEqual(S.resolveExercise('review-hz2py', 'hz2vi'), null);
+  assert.ok(/quizType === 'hz2py'\) return word\.py/.test(read('api/index.js')));
+  for (const id of ['practice-recognition', 'practice-pinyin', 'practice-context', 'practice-listening-vi', 'practice-confusable', 'practice-match-vi', 'practice-match-py']) {
+    assert.strictEqual(S.EXERCISES[id].fsrs, false, id);
+  }
+});
+test('Bảng skill cho phép pinyin (CHECK nới ở cả bảng cũ) và practice-words nhận weakOnly', () => {
+  const st = read('lib/skill-store.js');
+  assert.ok(/DROP CONSTRAINT IF EXISTS word_skill_stats_skill_check/.test(st) && /'pinyin'/.test(st));
+  assert.ok(/weakOnly: req\.query\.weakOnly === '1'/.test(read('api/index.js')));
 });
 test('Bài luyện bổ sung (practice-*) mang fsrs:false — không đi đường FSRS', () => {
   assert.strictEqual(S.EXERCISES['practice-recall'].fsrs, false);
@@ -141,10 +159,10 @@ test('Không đề xuất kỹ năng không khả dụng (vd không có âm than
   const sk = A.pickSkillForWord({ isNew: false, stats: st, allowedSkills: ['recognition', 'recall'], rotation: 0 });
   assert.notStrictEqual(sk, 'listening');
 });
-test('Không bao giờ đề xuất pronunciation/context dù được yêu cầu', () => {
-  const sk = A.pickSkillForWord({ isNew: false, stats: {}, allowedSkills: ['pronunciation', 'context', 'recall'], rotation: 3 });
+test('Không bao giờ đề xuất pronunciation dù được yêu cầu', () => {
+  const sk = A.pickSkillForWord({ isNew: false, stats: {}, allowedSkills: ['pronunciation', 'recall'], rotation: 3 });
   assert.strictEqual(sk, 'recall');
-  assert.strictEqual(A.pickSkillForWord({ isNew: false, stats: {}, allowedSkills: ['pronunciation', 'context'], rotation: 0 }), null);
+  assert.strictEqual(A.pickSkillForWord({ isNew: false, stats: {}, allowedSkills: ['pronunciation'], rotation: 0 }), null);
 });
 test('Hoà điểm dữ liệu mỏng → xoay vòng theo rotation (không dồn mãi 1 dạng)', () => {
   const seen = new Set();
@@ -324,21 +342,6 @@ test('exerciseTypeFor: Quiz theo chiều hỏi, Type, Listen; Flashcard → unde
   assert.strictEqual(api.exerciseTypeFor('flash'), undefined);
 });
 
-// Chọn dạng bài của tab Review (rvChooseExercise): trích đúng hàm từ review.js để chạy.
-test('Review: từ mới → recognition; recall/listening theo gợi ý; listening chỉ khi có âm thanh', () => {
-  const src = read('js/review.js');
-  const m = src.match(/function rvChooseExercise\(item\) \{[\s\S]*?\n\}\n/);
-  assert.ok(m, 'không tìm thấy rvChooseExercise');
-  const mk = (audio) => { const ctx = { skillAudioAvailable: () => audio }; vm.createContext(ctx); vm.runInContext(m[0] + ';globalThis.f=rvChooseExercise;', ctx); return ctx.f; };
-  const noAudio = mk(false), audio = mk(true);
-  assert.strictEqual(audio({ type: 'new', suggestedSkill: 'listening' }), 'recognition');
-  assert.strictEqual(audio({ type: 'review', suggestedSkill: 'recall' }), 'recall');
-  assert.strictEqual(audio({ type: 'review', suggestedSkill: 'listening' }), 'listening');
-  assert.strictEqual(noAudio({ type: 'review', suggestedSkill: 'listening' }), 'recognition');
-  assert.strictEqual(audio({ type: 'review' }), 'recognition');
-  assert.strictEqual(audio(null), 'recognition');
-});
-
 // ── 6. Phân quyền / không đụng FSRS (kiểm tra tĩnh) ────────────────────────────────────────────
 console.log('\n[6] Phân quyền + cô lập khỏi FSRS (tĩnh)');
 const api = read('api/index.js');
@@ -397,9 +400,10 @@ test('Các chế độ học vẫn gửi quizType + selectedAnswer cho FSRS; Fla
   assert.ok(/submitFsrsReviewAwaited\(\{ word: w, quizType: 'hz2vi', selectedAnswer,/.test(read('js/flashcard.js')));
   assert.ok(!/exerciseType/.test(read('js/flashcard.js')));
 });
-test('Review: preview và commit dùng CÙNG quizType theo dạng bài hiện tại', () => {
+test('Review: preview và commit dùng CÙNG quizType của câu hỏi hiện tại (rvQuestion)', () => {
   const s = read('js/review.js');
-  assert.strictEqual((s.match(/RV_EXERCISE_META\[rvExercise\]\.quizType/g) || []).length, 2);
+  assert.strictEqual((s.match(/quizType: rvQuestion\.quizType/g) || []).length, 2);
+  assert.ok(/exerciseType: rvQuestion\.exerciseFsrs/.test(s));
   assert.ok(!/quizType: RV_QUIZ_TYPE/.test(s));
 });
 test('Migration V104 chỉ CỘNG THÊM (không DROP/DELETE/UPDATE ngoài phần hoàn tác đã comment) [case 15]', () => {
@@ -413,9 +417,9 @@ test('Giao diện: tab Phân tích năng lực đăng ký đủ (nút, script, d
   assert.ok(/renderSkills\(\); bindSkills\(\)/.test(read('js/navigation.js')));
   assert.ok(/'skills'/.test(read('js/auth.js')));
 });
-test('Giao diện: luyện nghe bị khoá khi không có âm thanh; "từ trong câu" bị khoá (chưa có bài)', () => {
+test('Giao diện: luyện nghe bị khoá khi không có âm thanh; "từ trong câu" mở (V106: có bài điền từ) và bỏ qua câu không hợp lệ', () => {
   const s = read('js/skills-ui.js');
-  assert.ok(/skAudioOk\(\)/.test(s) && /Chưa có bài điền từ vào câu/.test(s));
+  assert.ok(/skAudioOk\(\)/.test(s) && /skStartPractice\('context'\)/.test(s) && /skAdvanceToValid/.test(s));
   assert.ok(!/pronunciation/.test(s.replace(/SK_LABEL[^\n]*\n/, '').replace(/Phát âm[^\n]*\n/, '')) || true);
 });
 
