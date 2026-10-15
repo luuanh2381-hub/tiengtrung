@@ -92,4 +92,25 @@ test('Giao diện admin: bắt buộc tải sao lưu + gõ XOA mới gửi lện
   assert.ok(/escapeHtml\(u\.user_id\)/.test(a) && /escapeHtml\(h\.hz\)/.test(a));
   assert.ok(/expectedCards: orphanState\.cards, expectedHistory: orphanState\.history/.test(a));
 });
+test('dueBreakdown: chỉ SELECT, tham số hoá user_id, trả đủ 3 nhóm + theo bài', async () => {
+  const calls = [];
+  const client = { async query(sql, params) {
+    const q = sql.replace(/\s+/g, ' ').trim(); calls.push({ q, params });
+    if (/COUNT\(\*\)::int AS tong/.test(q)) return { rows: [{ tong: 10, khong_con_tu: 3, tu_khong_thuoc_bai: 4, tu_con_trong_bai: 3 }] };
+    if (/GROUP BY vl\.lesson/.test(q)) return { rows: [{ lesson: 34, cards: 3 }] };
+    return { rows: [] };
+  }, release() {} };
+  const dbPath = require.resolve(path.join(ROOT, 'lib', 'db'), { paths: [ROOT] });
+  const m = new Module(dbPath); m.filename = dbPath; m.loaded = true;
+  m.exports = { getPool: () => ({ connect: async () => client }), ensureFsrsTables: async () => {} };
+  require.cache[dbPath] = m; delete require.cache[require.resolve(path.join(ROOT, 'lib', 'orphans'))];
+  const O = require(path.join(ROOT, 'lib', 'orphans'));
+  const r = await O.dueBreakdown('tuananh');
+  assert.deepStrictEqual({ t: r.total, n: r.noWord, w: r.wordNoLesson, i: r.wordInLesson }, { t: 10, n: 3, w: 4, i: 3 });
+  assert.strictEqual(r.byLesson[0].lesson, 34);
+  assert.ok(calls.every(c => /^SELECT/.test(c.q) && c.params && c.params[0] === 'tuananh'));
+  await assert.rejects(() => O.dueBreakdown(''));
+  const api = read('api/index.js'); const i = api.indexOf("app.get('/api/admin/due-breakdown'");
+  assert.ok(i > 0 && /requireAuth\(req, res\)/.test(api.slice(i, i + 300)) && /requireAdmin\(/.test(api.slice(i, i + 300)));
+});
 runAll();
