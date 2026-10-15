@@ -102,6 +102,14 @@ function renderVocabAdmin() {
     <div id="vocab-list-area" style="color:var(--muted);padding:14px 0;text-align:center;">Đang tải...</div>
   </div>
   <div class="panel">
+    <div class="panel-title">🧹 Dọn bản ghi ôn tập mồ côi</div>
+    <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px;line-height:1.5;">
+      Thẻ FSRS và lịch sử ôn của những từ ĐÃ BỊ XOÁ khỏi hệ thống (chữ Hán đó không còn ở bất kỳ bài nào). Chúng vẫn được đếm vào "thẻ cần ôn" nhưng không bao giờ hiện ra để học. Việc này ảnh hưởng dữ liệu của MỌI người học, không hoàn tác được — nên có 3 bước: xem trước → tải bản sao lưu → xoá.
+    </div>
+    <button class="btn btn-sm" onclick="orphanPreview()">🔍 1. Kiểm tra (chỉ đọc)</button>
+    <div id="orphan-result" style="font-size:.85rem;margin-top:10px;"></div>
+  </div>
+  <div class="panel">
     <div class="panel-title">🗑️ Xoá toàn bộ dữ liệu</div>
     <button class="btn btn-sm" style="background:#fdecea;color:#c0392b;" onclick="clearAllVocab()">🗑️ Xoá toàn bộ từ đã thêm (Excel + thủ công)</button>
     <div style="font-size:.72rem;color:var(--muted);margin-top:6px;">Chỉ xoá các từ được thêm qua Excel/thủ công — không đụng tới bộ từ vựng gốc có sẵn của app (781 từ Quyển 1, 2).</div>
@@ -907,3 +915,71 @@ async function adminToggleRole(key, currentR) {
   adminLoadUsers();
 }
 
+
+
+// ════════════════════════════════════════════════════
+// DỌN BẢN GHI ÔN TẬP MỒ CÔI (xem lib/orphans.js) — 3 bước: xem trước → sao lưu → xoá có xác nhận
+// ════════════════════════════════════════════════════
+let orphanState = { cards: 0, history: 0, backedUp: false };
+
+async function orphanPreview() {
+  const el = document.getElementById('orphan-result');
+  el.textContent = 'Đang kiểm tra...';
+  orphanState = { cards: 0, history: 0, backedUp: false };
+  try {
+    const res = await fetch('/api/admin/orphans', { headers: authHeaders() });
+    const d = await res.json();
+    if (!d.ok) { el.textContent = '❌ ' + (d.error || 'Có lỗi xảy ra'); return; }
+    orphanState.cards = d.cards; orphanState.history = d.history;
+    if (!d.cards && !d.history) { el.innerHTML = '✅ Không có bản ghi mồ côi nào cần dọn.'; return; }
+    const users = d.byUser.map(u => `<tr><td>${escapeHtml(u.user_id)}</td><td>${u.cards}</td><td>${u.due}</td></tr>`).join('');
+    const hz = d.topHz.map(h => `${escapeHtml(h.hz)} (${h.cards})`).join(' · ');
+    el.innerHTML = `
+      <div><b>${d.cards}</b> thẻ FSRS mồ côi (trong đó <b>${d.dueCards}</b> đang đến hạn) và <b>${d.history}</b> lượt ôn mồ côi.</div>
+      <table style="width:100%;font-size:.8rem;margin:8px 0;border-collapse:collapse;"><tr><th align="left">Người dùng</th><th align="left">Thẻ</th><th align="left">Đang đến hạn</th></tr>${users}</table>
+      <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px;">Chữ Hán hay gặp: ${hz || '—'}</div>
+      <button class="btn btn-sm" onclick="orphanBackup()">💾 2. Tải bản sao lưu (JSON)</button>
+      <div style="margin-top:10px;">
+        <input type="text" id="orphan-confirm" placeholder="Gõ XOA để xác nhận" style="padding:8px;border-radius:8px;border:1.5px solid #ddd;font-size:.9rem;">
+        <button class="btn btn-sm" style="background:#fdecea;color:#c0392b;" onclick="orphanCleanup()">🗑️ 3. Xoá</button>
+      </div>
+      <div id="orphan-status" style="margin-top:8px;"></div>`;
+  } catch (e) {
+    el.textContent = '❌ Không kết nối được máy chủ: ' + e.message;
+  }
+}
+
+async function orphanBackup() {
+  const st = document.getElementById('orphan-status');
+  st.textContent = 'Đang tạo bản sao lưu...';
+  try {
+    const res = await fetch('/api/admin/orphans/export', { headers: authHeaders() });
+    if (!res.ok) { st.textContent = '❌ Không tải được bản sao lưu'; return; }
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'orphan-review-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    orphanState.backedUp = true;
+    st.textContent = '✅ Đã tải bản sao lưu. Giữ file này cho tới khi chắc chắn không cần.';
+  } catch (e) { st.textContent = '❌ ' + e.message; }
+}
+
+async function orphanCleanup() {
+  const st = document.getElementById('orphan-status');
+  if (!orphanState.backedUp) { st.textContent = '⚠️ Hãy tải bản sao lưu (bước 2) trước khi xoá.'; return; }
+  const confirmText = (document.getElementById('orphan-confirm').value || '').trim();
+  if (confirmText !== 'XOA') { st.textContent = '⚠️ Gõ đúng chữ XOA để xác nhận.'; return; }
+  if (!confirm(`Xoá ${orphanState.cards} thẻ và ${orphanState.history} lượt ôn mồ côi? Không thể hoàn tác.`)) return;
+  st.textContent = 'Đang xoá...';
+  try {
+    const res = await fetch('/api/admin/orphans/cleanup', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ expectedCards: orphanState.cards, expectedHistory: orphanState.history, confirm: confirmText }),
+    });
+    const d = await res.json();
+    if (!d.ok) { st.textContent = '❌ ' + (d.error || 'Có lỗi xảy ra'); return; }
+    document.getElementById('orphan-result').innerHTML = `✅ Đã xoá ${d.removedCards} thẻ và ${d.removedHistory} lượt ôn mồ côi. <span style="color:var(--l9a);">Tải lại trang để cập nhật số liệu.</span>`;
+    orphanState = { cards: 0, history: 0, backedUp: false };
+  } catch (e) { st.textContent = '❌ Không kết nối được máy chủ: ' + e.message; }
+}
