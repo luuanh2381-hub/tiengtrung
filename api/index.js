@@ -2043,6 +2043,13 @@ app.get('/api/admin/orphans/export', async (req, res) => {
     res.send(JSON.stringify(data));
   } catch (e) { fail(res, e); }
 });
+app.get('/api/admin/due-breakdown', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const target = (typeof req.query.user === 'string' && req.query.user) ? req.query.user : authed.username;
+  try { res.json({ ok: true, ...(await orphans.dueBreakdown(target)) }); } catch (e) { fail(res, e); }
+});
 app.post('/api/admin/orphans/cleanup', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
