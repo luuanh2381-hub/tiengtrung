@@ -108,6 +108,11 @@ function renderVocabAdmin() {
     </div>
     <button class="btn btn-sm" onclick="orphanPreview()">🔍 1. Kiểm tra (chỉ đọc)</button>
     <div id="orphan-result" style="font-size:.85rem;margin-top:10px;"></div>
+    <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
+      <div style="font-size:.78rem;color:var(--muted);margin-bottom:8px;">📊 Số "thẻ cần ôn" của tài khoản bạn gồm những gì? (chỉ đọc)</div>
+      <button class="btn btn-sm" onclick="dueBreakdown()">Phân loại thẻ đến hạn</button>
+      <div id="due-breakdown-result" style="font-size:.85rem;margin-top:10px;"></div>
+    </div>
   </div>
   <div class="panel">
     <div class="panel-title">🗑️ Xoá toàn bộ dữ liệu</div>
@@ -982,4 +987,24 @@ async function orphanCleanup() {
     document.getElementById('orphan-result').innerHTML = `✅ Đã xoá ${d.removedCards} thẻ và ${d.removedHistory} lượt ôn mồ côi. <span style="color:var(--l9a);">Tải lại trang để cập nhật số liệu.</span>`;
     orphanState = { cards: 0, history: 0, backedUp: false };
   } catch (e) { st.textContent = '❌ Không kết nối được máy chủ: ' + e.message; }
+}
+
+
+// Phân loại thẻ đến hạn của tài khoản đang đăng nhập (chỉ đọc) — thay cho việc chạy SQL tay.
+async function dueBreakdown() {
+  const el = document.getElementById('due-breakdown-result');
+  el.textContent = 'Đang phân loại...';
+  try {
+    const res = await fetch('/api/admin/due-breakdown', { headers: authHeaders() });
+    const d = await res.json();
+    if (!d.ok) { el.textContent = '❌ ' + (d.error || 'Có lỗi xảy ra'); return; }
+    const lessons = d.byLesson.map(r => `<tr><td>Bài ${r.lesson}</td><td>${r.cards}</td></tr>`).join('');
+    el.innerHTML = `
+      <div>Tổng thẻ đến hạn: <b>${d.total}</b></div>
+      <div>• Từ còn trong ít nhất 1 bài: <b>${d.wordInLesson}</b></div>
+      <div>• Từ không thuộc bài nào (không vào phiên học được): <b>${d.wordNoLesson}</b></div>
+      <div>• Không còn từ nào (mồ côi): <b>${d.noWord}</b></div>
+      <table style="width:100%;font-size:.8rem;margin-top:8px;border-collapse:collapse;"><tr><th align="left">Theo bài</th><th align="left">Thẻ đến hạn</th></tr>${lessons}</table>
+      <div style="font-size:.75rem;color:var(--muted);margin-top:6px;">Từ thuộc nhiều bài được đếm ở mỗi bài nên tổng theo bài có thể lớn hơn.</div>`;
+  } catch (e) { el.textContent = '❌ Không kết nối được máy chủ: ' + e.message; }
 }
