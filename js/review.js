@@ -186,6 +186,7 @@ async function rvFetchFreshSession(ignoreDayDedupe) {
       list: ignoreDayDedupe ? rvDedupeByHzOnly(raw) : rvDedupeSession(raw),
       reviewCount: data.reviewCount || 0, newCount: data.newCount || 0,
       blockedByBacklog: !!data.blockedByBacklog, totalDue: data.totalDue || 0,
+      scopeLessons: Array.isArray(data.scopeLessons) ? data.scopeLessons : [],
     };
   } catch (e) {
     return { error: e.message };
@@ -246,7 +247,7 @@ async function startStudySession(weakMode, forceNew) {
   goTab('review');
   const el = document.getElementById('content');
   if (el) el.innerHTML = `<div class="study-empty">Đang tải phiên học...</div>`;
-  const { list, error, reviewCount, newCount, blockedByBacklog, totalDue } = await rvFetchFreshSession(false);
+  const { list, error, reviewCount, newCount, blockedByBacklog, totalDue, scopeLessons } = await rvFetchFreshSession(false);
   if (error) { alert(error); goTab('today'); return; }
   // V106: thêm nguồn thứ 3 (từ hay trả lời sai) + 1 bài ghép cặp; thẻ FSRS chính thức giữ nguyên thứ tự.
   let sessionItems = list, extraCount = 0;
@@ -269,7 +270,7 @@ async function startStudySession(weakMode, forceNew) {
   }
   sqPersist(savedKey, rvQueue, { summary: rvSummary, log: rvLog });
   if (!rvWeakMode && sessionItems.length) {
-    rvStage = 'start'; rvStartInfo = rvBuildStartInfo(sessionItems, extraCount); // màn bắt đầu: chỉ số liệu thật
+    rvStage = 'start'; rvStartInfo = rvBuildStartInfo(sessionItems, extraCount, scopeLessons); // màn bắt đầu: chỉ số liệu thật
   } else {
     rvPrepareCurrentCard();
   }
@@ -617,7 +618,8 @@ function rvMatchHtml(tagLabel) {
 function rvStartHtml() {
   const i = rvStartInfo;
   const cell = (n, l) => `<div class="rv-start-cell"><div class="rv-start-num">${n}</div><div class="rv-start-lbl">${l}</div></div>`;
-  const lessons = i.lessons.length ? `Bài ${i.lessons.join(', ')}` : 'Phạm vi đang chọn';
+  const lessons = !i.lessons.length ? 'Phạm vi đang chọn'
+    : (i.lessons.length <= 8 ? `Bài ${i.lessons.join(', ')}` : `Bài ${i.lessons.slice(0, 8).join(', ')} +${i.lessons.length - 8} bài khác`);
   return `<div class="rv-card">
     <div class="rv-tag">🎓 Hôm nay học</div>
     <div style="font-size:1.2rem;font-weight:800;margin:6px 0">${escapeHtml(lessons)}</div>
@@ -997,8 +999,18 @@ function rvInsertMatch(items) {
   out.splice(Math.min(out.length, Math.max(1, Math.floor(out.length * 0.7))), 0, { type: 'match', hzs: pick });
   return out;
 }
-function rvBuildStartInfo(items, extraCount) {
-  const lessons = [...new Set(items.filter(rvIsOfficial).map(i => i.word.l))].sort((a, b) => a - b);
+// Bài hiện tại của màn bắt đầu: các bài ĐANG CHỌN (server) mà buổi này thật sự có từ thuộc về (theo liên kết bài HIỆN TẠI
+// `word.lessons`). KHÔNG dùng `word.l` — đó là cột bài cũ, có thể còn số bài đã bị xoá khỏi mục từ vựng.
+function rvBuildStartInfo(items, extraCount, scopeLessons) {
+  const scope = (Array.isArray(scopeLessons) ? scopeLessons : []).map(Number).filter(Number.isFinite);
+  const fromWords = new Set();
+  for (const it of items) {
+    if (!rvIsOfficial(it) || !it.word || !Array.isArray(it.word.lessons)) continue;
+    for (const l of it.word.lessons) fromWords.add(Number(l));
+  }
+  let lessons = scope.length ? scope.filter(l => fromWords.has(l)) : [...fromWords];
+  if (!lessons.length && scope.length) lessons = scope.slice();
+  lessons = [...new Set(lessons)].sort((a, b) => a - b);
   const newCount = items.filter(i => i.type === 'new').length;
   const reviewCount = items.filter(i => i.type === 'review').length;
   const matchN = items.filter(i => i.type === 'match').length;
