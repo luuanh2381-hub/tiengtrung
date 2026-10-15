@@ -23,6 +23,7 @@
     "test:optimizer:frontend": "node test/fsrs-optimizer-frontend.smoke.test.js",
     "test:skills": "node test/skills.test.js",
     "test:drill-notes": "node test/drill-notes.test.js",
+    "test:orphans": "node test/orphans.test.js",
     "test:adaptive": "node test/question-engine.test.js && node test/adaptive-session.test.js && node test/review-render.smoke.test.js",
     "test:xss": "node test/xss-escaping.smoke.test.js",
     "test:auth-security": "node test/auth-security.test.js",
