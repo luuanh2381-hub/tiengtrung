@@ -26,6 +26,7 @@ const { getFsrsVerificationInfo } = require('../lib/fsrs');
 const reviewService = require('../lib/fsrs/reviewService');
 const skillStore = require('../lib/skill-store');
 const wordNotes = require('../lib/word-notes');
+const orphans = require('../lib/orphans');
 const { resolveExercise, isCountableAnswer, MEASURABLE_SKILLS } = require('../lib/skills');
 const fsrsAnalytics = require('../lib/fsrs/analytics');
 const fsrsOptimizer = require('../lib/fsrs/optimizer');
@@ -2020,6 +2021,41 @@ app.post('/api/admin/vocab/delete-lesson', async (req, res) => {
     const actingUser = authed.db.users[authed.username];
     logActivity(authed.username, actingUser.role, 'vocab', `Xoá bài số ${l} (${removed} từ)`);
     res.json({ ok: true, removed });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Dọn bản ghi ôn tập MỒ CÔI của từ đã bị xoá (xem lib/orphans.js) ──
+// Ảnh hưởng dữ liệu của MỌI người học nên chia 3 bước: xem trước (chỉ đọc) → tải bản sao lưu → xoá có xác nhận.
+app.get('/api/admin/orphans', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try { res.json({ ok: true, ...(await orphans.previewOrphans()) }); } catch (e) { fail(res, e); }
+});
+app.get('/api/admin/orphans/export', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const data = await orphans.exportOrphans();
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="orphan-review-backup.json"');
+    res.send(JSON.stringify(data));
+  } catch (e) { fail(res, e); }
+});
+app.post('/api/admin/orphans/cleanup', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const { expectedCards, expectedHistory, confirm } = req.body || {};
+  if (confirm !== 'XOA') return res.json({ ok: false, error: 'Cần gõ đúng chữ XOA để xác nhận' });
+  try {
+    const out = await orphans.cleanupOrphans({ expectedCards, expectedHistory });
+    if (out.ok) {
+      const actingUser = authed.db.users[authed.username];
+      logActivity(authed.username, actingUser.role, 'vocab', `Dọn bản ghi ôn tập mồ côi (${out.removedCards} thẻ, ${out.removedHistory} lượt ôn)`);
+    }
+    res.json(out);
   } catch (e) { fail(res, e); }
 });
 
