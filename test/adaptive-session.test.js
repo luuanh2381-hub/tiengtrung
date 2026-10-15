@@ -223,11 +223,28 @@ test('rvInsertMatch: cần ≥4 từ khác nhau; chèn đúng 1 bài, giữ th�
   assert.deepStrictEqual(Array.from(out.filter(E.f.rvIsOfficial).map(i => i.word.hz)), six.map(i => i.word.hz));
   assert.strictEqual(new Set(out.find(i => i.type === 'match').hzs).size, 4);
 });
+test('Màn bắt đầu: "Bài hiện tại" lấy từ phạm vi server + liên kết bài HIỆN TẠI, KHÔNG dùng cột l cũ (bài đã xoá không hiện lại)', () => {
+  const E = makeEnv();
+  // 3 từ còn thuộc bài 33/34 nhưng cột l cũ vẫn là 17/25/26 (bài đã xoá khỏi mục từ vựng)
+  const mk = (hz, oldL, lessons) => ({ type: 'review', word: Object.assign({}, POOL.find(w => w.hz === hz), { l: oldL, lessons }) });
+  const items = [mk('认真', 17, [34]), mk('准备', 25, [33, 34]), mk('参加', 26, [33])];
+  const info = E.f.rvBuildStartInfo(items, 0, [33, 34]);
+  assert.deepStrictEqual(Array.from(info.lessons), [33, 34]);
+  // liên kết cũ ngoài phạm vi (bài 17 đã xoá) không lọt vào
+  const stale = [mk('认真', 17, [17, 34])];
+  assert.deepStrictEqual(Array.from(E.f.rvBuildStartInfo(stale, 0, [33, 34]).lessons), [34]);
+  // thiếu `lessons` (server cũ) → không được đoán từ cột l: rơi về phạm vi đang chọn
+  const noLessons = [{ type: 'review', word: Object.assign({}, POOL[0], { l: 17 }) }];
+  assert.deepStrictEqual(Array.from(E.f.rvBuildStartInfo(noLessons, 0, [33, 34]).lessons), [33, 34]);
+  assert.deepStrictEqual(Array.from(E.f.rvBuildStartInfo(noLessons, 0, []).lessons), []);
+  assert.ok(/scopeLessons,\n  \};/.test(read('lib/fsrs/reviewService.js')) || /scopeLessons,\r?\n  \};/.test(read('lib/fsrs/reviewService.js')));
+});
 test('Màn bắt đầu: số liệu THẬT (từ mới, đến hạn, từ hay sai, số câu dự kiến), không số giả [case IX]', () => {
   const E = makeEnv();
   const items = [item('new', '认真'), item('new', '准备'), item('review', '参加'), item('extra', '汤', { targetSkill: 'recall' }), item('match', '', { hzs: [] })];
   items[3].word = POOL.find(w => w.hz === '汤');
-  const info = E.f.rvBuildStartInfo(items, 1);
+  items.filter(E.f.rvIsOfficial).forEach(i => { i.word = Object.assign({}, i.word, { lessons: [i.word.l] }); });
+  const info = E.f.rvBuildStartInfo(items, 1, []);
   assert.strictEqual(info.newCount, 2); assert.strictEqual(info.reviewCount, 1); assert.strictEqual(info.extraCount, 1);
   assert.strictEqual(info.estimated, 1 + 2 * 2 + 1 + 1);
   assert.deepStrictEqual(Array.from(info.lessons), [...new Set([POOL[0].l, POOL[1].l, POOL[2].l])].sort((a, b) => a - b));
