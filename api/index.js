@@ -27,7 +27,8 @@ const reviewService = require('../lib/fsrs/reviewService');
 const skillStore = require('../lib/skill-store');
 const wordNotes = require('../lib/word-notes');
 const orphans = require('../lib/orphans');
-const { resolveExercise, isCountableAnswer, MEASURABLE_SKILLS } = require('../lib/skills');
+const { resolveExercise, isCountableAnswer, MEASURABLE_SKILLS, gradeAnswer, PRACTICE_SOURCES } = require('../lib/skills');
+const skillRecommend = require('../lib/skill-recommend'); // V110: khuyến nghị cá nhân hoá (thuần, theo quy tắc)
 const fsrsAnalytics = require('../lib/fsrs/analytics');
 const fsrsOptimizer = require('../lib/fsrs/optimizer');
 const { runInBackground } = require('../lib/runInBackground');
@@ -35,7 +36,7 @@ const { runInBackground } = require('../lib/runInBackground');
 // đã CHUYỂN vào lib/fsrs/studyScope.js (dùng bởi reviewService.getTodayOverview/getStudySession).
 // api/index.js chỉ còn cần formatFsrsCard cho /api/study/weak-words (route KHÔNG chuyển, vì đây chỉ
 // là 1 view lọc theo lapses/difficulty, không phải quyết định "từ tiếp theo").
-const { formatFsrsCard, BOOKS_RANGES } = require('../lib/fsrs/studyScope');
+const { formatFsrsCard, BOOKS_RANGES, resolveStudyScope } = require('../lib/fsrs/studyScope');
 
 const app = express();
 
@@ -639,7 +640,17 @@ app.get('/api/study/today', async (req, res) => {
     const user = authed.db.users[authed.username];
     const ui = (user.progress && user.progress.ui) || {};
     const overview = await reviewService.getTodayOverview(authed.username, ui);
-    res.json({ ok: true, ...overview });
+    // V110: các nhóm từ (đếm theo TỪ DUY NHẤT, có số giao nhau) + tiến độ hôm nay. Best-effort: nếu phần mở rộng lỗi,
+    // dashboard cũ vẫn hiện bình thường (không làm hỏng chức năng đang chạy).
+    let breakdown = null, progress = null;
+    try {
+      [breakdown, progress] = await Promise.all([
+        skillStore.getTodayBreakdown(authed.username, overview.scopeLessons),
+        skillStore.getTodayProgress(authed.username),
+      ]);
+    } catch (extErr) { console.error('⚠️  [today] Không tải được phần mở rộng V110:', extErr && extErr.message); }
+    const { scopeLessons: _omit, ...publicOverview } = overview; // scopeLessons chỉ dùng nội bộ, không trả ra ngoài
+    res.json({ ok: true, ...publicOverview, breakdown, progress });
   } catch (e) { fail(res, e); }
 });
 
@@ -678,7 +689,7 @@ function correctAnswerForQuizType(word, quizType) {
 app.post('/api/study/review/preview', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
-  const { wordId, quizType, selectedAnswer, responseTimeMs, answerChanges } = req.body || {};
+  const { wordId, quizType, selectedAnswer, responseTimeMs, answerChanges, exerciseType } = req.body || {};
   const hz = wordId && wordId.hz;
   const l = wordId && Number(wordId.l);
   if (!hz || !Number.isFinite(l)) return res.json({ ok: false, error: 'Thiếu wordId {hz, l} hợp lệ' });
@@ -693,18 +704,22 @@ app.post('/api/study/review/preview', async (req, res) => {
     const word = await getWordForAnswerCheck(hz, l);
     if (!word) return res.json({ ok: false, error: 'Không tìm thấy từ vựng' });
     const correctAnswer = correctAnswerForQuizType(word, quizType);
-    const answerCorrect = String(selectedAnswer).trim() === String(correctAnswer).trim();
+    // V110: câu TỰ NHẬP (nhãn bài tập khai báo `typed`) được chấm chuẩn hoá bằng js/answer-match.js — preview và
+    // commit dùng CÙNG hàm chấm nên gợi ý rating luôn khớp kết quả thật. Trắc nghiệm giữ nguyên so chuỗi.
+    const exPrev = resolveExercise(exerciseType, quizType);
+    const graded = gradeAnswer(correctAnswer, selectedAnswer, exPrev);
+    const answerCorrect = graded.answerCorrect;
     const systemRating = await reviewService.previewRating({
       userId: authed.username, hz, l, answerCorrect, responseTimeMs: rt, answerChanges: changes,
     });
-    res.json({ ok: true, answerCorrect, correctAnswer, systemRating });
+    res.json({ ok: true, answerCorrect, verdict: graded.verdict, correctAnswer, systemRating });
   } catch (e) { fail(res, e); }
 });
 
 app.post('/api/study/review', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
-  const { wordId, quizType, selectedAnswer, responseTimeMs, answerChanges, idempotencyKey, rating, exerciseType } = req.body || {};
+  const { wordId, quizType, selectedAnswer, responseTimeMs, answerChanges, idempotencyKey, rating, exerciseType, sessionId } = req.body || {};
   const hz = wordId && wordId.hz;
   const l = wordId && Number(wordId.l);
   if (!hz || !Number.isFinite(l)) return res.json({ ok: false, error: 'Thiếu wordId {hz, l} hợp lệ' });
@@ -735,7 +750,10 @@ app.post('/api/study/review', async (req, res) => {
     const word = await getWordForAnswerCheck(hz, l);
     if (!word) return res.json({ ok: false, error: 'Không tìm thấy từ vựng' });
     const correctAnswer = correctAnswerForQuizType(word, quizType);
-    const answerCorrect = String(selectedAnswer).trim() === String(correctAnswer).trim();
+    // V110: chấm tự nhập chuẩn hoá nếu nhãn bài tập khai báo `typed` (xem lib/skills.js gradeAnswer); còn lại so chuỗi như cũ.
+    const ex = resolveExercise(exerciseType, quizType);
+    const graded = gradeAnswer(correctAnswer, selectedAnswer, ex);
+    const answerCorrect = graded.answerCorrect;
 
     // V69 (Phần 4): đi qua reviewService (scheduler layer) thay vì gọi thẳng db.reviewFsrsCard —
     // đây cũng là nơi desired_retention riêng của user (Phần 5) được áp dụng + study_sessions
@@ -743,9 +761,9 @@ app.post('/api/study/review', async (req, res) => {
     // Hồ sơ kỹ năng: chỉ ghi khi nhãn bài tập KHỚP với chiều câu hỏi thật (quizType) và đây là 1 bài
     // tập thực sự kiểm tra kỹ năng (Flashcard tự chấm không có nhãn → không ghi). Server không tin mù
     // quáng nhãn từ client: resolveExercise() loại mọi nhãn lạ/sai chiều.
-    const ex = resolveExercise(exerciseType, quizType);
+    // (ex đã được xác định ở trên cùng với việc chấm điểm.)
     const skillRecord = (ex && ex.fsrs && isCountableAnswer(selectedAnswer))
-      ? { skill: ex.skill, exerciseType: ex.exerciseType } : null;
+      ? { skill: ex.skill, exerciseType: ex.exerciseType, sessionId, wrongAnswer: selectedAnswer } : null;
     const result = await reviewService.reviewCard({
       userId: authed.username, hz, l, answerCorrect, responseTimeMs: rt, answerChanges: changes, idempotencyKey: idemKey, ratingOverride, skillRecord,
     });
@@ -775,6 +793,7 @@ app.post('/api/study/review', async (req, res) => {
     res.json({
       ok: result.ok,
       answerCorrect,
+      verdict: graded.verdict, // V110: exact | wrong | toneless | tone_mismatch — để UI giải thích vì sao sai (pinyin thiếu thanh...)
       correctAnswer, // để UI hiện đáp án đúng khi user chọn sai, không cần đoán lại ở client
       card: result.card,
       // Bổ sung "Highlight System Rating": khác V67 (trước đây CHỈ admin thấy autoRating qua
@@ -811,7 +830,7 @@ app.get('/api/skills/overview', async (req, res) => {
       fsrsDueCount: dueCount,
       skills: overview.skills,
       // Kỹ năng CHƯA có bài tập kiểm tra đáng tin → UI hiện "chưa hỗ trợ", không bịa điểm.
-      unsupportedSkills: ['pronunciation', 'context'],
+      unsupportedSkills: ['pronunciation'], // V110: 'context' (điền từ vào câu) đã có bài kiểm tra thật từ V106
     });
   } catch (e) { fail(res, e); }
 });
@@ -862,7 +881,7 @@ app.get('/api/skills/practice-words', async (req, res) => {
 app.post('/api/skills/practice', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
-  const { wordId, exerciseType, selectedAnswer, responseTimeMs, attemptKey } = req.body || {};
+  const { wordId, exerciseType, selectedAnswer, responseTimeMs, attemptKey, sessionId, source } = req.body || {};
   const hz = wordId && wordId.hz;
   const l = wordId && Number(wordId.l);
   if (!hz || !Number.isFinite(l)) return res.json({ ok: false, error: 'Thiếu wordId {hz, l} hợp lệ' });
@@ -875,12 +894,83 @@ app.post('/api/skills/practice', async (req, res) => {
     const word = await getWordForAnswerCheck(hz, l);
     if (!word) return res.json({ ok: false, error: 'Không tìm thấy từ vựng' });
     const correctAnswer = correctAnswerForQuizType(word, ex.quizType);
-    const answerCorrect = String(selectedAnswer).trim() === String(correctAnswer).trim();
+    const graded = gradeAnswer(correctAnswer, selectedAnswer, ex); // V110: chấm tự nhập chuẩn hoá khi bài khai báo `typed`
+    const answerCorrect = graded.answerCorrect;
     const out = await skillStore.recordPractice({
       userId: authed.username, hz, exerciseType: ex.exerciseType, answerCorrect, selectedAnswer, responseTimeMs: rt, attemptKey,
+      sessionId, source: PRACTICE_SOURCES.includes(source) ? source : 'practice',
     });
     if (!out.ok) return res.json(out);
-    res.json({ ok: true, answerCorrect, correctAnswer, recorded: !!out.recorded, duplicate: !!out.duplicate });
+    res.json({ ok: true, answerCorrect, verdict: graded.verdict, correctAnswer, recorded: !!out.recorded, duplicate: !!out.duplicate });
+  } catch (e) { fail(res, e); }
+});
+
+// ════════════════════════════════════════════════════
+// V110 — TRÍ NHỚ DÀI HẠN, CHI TIẾT TỪNG TỪ, KHUYẾN NGHỊ. Mọi route: bắt buộc đăng nhập; chỉ đọc dữ liệu của ĐÚNG
+// user trong token. CHỈ ĐỌC — không route nào ở đây ghi/đổi lịch FSRS.
+// ════════════════════════════════════════════════════
+
+// Trí nhớ theo khoảng cách kể từ lần gặp trước (cửa sổ ≤ 180 ngày) + kết quả theo dạng bài. Chỉ gọi khi mở màn phân tích.
+app.get('/api/skills/retention', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const [retention, byType] = await Promise.all([
+      skillStore.getRetention(authed.username, { days: req.query.days }),
+      skillStore.getTypeBreakdown(authed.username, { days: req.query.days }),
+    ]);
+    res.json({ ok: true, ...retention, byType });
+  } catch (e) { fail(res, e); }
+});
+
+// Khuyến nghị TỔNG THỂ (quy tắc rõ ràng, có giải thích). Không AI ngoài.
+app.get('/api/skills/recommendations', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const [overview, retention] = await Promise.all([
+      skillStore.getOverview(authed.username),
+      skillStore.getRetention(authed.username, { days: req.query.days }),
+    ]);
+    res.json({ ok: true, ...skillRecommend.recommendGlobal({ overview, retention: retention.buckets }) });
+  } catch (e) { fail(res, e); }
+});
+
+// Từ cho chế độ "Kiểm tra sau một khoảng nghỉ" — luyện bổ sung (không đổi FSRS). Cùng phạm vi bài với bảng Hôm nay học.
+app.get('/api/skills/delayed-words', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const ui = (authed.db.users[authed.username].progress && authed.db.users[authed.username].progress.ui) || {};
+    const { scopeLessons } = await resolveStudyScope(ui);
+    const words = await skillStore.getDelayedWords(authed.username, { limit: req.query.limit, scopeLessons });
+    res.json({ ok: true, words: words.map(w => ({ ...w, skill: 'mixed' })) });
+  } catch (e) { fail(res, e); }
+});
+
+// Chi tiết 1 từ: kỹ năng, trạng thái FSRS, lịch sử gần đây, dạng hay sai, khuyến nghị riêng cho từ đó.
+app.get('/api/skills/word', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const hz = typeof req.query.hz === 'string' ? req.query.hz.trim() : '';
+  if (!hz || hz.length > 40) return res.json({ ok: false, error: 'Thiếu hoặc sai chữ Hán cần xem' });
+  try {
+    const d = await skillStore.getWordDetail(authed.username, hz);
+    if (!d || !d.word) return res.json({ ok: false, error: 'Không tìm thấy từ vựng' });
+    // Số lượt kỹ năng trong 7 ngày gần nhất (từ lịch sử đã tải, tối đa 30 dòng) — để khuyến nghị không lặp lại vô ích.
+    const weekAgo = Date.now() - 7 * 86400000;
+    const recentBySkill = {};
+    for (const h of d.history) if (h.skill && new Date(h.ts).getTime() >= weekAgo) recentBySkill[h.skill] = (recentBySkill[h.skill] || 0) + 1;
+    const recommendation = skillRecommend.recommendForWord({ stats: d.stats, recentBySkill, repeatedWrong: d.repeatedWrong });
+    const { classify } = require('../lib/skills');
+    const skills = {};
+    for (const sk of MEASURABLE_SKILLS) {
+      const row = d.stats[sk];
+      skills[sk] = { ...classify(row), correct: row ? row.correct : 0, lastAttemptAt: row ? row.last_attempt_at : null };
+    }
+    // typeStats: dạng bài hay sai (cần ≥ 3 lượt mới xếp hạng, tránh kết luận từ 1–2 câu).
+    const weakTypes = d.typeStats.filter(t => t.n >= 3 && t.wrong / t.n >= 0.5).sort((a, b) => b.wrong / b.n - a.wrong / a.n);
+    res.json({ ok: true, word: d.word, card: d.card, skills, history: d.history, typeStats: d.typeStats, weakTypes, recommendation });
   } catch (e) { fail(res, e); }
 });
 
