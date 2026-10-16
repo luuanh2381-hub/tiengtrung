@@ -346,7 +346,7 @@ async function skPick(btn) {
   if (ok) playDing(); else playBuzz();
   speak(w.hz);
   p.answered++; if (ok) p.correct++;
-  QS.record(p.qSession, q, ok);
+  QS.record(p.qSession, q, ok, responseTimeMs);
   const reading = q.explanation.length > 1 ? 3500 : 1500; // câu có giải thích dài cần thời gian đọc
   await Promise.all([
     submitSkillPractice({ word: { hz: w.hz, l: w.l }, exerciseType: q.exercisePractice, selectedAnswer: chosen, responseTimeMs, source: skSource(p), sessionId: p.sessionId }),
@@ -383,7 +383,7 @@ async function skSubmitTyped(skip) {
   if (graded.correct) playDing(); else playBuzz();
   speak(w.hz);
   p.answered++; if (graded.correct) p.correct++;
-  QS.record(p.qSession, q, graded.correct);
+  QS.record(p.qSession, q, graded.correct, responseTimeMs);
   await Promise.all([
     submitSkillPractice({ word: { hz: w.hz, l: w.l }, exerciseType: q.exercisePractice, selectedAnswer: skip ? RV_BLANK_MARK : String(value).trim(), responseTimeMs, source: skSource(p), sessionId: p.sessionId }),
     new Promise(r => setTimeout(r, graded.correct ? 2200 : 4000)),

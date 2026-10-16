@@ -327,12 +327,44 @@ const QE = (function () {
     if (!q) return null;
     const byHz = new Map((ctx.pool || []).map(w => [w.hz, w]));
     byHz.set(word.hz, word);
-    const v = validate(q, {
+    const vopts = {
       minOptions: ctx.minOptions,
       viOf: hz => (byHz.get(hz) || {}).vi,
       pyOf: hz => (byHz.get(hz) || {}).py,
-    });
-    return v.ok ? q : null;
+    };
+    const v = validate(q, vopts);
+    if (!v.ok) return null;
+    // V111: từ HAY BỊ NHẦM → chèn đúng đáp án người học từng chọn nhầm làm đáp án nhiễu (luyện đúng chỗ hay nhầm).
+    // Câu sau khi chèn VẪN phải qua validate; không qua thì giữ câu gốc (không bao giờ làm câu xấu đi).
+    if (ctx.confusions && ctx.confusions.length) {
+      const inj = injectConfusion(q, T, ctx, vopts);
+      if (inj) return inj;
+    }
+    return q;
+  }
+
+  // Tìm TỪ thật trong kho mà đáp án sai đã gõ/chọn tương ứng (khớp chữ Hán, pinyin hoặc nghĩa), rồi dùng từ đó làm
+  // đáp án nhiễu ở KHÔNG GIAN ĐÁP ÁN của dạng câu hiện tại (vd lần trước chọn nhầm "准背" ở câu nghĩa→chữ Hán, nay câu
+  // chữ Hán→nghĩa sẽ có nghĩa của "准背" làm nhiễu). Bỏ qua: câu tự nhập, điền từ (cloze: nhiều từ có thể cùng vừa câu), confusable.
+  function injectConfusion(q, T, ctx, vopts) {
+    if (T.typed || q.typeId === 'cloze' || q.typeId === 'confusable' || q.options.length < 3) return null;
+    const pool = ctx.pool || [];
+    for (const c of ctx.confusions) {
+      const text = c && (c.text !== undefined ? c.text : c);
+      if (typeof text !== 'string' || !text) continue;
+      const donor = pool.find(x => x && x.hz !== q.hz && (x.hz === text || x.py === text || x.vi === text));
+      if (!donor) continue;
+      const cand = optionOf(T.answerField, donor);
+      if (!cand.key || cand.key === q.correctKey || q.options.some(o => o.key === cand.key)) continue;
+      // Thay MỘT đáp án nhiễu (không đụng đáp án đúng, giữ nguyên vị trí đáp án đúng).
+      const idx = [...q.options.keys()].reverse().find(i => i !== q.correctIndex);
+      if (idx === undefined) continue;
+      const q2 = Object.assign({}, q, { options: q.options.slice() });
+      q2.options[idx] = cand;
+      q2.confusionInjected = { text, donorHz: donor.hz };
+      if (validate(q2, vopts).ok) return q2;
+    }
+    return null;
   }
 
   // ── GHÉP CẶP (dạng 7): chữ Hán ↔ nghĩa | chữ Hán ↔ pinyin ─────────────────────────────────

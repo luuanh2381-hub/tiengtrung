@@ -95,8 +95,10 @@ function rvPracticeSource(item) {
 }
 function rvSkillTypes(skill) { return QE.MCQ_ORDER.filter(t => QE.TYPES[t].skill === skill); }
 function rvBuildQuestionFor(item) {
-  const w = item.word, ctx = rvQCtx();
-  const base = { session: rvQSession, profile: item.skillProfile, allowTyped: rvTypedEnabled() };
+  // V111: từ hay nhầm (server) → QE chèn đáp án từng nhầm làm đáp án nhiễu; `remaining` = số thẻ chính thức còn lại → bộ chọn
+  // bớt dạng chậm khi hàng đợi còn dài.
+  const w = item.word, ctx = Object.assign(rvQCtx(), { confusions: item.confusions });
+  const base = { session: rvQSession, profile: item.skillProfile, allowTyped: rvTypedEnabled(), remaining: rvQueue.items.filter(rvIsOfficial).length };
   if (item.type === 'check') return QS.choose(w, ctx, Object.assign({}, base, { only: ['hz2vi'] }));
   if (item.type === 'drill') return QS.choose(w, ctx, Object.assign({}, base, { only: ['vi2hz'] }));
   if (item.type === 'extra' || item.type === 'redo') {
@@ -115,18 +117,25 @@ function rvStageLabel(item) {
   return '🎯 Luyện thích ứng';
 }
 function rvRecordAnswer(item, q, correct, ms, official) {
-  QS.record(rvQSession, q, correct);
+  // V111: cập nhật hồ sơ kỹ năng NGAY (cùng công thức server) để câu kế tiếp — kể cả khi từ này quay lại hàng đợi — thấy kết quả
+  // vừa rồi: sai thì kỹ năng đó yếu đi, đúng thì tiến lên; đúng nhưng chậm thì đánh dấu "chưa chắc". PHẢI gọi trước QS.record
+  // (để câu hiện tại chưa tính vào chuẩn nhịp). Chỉ là ước lượng cục bộ cho phiên này; server ghi & tính lại độc lập.
+  if (item) {
+    const updated = QS.learn(item.skillProfile, rvQSession, q, correct, ms);
+    item.skillProfile = updated;
+    for (const other of rvQueue.items) if (other !== item && other.word && other.word.hz === q.hz) other.skillProfile = updated;
+  }
+  QS.record(rvQSession, q, correct, ms);
   rvLog.push({ hz: q.hz, l: q.l, typeId: q.typeId, skill: q.skill, correct: !!correct, ms: ms == null ? null : Math.round(ms), official: !!official, source: item.type });
   if (rvLog.length > 400) rvLog.shift();
 }
 function rvRestoreQSession() {
   rvQSession = QS.newSession();
   for (const e of rvLog) {
-    rvQSession.asked[e.hz + '|' + e.typeId] = (rvQSession.asked[e.hz + '|' + e.typeId] || 0) + 1;
-    rvQSession.typeCount[e.typeId] = (rvQSession.typeCount[e.typeId] || 0) + 1;
-    rvQSession.history.push({ hz: e.hz, typeId: e.typeId, correct: !!e.correct });
+    // V111: dùng chính QS.record để cả nhịp trả lời (rt) được khôi phục sau khi tải lại trang.
+    QS.record(rvQSession, { hz: e.hz, typeId: e.typeId, skill: e.skill, typed: !!(QE.TYPES[e.typeId] && QE.TYPES[e.typeId].typed), correctIndex: null }, !!e.correct, e.ms);
   }
-  rvQSession.history = rvQSession.history.slice(-60);
+  rvQSession.recentCorrectPositions = []; // vị trí đáp án đúng của buổi trước không còn ý nghĩa
 }
 // Thời gian đọc phản hồi trước khi tự chọn rating: câu có giải thích dài (điền từ vào câu) cần lâu hơn.
 function rvAutoMs() { return (rvQuestion && (rvQuestion.typeId === 'cloze' || rvQuestion.typed)) ? 6000 : RV_AUTO_COMMIT_MS; } // V110: câu tự nhập cũng cần thời gian đọc phản hồi
@@ -549,6 +558,7 @@ function rvInjectStyle() {
   const st = document.createElement('style');
   st.textContent = `
   .rv-typed-rule{font-size:.78rem;color:var(--muted);text-align:center;margin-top:6px;line-height:1.4}
+  .rv-why{font-size:.74rem;color:var(--muted);text-align:center;margin:-2px 0 6px;line-height:1.4}
   .rv-type-tag{font-size:.7rem;color:var(--muted);font-weight:700;text-align:center;margin-bottom:4px}
   .rv-cloze{font-size:1.5rem;font-weight:800;text-align:center;margin:10px 0 4px;line-height:1.5;word-break:break-word}
   .rv-cloze-vi{font-size:.9rem;color:var(--muted);text-align:center;margin-bottom:8px}
@@ -608,6 +618,7 @@ function rvQuestionBodyHtml(tagLabel, w) {
     return `
       <div class="rv-tag">${tagLabel} · ${lessonsLabel(w)}</div>
       <div class="rv-type-tag">${escapeHtml(QE.TYPES[q.typeId].label)}</div>
+      ${q.why ? `<div class="rv-why">💡 ${escapeHtml(q.why)}</div>` : ''}
       ${stem}
       <input id="rv-typed" class="type-input" type="text" inputmode="text" enterkeyhint="done"
              ${isPy ? 'lang="vi"' : 'lang="zh-CN"'} autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false"
@@ -627,6 +638,7 @@ function rvQuestionBodyHtml(tagLabel, w) {
   return `
       <div class="rv-tag">${tagLabel} · ${lessonsLabel(w)}</div>
       <div class="rv-type-tag">${escapeHtml(QE.TYPES[q.typeId].label)}</div>
+      ${q.why ? `<div class="rv-why">💡 ${escapeHtml(q.why)}</div>` : ''}
       ${stem}
       <div class="quiz-opts" id="rv-opts">${opts}</div>
       <div class="kbd-hint" style="text-align:center;margin-top:2px;">⌨️ 1-4 để chọn</div>`;
@@ -1032,7 +1044,7 @@ function rvAdvanceQueue() {
   } else if (it && it.type === 'check') {
     // Xong câu kiểm tra ngay sau khi xem từ mới → đưa THẺ FSRS CHÍNH THỨC của từ này vào lại sau RV_NEW_GAP thẻ.
     rvQueue.items.splice(Math.min(RV_NEW_GAP, rvQueue.items.length), 0,
-      { type: 'new', word: it.word, introduced: true, skillProfile: it.skillProfile, suggestedSkill: it.suggestedSkill });
+      { type: 'new', word: it.word, introduced: true, skillProfile: it.skillProfile, suggestedSkill: it.suggestedSkill, confusions: it.confusions });
   } else if (it && rvIsPractice(it)) {
     // extra/redo/drill: sai → hỏi lại tối đa RV_DRILL_MAX_TRIES lần, mỗi lần ĐỔI dạng so với lần sai.
     if (!ok && (it.tries || 0) + 1 < RV_DRILL_MAX_TRIES) {
