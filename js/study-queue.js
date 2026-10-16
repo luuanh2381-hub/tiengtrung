@@ -130,9 +130,11 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     ssCheckDayRollover(); // V77 (Study Day/Study Session): app mở qua đêm không đóng tab -> tự chuyển đúng "ngày học" mới
     flushReviewOutbox();
-    if (STUDY_TABS.has(currentTab)) ensureStudySession();
-  } else if (STUDY_TABS.has(currentTab)) {
-    pauseStudyTimer();
+    // V112: quay lại → nối phiên rồi gửi 1 heartbeat "đồng bộ lại" (activeSeconds ≈ phần còn dư trước khi ẩn, KHÔNG gồm thời gian
+    // vắng) để server dời mốc thời gian mà không cộng khoảng vắng mặt vào lượt trả lời kế tiếp.
+    if (isStudyContext()) Promise.resolve(ensureStudySession()).then(() => sendStudyHeartbeat({ force: true }));
+  } else if (isStudyContext()) {
+    leaveStudyContext(true); // báo NỐT giây học thực chưa gửi (keepalive) rồi dừng đếm
   }
 });
 // Đóng tab/đóng app/điều hướng đi nơi khác: gửi 1 heartbeat cuối cùng (keepalive để sống sót qua lúc
@@ -143,7 +145,7 @@ window.addEventListener('pagehide', () => {
       fetch('/api/study/session/heartbeat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ sessionId: studySession.id }),
+        body: JSON.stringify({ sessionId: studySession.id, activeSeconds: studyUnsentSeconds() }), // V112
         keepalive: true,
       }).catch(() => {});
     } catch {}

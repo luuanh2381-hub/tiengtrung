@@ -7,7 +7,10 @@ function render() {
   // Task 4/5 (V70 Pha B): tab nào tính là "đang học thật" thì giữ phiên study_sessions sống +
   // chạy đồng hồ realtime; rời sang tab khác (Trang chủ, Thống kê, ...) thì dừng đếm/heartbeat lại
   // (phiên vẫn còn hiệu lực phía server trong 15 phút — quay lại sẽ nối tiếp, không tạo phiên mới).
-  if (STUDY_TABS.has(currentTab)) ensureStudySession(); else pauseStudyTimer();
+  // V112: đồng bộ "vắng mặt" của câu hỏi đang treo (đổi tab trong app = vắng mặt) và giờ học THỰC (isStudyContext gồm cả buổi
+  // luyện kỹ năng bổ sung). Rời màn học → báo nốt số giây học thực chưa gửi rồi dừng.
+  vtSync();
+  if (isStudyContext()) ensureStudySession(); else leaveStudyContext();
   const el = document.getElementById('content');
   if (currentTab === 'home')   { el.innerHTML = renderHome(); bindHome(); }
   else if (currentTab === 'today') { el.innerHTML = renderToday(); bindToday(); }

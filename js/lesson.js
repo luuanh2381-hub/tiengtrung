@@ -187,6 +187,8 @@ function renderTodayPanel(data) {
     b ? cell('weak', `🎯 ${b.weakSkill}`, 'Từ có kỹ năng yếu', b.weakSkill ? 'cần ≥3 lượt/kỹ năng để kết luận' : 'chưa phát hiện (hoặc chưa đủ dữ liệu)') : '',
     b ? cell('lesson', `⏳ ${b.delayed}`, 'Cần kiểm tra lại', `đã học, chưa đến hạn, ≥${b.delayedAfterDays} ngày chưa gặp`) : '',
     pr ? cell('lesson', `✅ ${pr.officialAnswers + pr.practiceAnswers}`, 'Lượt câu hỏi hôm nay', `${pr.officialAnswers} ôn chính thức · ${pr.practiceAnswers} luyện thêm`) : '',
+    // V112: thời gian học THỰC (chỉ cộng khi tab hiển thị + đang ở màn học + có tương tác) — không còn tính lúc chuyển tab/ẩn app.
+    pr ? cell('lesson', `⏱ ${tdFmtDuration(pr.durationSeconds)}`, 'Thời gian học thực', 'không tính lúc chuyển tab / không thao tác') : '',
   ].join('');
 
   let unique = '';
