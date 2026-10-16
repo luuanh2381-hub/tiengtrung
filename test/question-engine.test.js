@@ -136,6 +136,10 @@ test('FUZZ: mọi câu hỏi sinh ra qua QE.build đều qua QE.validate (không
       if (!q) continue; built++;
       const v = QE.validate(q, { viOf, pyOf: hz => (W(hz) || {}).py });
       assert.ok(v.ok, typeId + ' ' + w.hz + ': ' + v.reason);
+      if (QE.TYPES[typeId].typed) { // V110: câu tự nhập — không có lựa chọn; phải có đáp án chuẩn và kiểu chấm
+        assert.strictEqual(q.options.length, 0); assert.ok(q.correctKey && q.typed, typeId + ' thiếu đáp án chuẩn/kiểu chấm');
+        continue;
+      }
       assert.strictEqual(q.options.filter((o, i) => i === q.correctIndex).length, 1);
       assert.strictEqual(q.options[q.correctIndex].key, q.correctKey);
     }
