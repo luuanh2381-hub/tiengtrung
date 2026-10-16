@@ -99,3 +99,44 @@ Lỗi phát hiện & sửa trong lúc làm: (1) `retentionBucketOf(null)` xếp 
 
 ## 8. Tổng kết
 Hệ thống giờ đo được **tự nhớ lại** (gõ chữ Hán / gõ pinyin có thanh) tách khỏi **nhận ra** (trắc nghiệm), tách kết quả ngay-sau-khi-xem-đáp-án khỏi kết quả sau khoảng nghỉ, và chỉ kết luận khi đủ mẫu. Người học thấy rõ mình yếu kỹ năng nào ở từ nào, vì sao hệ thống gợi ý, mà lịch FSRS không bị bài luyện thêm làm lệch.
+
+---
+
+# V111 — Làm bộ chọn thích ứng thật hơn
+
+Mở rộng V110 theo đúng thứ tự đề xuất. Không đổi FSRS, không thêm bảng/cột mới (dùng lại `wrong_answer` đã có ở V110).
+
+## 9. Đã thay đổi
+| # | Trước | Sau |
+|---|---|---|
+| 1 | Hồ sơ kỹ năng nạp **một lần** lúc bắt đầu phiên; trong phiên không đổi | `QS.learn()` cập nhật hồ sơ **ngay sau mỗi câu** (cả các thẻ khác của cùng từ trong hàng đợi) |
+| 2 | "Từ hay nhầm" chỉ dùng để hiện khuyến nghị | Server gửi đáp án sai lặp lại (≥ 2 lần, 180 ngày) → `QE.injectConfusion` đưa đúng đáp án đó vào làm **đáp án nhiễu** (vẫn qua `validate`) |
+| 3 | Thời gian trả lời chỉ dùng cho gợi ý rating FSRS | Đúng nhưng **chậm** (so với nhịp của chính người học, hoặc ngưỡng tuyệt đối) → `fragile`: được củng cố, chưa được gõ đáp án |
+| 4 | Độ khó/trạng thái FSRS chỉ ảnh hưởng câu tự gõ | Từ khó/đang học dở → dạng dễ trước; từ dễ & ổn định → dạng khó hơn |
+| 5 | Không xét độ dài hàng đợi | Còn > 25 thẻ chính thức → hạ câu tự gõ/điền từ |
+| 6 | (Spec gốc yêu cầu, V110 chưa làm) | Mỗi câu kèm **lý do ngắn** vì sao chọn dạng này — chỉ khi dữ liệu hỗ trợ, không hiện cho câu bị ép |
+
+### Tệp
+**Mới**: `js/skill-score.js`, `test/adaptive-v111.test.js`.
+**Sửa**: `lib/skills.js` (tách công thức sang `skill-score.js`; thêm `profileForClient`), `lib/skill-store.js` (`getConfusionsForWords`), `lib/fsrs/reviewService.js` (hồ sơ có số đếm + `confusions`, lấy song song), `js/question-selector.js`, `js/question-engine.js`, `js/review.js`, `js/skills-ui.js`, `index.html`, `package.json`, 3 harness test (nạp thêm `skill-score.js`), `test/v110-ui.smoke.test.js`.
+
+### Thiết kế đáng chú ý
+- **Một công thức duy nhất.** Phép tính điểm giờ nằm ở `js/skill-score.js`, server (`lib/skills.js`) và trình duyệt dùng chung → không thể lệch. Có test 100 chuỗi ngẫu nhiên chứng minh cập nhật ở client cho cùng phân loại với server.
+- **Tương thích phiên đang dở.** Phiên lưu cục bộ trước V111 có hồ sơ kiểu cũ (không có số đếm có trọng số). Hàm cập nhật **khôi phục chính xác** `w_attempts` (chỉ phụ thuộc số lượt) và `w_correct` (suy từ điểm) thay vì vứt dữ liệu hay tạo trạng thái mâu thuẫn. Hồ sơ cũ chưa đủ dữ liệu thì đếm lại từ đầu.
+- **Chèn đáp án nhầm có điều kiện.** Bỏ qua câu tự gõ, điền từ (nhiều từ có thể cùng vừa câu) và bài phân biệt; nếu câu sau khi chèn không qua `validate` (trùng nghĩa/đồng âm/lộ đáp án) thì giữ câu gốc.
+- **Cổng cứng câu tự gõ** nay thêm điều kiện "không `fragile`".
+
+## 10. Kiểm thử V111
+- `npm run test:v110`: 35 + 29 + **43** + **46** pass (46 = test mới V111; 43 gồm 8 test tích hợp review.js thật).
+- Các test cũ vẫn xanh (`test:skills` 50, `test:adaptive` 74, xss/orphans/auth/vocab/… đều pass).
+- **Kiểm tra đột biến**: cố ý (a) bỏ cập nhật hồ sơ sau mỗi câu, (b) tắt chèn đáp án hay nhầm, (c) không bao giờ coi là chậm → test đều đỏ. Lần đầu (b) **không** bị bắt ở một test UI (ngưỡng `≥10/20` quá lỏng vì kho từ nhỏ khiến đáp án xuất hiện tình cờ) → đã siết thành `20/20` và chạy lại phép thử.
+- Lỗi thật phát hiện nhờ test: lý do không hiện khi từ chưa có mục hồ sơ; hồ sơ kiểu cũ gây trạng thái mâu thuẫn (xem trên).
+
+## 11. Giới hạn còn lại (nói thẳng)
+1. **`getConfusionsForWords` chưa chạy trên PostgreSQL thật** (sandbox không có Postgres); test chỉ kiểm tra mã nguồn. Thử trên nhánh Neon trước khi lên production. Cột `wrong_answer` chỉ có dữ liệu **từ lúc triển khai V110** → ban đầu chưa có từ nào "hay nhầm"; tính năng sẽ tự kích hoạt dần.
+2. **Nhịp trả lời chỉ là tín hiệu trong phiên**, chưa lưu thành thống kê dài hạn theo từ/kỹ năng; hết phiên là quên. Chưa có "thời gian phản hồi điển hình" của từng người qua nhiều buổi.
+3. **Hồ sơ cập nhật ở client chỉ là ước lượng cho phiên hiện tại**; điểm thật vẫn do server tính khi ghi.
+4. **Trọng số/ngưỡng là giá trị hợp lý do thiết kế chọn** (1.8× trung vị, 12s/30s, 25 thẻ, +0.8/−0.4…), **chưa được hiệu chỉnh bằng dữ liệu học thật** và **chưa có bằng chứng** rằng chúng giúp nhớ lâu hơn. Test chứng minh quy tắc chạy đúng thiết kế, không chứng minh hiệu quả sư phạm.
+5. Đây vẫn là **thích ứng theo quy tắc**, không phải CAT/IRT: không ước lượng độ khó câu hỏi, không có mô hình năng lực xác suất.
+6. "Thời lượng còn lại của phiên" mới tính theo **số thẻ chính thức còn lại**, chưa theo thời gian thực/mục tiêu phút học.
+7. Giao diện vẫn chỉ kiểm bằng vm + DOM giả, chưa thử trên Android thật.
