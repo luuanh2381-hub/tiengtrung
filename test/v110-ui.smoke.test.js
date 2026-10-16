@@ -282,6 +282,12 @@ test('hiển thị đủ nhóm; nói rõ số hôm nay bị giới hạn ngày (
   for (const t of ['Thẻ đến hạn ôn', 'Từ mới dự kiến', 'Từ cần củng cố', 'Từ có kỹ năng yếu', 'Cần kiểm tra lại', 'Lượt câu hỏi hôm nay']) assert.ok(h.includes(t), 'thiếu: ' + t);
   assert.ok(h.includes('12/20'), 'phải nói rõ lấy 12/20 thẻ theo giới hạn ngày');
 });
+test('hiển thị thời gian học thực (13 phút = 780s) và nói rõ cách tính', () => {
+  const h = R(lessonEnv(), `renderTodayPanel(${JSON.stringify(TODAY())})`);
+  assert.ok(h.includes('13 phút') && h.includes('Thời gian học thực') && h.includes('không tính lúc chuyển tab'));
+  const none = R(lessonEnv(), `renderTodayPanel(${JSON.stringify(TODAY({ progress: { officialAnswers: 0, practiceAnswers: 0, durationSeconds: 0 } }))})`);
+  assert.ok(none.includes('0 phút'), 'chưa học → 0 phút, không số giả');
+});
 test('KHÔNG cộng trùng: "từ duy nhất" = từ đã học cần chú ý + từ mới (40 + 5 = 45), kèm giải thích giao nhau', () => {
   const h = R(lessonEnv(), `renderTodayPanel(${JSON.stringify(TODAY())})`);
   assert.ok(h.includes('45 từ duy nhất'));
