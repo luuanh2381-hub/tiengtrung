@@ -82,10 +82,21 @@ function rvQCtx() {
     heavy: (typeof pickHeavyDistractors === 'function') ? pickHeavyDistractors : null,
   };
 }
+// V110 — cài đặt "Cho phép câu tự gõ đáp án" (mặc định BẬT; tắt nếu gõ trên điện thoại bất tiện). Lưu cục bộ theo thiết bị.
+function rvTypedEnabled() { try { return localStorage.getItem('rvAllowTyped') !== '0'; } catch { return true; } }
+function rvSetTypedEnabled(on) { try { localStorage.setItem('rvAllowTyped', on ? '1' : '0'); } catch {} if (typeof render === 'function') render(); }
+// Nguồn kết quả của bài luyện bổ sung (lưu ở server để tách "ngay sau xem đáp án" khỏi "nhớ sau khoảng nghỉ").
+function rvPracticeSource(item) {
+  if (!item) return 'practice';
+  if (item.type === 'check') return 'check';
+  if (item.type === 'redo') return 'redo';
+  if (item.type === 'match') return 'match';
+  return 'extra'; // extra / drill
+}
 function rvSkillTypes(skill) { return QE.MCQ_ORDER.filter(t => QE.TYPES[t].skill === skill); }
 function rvBuildQuestionFor(item) {
   const w = item.word, ctx = rvQCtx();
-  const base = { session: rvQSession, profile: item.skillProfile };
+  const base = { session: rvQSession, profile: item.skillProfile, allowTyped: rvTypedEnabled() };
   if (item.type === 'check') return QS.choose(w, ctx, Object.assign({}, base, { only: ['hz2vi'] }));
   if (item.type === 'drill') return QS.choose(w, ctx, Object.assign({}, base, { only: ['vi2hz'] }));
   if (item.type === 'extra' || item.type === 'redo') {
@@ -118,7 +129,7 @@ function rvRestoreQSession() {
   rvQSession.history = rvQSession.history.slice(-60);
 }
 // Thời gian đọc phản hồi trước khi tự chọn rating: câu có giải thích dài (điền từ vào câu) cần lâu hơn.
-function rvAutoMs() { return (rvQuestion && rvQuestion.typeId === 'cloze') ? 6000 : RV_AUTO_COMMIT_MS; }
+function rvAutoMs() { return (rvQuestion && (rvQuestion.typeId === 'cloze' || rvQuestion.typed)) ? 6000 : RV_AUTO_COMMIT_MS; } // V110: câu tự nhập cũng cần thời gian đọc phản hồi
 
 // ── Bổ sung "Highlight System Rating" (revert V67's auto-only flow) ─────────────────────────────
 let rvRatingPhase = null;   // null (chưa tới lúc) | 'loading' (đang hỏi server gợi ý) | 'pending'
@@ -200,7 +211,16 @@ async function rvFetchFreshSession(ignoreDayDedupe) {
 // true = hành vi "Học mới" (Vấn đề 4) — CHỦ ĐỘNG đóng/ghi nhật ký phiên dang dở (nếu có) rồi mở
 // phiên hoàn toàn MỚI, không lấy lại card đã hoàn thành/vừa học/chưa đến hạn FSRS (Vấn đề 4), tự
 // tiếp tục đúng từ CHƯA học kế tiếp (không quay lại đầu danh sách).
+// V110 — chế độ học THU HẸP: 'due' = chỉ thẻ đến hạn theo lịch FSRS, 'new' = chỉ từ mới. Đây chỉ là BỘ LỌC trên đúng
+// danh sách do server/FSRS trả về (cùng ngân sách ngày, cùng thứ tự); không tạo nguồn dữ liệu riêng, không đổi lịch ôn.
+// Chỉ áp dụng cho phiên MỚI; phiên đang dở được khôi phục nguyên trạng. Dùng 1 lần rồi tự xoá để "Học tiếp" quay lại bình thường.
+let rvOnlyType = null;
+function startStudyMode(kind) {
+  rvOnlyType = (kind === 'due' || kind === 'new') ? kind : null;
+  ssEnterMode('review');
+}
 async function startStudySession(weakMode, forceNew) {
+  const onlyType = rvOnlyType; rvOnlyType = null;
   rvWeakMode = !!weakMode;
   const savedKey = rvStorageMode();
   if (!forceNew) {
@@ -247,11 +267,18 @@ async function startStudySession(weakMode, forceNew) {
   goTab('review');
   const el = document.getElementById('content');
   if (el) el.innerHTML = `<div class="study-empty">Đang tải phiên học...</div>`;
-  const { list, error, reviewCount, newCount, blockedByBacklog, totalDue, scopeLessons } = await rvFetchFreshSession(false);
+  const fetched = await rvFetchFreshSession(false);
+  const { error, blockedByBacklog, totalDue, scopeLessons } = fetched;
+  let { list, reviewCount, newCount } = fetched;
   if (error) { alert(error); goTab('today'); return; }
+  if (onlyType && !rvWeakMode) { // V110: chế độ thu hẹp
+    list = list.filter(it => it.type === (onlyType === 'due' ? 'review' : 'new'));
+    reviewCount = onlyType === 'due' ? list.length : 0;
+    newCount = onlyType === 'new' ? list.length : 0;
+  }
   // V106: thêm nguồn thứ 3 (từ hay trả lời sai) + 1 bài ghép cặp; thẻ FSRS chính thức giữ nguyên thứ tự.
   let sessionItems = list, extraCount = 0;
-  if (!rvWeakMode) {
+  if (!rvWeakMode && !onlyType) {
     const ex = await rvAddExtras(sessionItems);
     extraCount = ex.extraCount;
     sessionItems = rvInsertMatch(ex.items);
@@ -428,6 +455,7 @@ async function rvFetchSystemRating({ word, selectedAnswer, responseTimeMs, answe
       body: JSON.stringify({
         wordId: { hz: word.hz, l: word.l },
         quizType: rvQuestion.quizType,
+        exerciseType: rvQuestion.exerciseFsrs, // V110: để server chấm đúng kiểu (tự nhập) như lúc commit
         selectedAnswer,
         responseTimeMs: Number.isFinite(responseTimeMs) ? Math.round(responseTimeMs) : null,
         answerChanges: Number.isFinite(answerChanges) ? answerChanges : 0,
@@ -491,7 +519,7 @@ async function rvCommitRating(attemptId, chosenRating) {
   const item = rvQueue.items[0];
   const w = item.word;
   const reviewPromise = submitFsrsReviewAwaited({
-    word: w, quizType: rvQuestion.quizType, exerciseType: rvQuestion.exerciseFsrs,
+    word: w, quizType: rvQuestion.quizType, exerciseType: rvQuestion.exerciseFsrs, sessionId: rvQueue.sessionId,
     selectedAnswer: pending.selectedAnswer,
     responseTimeMs: pending.responseTimeMs, answerChanges: pending.answerChanges,
     rating: rvFinalRating,
@@ -520,6 +548,7 @@ function rvInjectStyle() {
   rvStyleInjected = true;
   const st = document.createElement('style');
   st.textContent = `
+  .rv-typed-rule{font-size:.78rem;color:var(--muted);text-align:center;margin-top:6px;line-height:1.4}
   .rv-type-tag{font-size:.7rem;color:var(--muted);font-weight:700;text-align:center;margin-bottom:4px}
   .rv-cloze{font-size:1.5rem;font-weight:800;text-align:center;margin:10px 0 4px;line-height:1.5;word-break:break-word}
   .rv-cloze-vi{font-size:.9rem;color:var(--muted);text-align:center;margin-bottom:8px}
@@ -541,7 +570,16 @@ function rvInjectStyle() {
 function rvExplainHtml() {
   const q = rvQuestion;
   if (!q || q.typeId === 'hz2vi' || q.typeId === 'vi2hz') return ''; // 2 dạng này màn đáp án đã hiện đủ chữ/pinyin/nghĩa
-  return `<div class="rv-explain">${q.explanation.map(l => `<div>${escapeHtml(l)}</div>`).join('')}</div>`;
+  // V110: câu tự nhập — nói rõ bạn đã gõ gì, vì sao đúng/sai (ví dụ: đúng âm nhưng thiếu/sai thanh), và đáp án chuẩn.
+  let typedLine = '';
+  const t = rvLastAnswer && rvLastAnswer.typed;
+  if (q.typed && t) {
+    const blank = !t.value;
+    typedLine = `<div><b>${blank ? 'Bạn đã bỏ qua câu này' : 'Bạn đã gõ: ' + escapeHtml(t.value)}</b>` +
+      `${!blank && AM.VERDICT_TEXT[t.verdict] ? ` — ${escapeHtml(AM.VERDICT_TEXT[t.verdict])}` : ''}` +
+      `${t.correct ? '' : `<br>Đáp án chuẩn: ${escapeHtml(q.correctKey)}`}</div>`;
+  }
+  return `<div class="rv-explain">${typedLine}${q.explanation.map(l => `<div>${escapeHtml(l)}</div>`).join('')}</div>`;
 }
 
 function rvQuestionBodyHtml(tagLabel, w) {
@@ -564,6 +602,24 @@ function rvQuestionBodyHtml(tagLabel, w) {
   } else {
     stem = `<div class="rv-vi" style="font-size:1.3rem;margin:10px 0">${escapeHtml(p.main || '')}</div>
       <div class="rv-prompt">${escapeHtml(p.ask)}</div>`;
+  }
+  if (q.typed) { // V110: câu TỰ NHẬP — không có nút lựa chọn
+    const isPy = q.typed === 'py';
+    return `
+      <div class="rv-tag">${tagLabel} · ${lessonsLabel(w)}</div>
+      <div class="rv-type-tag">${escapeHtml(QE.TYPES[q.typeId].label)}</div>
+      ${stem}
+      <input id="rv-typed" class="type-input" type="text" inputmode="text" enterkeyhint="done"
+             ${isPy ? 'lang="vi"' : 'lang="zh-CN"'} autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false"
+             placeholder="${isPy ? 'Gõ pinyin, ví dụ: nǐ hǎo hoặc ni3 hao3' : 'Gõ chữ Hán (dùng bàn phím tiếng Trung)'}"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();rvSubmitTyped(false)}" ${rvSubmitting ? 'disabled' : ''}>
+      <div class="rv-typed-rule">${isPy
+        ? 'Quy tắc chấm: cần dấu thanh (ǎ) hoặc số thanh (a3). Không phân biệt hoa/thường và khoảng trắng. Gõ thiếu thanh điệu sẽ <b>không</b> được tính đúng.'
+        : 'Quy tắc chấm: phải đúng từng chữ (không phân biệt giản/phồn). Khoảng trắng và dấu câu thừa được bỏ qua.'}</div>
+      <div style="display:flex;gap:8px;justify-content:center;margin-top:10px">
+        <button class="btn btn-primary" onclick="rvSubmitTyped(false)">Kiểm tra</button>
+        <button class="btn" style="background:var(--border)" onclick="rvSubmitTyped(true)">Bỏ qua</button>
+      </div>`;
   }
   const opts = q.options.map(o =>
     `<button class="quiz-opt" data-v="${escapeHtml(o.key)}" onclick="rvPick(this)" ${rvSubmitting ? 'disabled' : ''}>${escapeHtml(o.label)}</button>`
@@ -789,6 +845,10 @@ function bindReview() {
     return;
   }
   if (rvPhase !== 'question' || !rvQuestion) return;
+  if (rvQuestion.typed) { // V110: câu tự nhập — đặt con trỏ vào ô nhập (bàn phím hiện sẵn trên điện thoại)
+    setTimeout(() => { const i = document.getElementById('rv-typed'); if (i) i.focus(); }, 120);
+    return;
+  }
   document.querySelectorAll('#rv-opts .quiz-opt').forEach((b, i) => {
     b._correct = (i === rvQuestion.correctIndex);
   });
@@ -862,7 +922,7 @@ function rvPickPractice(btn) {
   rvLastAnswer = { correct: ok, card: null, autoRating: null };
   rvRatingPhase = null;
   rvRecordAnswer(item, q, ok, responseTimeMs, false);
-  submitSkillPractice({ word: w, exerciseType: q.exercisePractice, selectedAnswer: btn.dataset.v, responseTimeMs }).catch(() => {});
+  submitSkillPractice({ word: w, exerciseType: q.exercisePractice, selectedAnswer: btn.dataset.v, responseTimeMs, source: rvPracticeSource(item), sessionId: rvQueue.sessionId }).catch(() => {});
   render();
   // Đúng và không có giải thích dài → tự sang câu kế sau 2s (đủ đọc). Có giải thích (điền từ, dễ nhầm) hoặc sai
   // → chờ người học bấm "Tiếp tục" để kịp đọc.
@@ -874,6 +934,50 @@ function rvPickPractice(btn) {
     }, 2000);
   }
 }
+// ── V110: trả lời câu TỰ NHẬP. Chấm tức thì bằng AM (đúng module server dùng) chỉ để phản hồi nhanh; server vẫn chấm lại.
+// Thẻ FSRS chính thức → đi đường preview + chọn rating + /api/study/review (y như trắc nghiệm).
+// Luyện bổ sung → chỉ ghi hồ sơ kỹ năng (/api/skills/practice), KHÔNG đổi lịch FSRS.
+// "Bỏ qua" = người học chủ động không nhớ ra → tính là sai (khác bấm Kiểm tra khi để trống = bấm nhầm, không tính vào kỹ năng).
+const RV_BLANK_MARK = '⨯ (bỏ trống) ⨯';
+async function rvSubmitTyped(skip) {
+  if (rvSubmitting || rvPhase !== 'question' || !rvQuestion || !rvQuestion.typed) return;
+  const inp = document.getElementById('rv-typed');
+  const value = skip ? '' : (inp ? inp.value : '');
+  if (!skip && !String(value).trim()) { // chưa gõ gì: nhắc nhẹ, KHÔNG tính là câu trả lời
+    if (inp) { inp.focus(); inp.placeholder = 'Hãy gõ đáp án, hoặc bấm “Bỏ qua”'; }
+    return;
+  }
+  rvSubmitting = true;
+  const q = rvQuestion, item = rvQueue.items[0], w = item.word;
+  const responseTimeMs = Math.max(0, Math.round(performance.now() - rvStartedAt - vtHiddenMs()));
+  const graded = skip ? { correct: false, verdict: 'empty' } : AM.grade(q.typed, value, q.correctKey);
+  const selectedAnswer = skip ? RV_BLANK_MARK : String(value).trim();
+  const attemptId = ++rvAttemptId;
+  if (graded.correct) playDing(); else playBuzz();
+  speak(w.hz);
+  rvRecordAnswer(item, q, graded.correct, responseTimeMs, rvIsOfficial(item));
+  rvLastAnswer = { correct: graded.correct, card: null, autoRating: null, typed: { value: skip ? '' : String(value).trim(), verdict: graded.verdict, correct: graded.correct } };
+  rvPhase = 'answered';
+  rvSubmitting = false;
+
+  if (rvIsPractice(item)) { // luyện bổ sung
+    rvRatingPhase = null;
+    submitSkillPractice({ word: w, exerciseType: q.exercisePractice, selectedAnswer, responseTimeMs, source: rvPracticeSource(item), sessionId: rvQueue.sessionId }).catch(() => {});
+    render();
+    return; // câu tự nhập luôn có giải thích → chờ người học bấm "Tiếp tục"
+  }
+  rvRatingPhase = 'loading';
+  rvSystemRating = null; rvUserRating = null; rvFinalRating = null;
+  rvPendingReview = { selectedAnswer, responseTimeMs, answerChanges: 0 };
+  render();
+  const systemRating = await rvFetchSystemRating({ word: w, selectedAnswer, responseTimeMs, answerChanges: 0 });
+  if (attemptId !== rvAttemptId || currentTab !== 'review' || rvRatingPhase !== 'loading') return;
+  rvSystemRating = systemRating;
+  rvRatingPhase = 'pending';
+  render();
+  rvStartCountdown(attemptId);
+}
+
 function rvPracticeContinue() {
   const item = rvQueue.items[0];
   if (!item || !rvIsPractice(item) || rvPhase !== 'answered') return;

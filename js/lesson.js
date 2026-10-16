@@ -141,25 +141,98 @@ async function loadStudyDashboard() {
       area.innerHTML = `<div class="study-empty">Chưa có từ vựng trong phạm vi Quyển/bài bạn đang chọn.<br>Vào <b>Trang chủ</b> để chọn Quyển/bài trước.</div>`;
       return;
     }
-    if (data.dueCount === 0 && data.newInCurrentLesson === 0) {
-      area.innerHTML = `<div class="study-empty">🎉 Bạn đã ôn hết từ đến hạn và học hết từ mới của Bài ${data.currentLesson}!<br>Quay lại sau hoặc chọn thêm Quyển/bài ở Trang chủ.</div>`;
-      return;
-    }
-    area.innerHTML = `
-      <div class="study-grid">
-        <div class="study-stat due"><div class="study-stat-num">🔴 ${data.dueCount}</div><div class="study-stat-label">Từ cần ôn</div></div>
-        <div class="study-stat new"><div class="study-stat-num">🆕 ${data.newInCurrentLesson}</div><div class="study-stat-label">Từ mới</div></div>
-        <div class="study-stat lesson"><div class="study-stat-num">📖 Bài ${data.currentLesson}</div><div class="study-stat-label">Bài hiện tại</div></div>
-        <div class="study-stat weak"><div class="study-stat-num">🔥 ${data.weakCount}</div><div class="study-stat-label">Từ hay quên</div></div>
-      </div>
-      ${data.blockedByBacklog ? `<div style="font-size:.8rem;color:var(--muted);margin:8px 0;">⏳ Từ mới đang tạm khoá vì còn ${data.totalDue} thẻ cần ôn (có thể ở Quyển/bài khác) — tắt "Chỉ học từ mới sau khi hết backlog ôn tập" trong Cài đặt hằng ngày nếu muốn học từ mới ngay.</div>` : ''}
-      <button class="btn btn-primary" style="width:100%;font-size:1.05rem;padding:15px;" onclick="ssEnterMode('review')">▶️ Bắt đầu học</button>
-      ${data.weakCount > 0 ? `<button class="btn" style="width:100%;margin-top:8px;background:var(--l10c);color:var(--l10a);" onclick="ssEnterMode('review-weak')">⚠️ Luyện từ hay quên (${data.weakCount})</button>` : ''}
-    `;
+    // V110: KHÔNG thoát sớm khi hết thẻ/từ mới — người học vẫn cần thấy thống kê và các chế độ luyện bổ sung / kiểm tra lại.
+    area.innerHTML = renderTodayPanel(data);
   } catch (e) {
     area.innerHTML = `<div class="study-empty">Lỗi kết nối: ${e.message}</div>`;
   }
 }
+
+// ── V110: bảng điều khiển học tập hằng ngày ─────────────────────────────────────────────────────
+// Mọi số đều lấy từ server (không số giả). Phân biệt rõ 3 đơn vị KHÁC NHAU:
+//   • TỪ duy nhất  — mỗi từ chỉ đếm 1 lần dù thuộc nhiều nhóm (vừa đến hạn vừa yếu nghe...).
+//   • THẺ đến hạn  — số thẻ FSRS tới hạn ôn (1 từ = 1 thẻ ở bài đang chọn).
+//   • LƯỢT câu hỏi — mỗi lần trả lời; 1 từ có thể được hỏi nhiều lượt trong 1 buổi.
+// Các nhóm "cần củng cố / kỹ năng yếu / kiểm tra lại" có thể TRÙNG nhau → KHÔNG cộng chúng lại; dùng "từ duy nhất".
+function tdFmtDuration(sec) {
+  const m = Math.round((sec || 0) / 60);
+  if (!sec) return '0 phút';
+  return m < 1 ? 'dưới 1 phút' : (m < 60 ? m + ' phút' : Math.floor(m / 60) + ' giờ ' + (m % 60) + ' phút');
+}
+function renderTodayPanel(data) {
+  const b = data.breakdown, pr = data.progress, dl = data.daily;
+  const nothingToDo = (data.dueCount || 0) === 0 && (data.newInCurrentLesson || 0) === 0;
+  const cell = (cls, num, label, sub) => `<div class="study-stat ${cls}"><div class="study-stat-num">${num}</div><div class="study-stat-label">${label}</div>${sub ? `<div style="font-size:.68rem;color:var(--muted);font-weight:600;margin-top:2px">${sub}</div>` : ''}</div>`;
+
+  // Tiến độ nhiệm vụ hôm nay = số thẻ FSRS chính thức đã làm / (đã làm + còn lại có thể làm hôm nay).
+  let progressHtml = '';
+  if (dl) {
+    const done = (dl.reviewToday || 0) + (dl.newToday || 0);
+    const planned = done + (data.dueCount || 0) + (data.newInCurrentLesson || 0);
+    if (planned > 0) {
+      const pct = Math.round((done / planned) * 100);
+      progressHtml = `<div style="margin:2px 0 12px">
+        <div style="display:flex;justify-content:space-between;font-size:.8rem;font-weight:700"><span>Tiến độ hôm nay</span><span>${done}/${planned} thẻ (${pct}%)</span></div>
+        <div style="height:10px;border-radius:5px;background:var(--active);overflow:hidden;margin-top:4px"><div style="height:100%;width:${Math.max(pct, 2)}%;background:var(--l8a,#27ae60)"></div></div>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:3px">${dl.unlimited ? 'Chế độ học không giới hạn mỗi ngày' : `Giới hạn ngày: ôn ${dl.reviewLimit} · từ mới ${dl.newLimit}`}</div></div>`;
+    }
+  }
+
+  const capNote = (data.dueInScope > data.dueCount)
+    ? `hôm nay lấy ${data.dueCount}/${data.dueInScope} (theo giới hạn ngày)` : 'theo lịch FSRS';
+  const grid = [
+    cell('due', `🔴 ${data.dueCount}`, 'Thẻ đến hạn ôn', capNote),
+    cell('new', `🆕 ${data.newInCurrentLesson}`, 'Từ mới dự kiến', ''),
+    b ? cell('weak', `🧱 ${b.reinforce}`, 'Từ cần củng cố', 'đang học / học lại') : '',
+    b ? cell('weak', `🎯 ${b.weakSkill}`, 'Từ có kỹ năng yếu', b.weakSkill ? 'cần ≥3 lượt/kỹ năng để kết luận' : 'chưa phát hiện (hoặc chưa đủ dữ liệu)') : '',
+    b ? cell('lesson', `⏳ ${b.delayed}`, 'Cần kiểm tra lại', `đã học, chưa đến hạn, ≥${b.delayedAfterDays} ngày chưa gặp`) : '',
+    pr ? cell('lesson', `✅ ${pr.officialAnswers + pr.practiceAnswers}`, 'Lượt câu hỏi hôm nay', `${pr.officialAnswers} ôn chính thức · ${pr.practiceAnswers} luyện thêm`) : '',
+  ].join('');
+
+  let unique = '';
+  if (b) {
+    const total = b.uniqueWords + (data.newInCurrentLesson || 0);
+    const overlaps = [];
+    if (b.overlap.weakAndDue) overlaps.push(`${b.overlap.weakAndDue} từ vừa đến hạn vừa yếu kỹ năng`);
+    if (b.overlap.reinforceAndDue) overlaps.push(`${b.overlap.reinforceAndDue} từ vừa đang học vừa đến hạn`);
+    unique = `<div style="font-size:.78rem;color:var(--muted);line-height:1.5;margin:10px 0;background:var(--paper);border:1px solid var(--border);border-radius:10px;padding:8px 10px">
+      <b>${total} từ duy nhất</b> cần chú ý (${b.uniqueWords} từ đã học + ${data.newInCurrentLesson || 0} từ mới), trong tổng ${b.knownWords} từ đã học ở phạm vi này.
+      ${overlaps.length ? `Một từ có thể thuộc nhiều nhóm nên <b>không cộng các ô trên với nhau</b> (${overlaps.join('; ')}).` : 'Các nhóm trên không trùng nhau.'}
+      <br>Phân biệt: <i>từ</i> (mỗi từ đếm 1 lần) · <i>thẻ</i> (lịch FSRS) · <i>lượt</i> (mỗi lần trả lời).</div>`;
+  }
+
+  // 8 chế độ học — dùng chung bộ tạo câu hỏi/chấm điểm/ghi kết quả; gom trong mục thu gọn để màn hình không rối.
+  const audioOk = (typeof skillAudioAvailable === 'function') && skillAudioAvailable();
+  const mode = (icon, label, onclick, enabled, why) => `<button class="btn" ${enabled ? `onclick="${onclick}"` : 'disabled'} style="text-align:left;padding:10px;font-size:.82rem;line-height:1.3">${icon} ${label}${enabled ? '' : `<div style="font-size:.66rem;font-weight:600;opacity:.8">${why}</div>`}</button>`;
+  const modes = `<details ${nothingToDo ? 'open' : ''} style="margin-top:12px"><summary style="cursor:pointer;font-weight:800;font-size:.9rem;padding:6px 0">🎛 Chế độ học khác</summary>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+      ${mode('📅', 'Theo lịch FSRS<br><small>chỉ thẻ đến hạn</small>', "startStudyMode('due')", data.dueCount > 0, 'Không có thẻ đến hạn')}
+      ${mode('🆕', 'Học từ mới<br><small>xem → kiểm tra</small>', "startStudyMode('new')", data.newInCurrentLesson > 0, 'Không có từ mới hôm nay')}
+      ${mode('🧠', 'Nhớ chủ động<br><small>nghĩa → chữ Hán</small>', "skStartPractice('recall')", true, '')}
+      ${mode('🎧', 'Luyện nghe<br><small>nghe → chữ Hán / nghĩa</small>', "skStartPractice('listening')", audioOk, 'Máy này không có giọng đọc tiếng Trung')}
+      ${mode('🔤', 'Luyện pinyin<br><small>chữ Hán → pinyin</small>', "skStartPractice('pinyin')", true, '')}
+      ${mode('📖', 'Dùng từ trong câu<br><small>điền từ vào chỗ trống</small>', "skStartPractice('context')", true, '')}
+      ${mode('🧩', 'Phân biệt từ dễ nhầm', "skStartPractice('confusable')", true, '')}
+      ${mode('⏳', 'Kiểm tra sau khoảng nghỉ' + (b ? ` (${b.delayed})` : ''), "skStartPractice('delayed')", !b || b.delayed > 0, 'Chưa có từ đủ điều kiện')}
+    </div>
+    <div style="font-size:.7rem;color:var(--muted);margin-top:6px;line-height:1.5">Chế độ 1–2 vẫn là ôn chính thức theo FSRS (có đổi lịch ôn). Các chế độ còn lại là luyện bổ sung: chỉ ghi hồ sơ kỹ năng, <b>không đổi lịch FSRS</b>.
+    <label style="display:flex;gap:6px;align-items:center;margin-top:6px"><input type="checkbox" ${rvTypedEnabled() ? 'checked' : ''} onchange="rvSetTypedEnabled(this.checked)"> Cho phép câu tự gõ đáp án trong “Bắt đầu học”</label></div>
+  </details>`;
+
+  return `
+    ${progressHtml}
+    <div class="study-grid">${grid}</div>
+    ${unique}
+    ${data.blockedByBacklog ? `<div style="font-size:.8rem;color:var(--muted);margin:8px 0;">⏳ Từ mới đang tạm khoá vì còn ${data.totalDue} thẻ cần ôn (có thể ở Quyển/bài khác) — tắt "Chỉ học từ mới sau khi hết backlog ôn tập" trong Cài đặt hằng ngày nếu muốn học từ mới ngay.</div>` : ''}
+    ${nothingToDo
+      ? `<div class="study-empty" style="margin:8px 0">🎉 Bạn đã ôn hết thẻ đến hạn và học hết từ mới của Bài ${escapeHtml(String(data.currentLesson))} hôm nay!<br><span style="font-size:.8rem">Muốn học thêm? Chọn một chế độ luyện bổ sung bên dưới, hoặc chọn thêm Quyển/bài ở Trang chủ.</span></div>`
+      : `<button class="btn btn-primary" style="width:100%;font-size:1.05rem;padding:15px;" onclick="ssEnterMode('review')">▶️ Bắt đầu học</button>`}
+    ${data.weakCount > 0 ? `<button class="btn" style="width:100%;margin-top:8px;background:var(--l10c);color:var(--l10a);" onclick="ssEnterMode('review-weak')">⚠️ Luyện từ hay quên (${data.weakCount})</button>` : ''}
+    ${modes}
+    ${b ? '' : `<div style="font-size:.75rem;color:var(--muted);margin-top:8px">Chưa tải được thống kê chi tiết (củng cố / kỹ năng yếu / kiểm tra lại) — chưa đủ dữ liệu hoặc lỗi tạm thời.</div>`}
+  `;
+}
+
 function updateStudySetting(key, value) {
   if (key === 'newOnlyAfterDue' || key === 'unlimitedStudy') progressState.ui[key] = !!value;
   else {

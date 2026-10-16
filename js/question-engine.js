@@ -28,10 +28,15 @@ const QE = (function () {
     listen2vi:  { id: 'listen2vi',  label: 'Nghe → Nghĩa',           skill: 'listening',   quizType: 'hz2vi', answerField: 'vi', exerciseFsrs: 'review-listen-vi',  exercisePractice: 'practice-listening-vi', needsAudio: true },
     hz2py:      { id: 'hz2py',      label: 'Chữ Hán → Pinyin',       skill: 'pinyin',      quizType: 'hz2py', answerField: 'py', exerciseFsrs: 'review-hz2py',      exercisePractice: 'practice-pinyin' },
     cloze:      { id: 'cloze',      label: 'Điền từ vào câu',        skill: 'context',     quizType: 'vi2hz', answerField: 'hz', exerciseFsrs: 'review-cloze',      exercisePractice: 'practice-context',      needsExample: true },
+    // V110 — câu TỰ NHẬP đáp án (không có lựa chọn). `typed` = 'hz' | 'py': server chấm bằng js/answer-match.js.
+    // Có cả bản FSRS chính thức (exerciseFsrs) lẫn bản luyện bổ sung (exercisePractice), cùng kỹ năng với bản trắc nghiệm.
+    typeVi2hz:  { id: 'typeVi2hz',  label: 'Nghĩa → Gõ chữ Hán',     skill: 'recall',      quizType: 'vi2hz', answerField: 'hz', exerciseFsrs: 'review-vi2hz-typed', exercisePractice: 'practice-recall-typed', typed: 'hz' },
+    typeHz2py:  { id: 'typeHz2py',  label: 'Chữ Hán → Gõ pinyin',    skill: 'pinyin',      quizType: 'hz2py', answerField: 'py', exerciseFsrs: 'review-hz2py-typed', exercisePractice: 'practice-pinyin-typed', typed: 'py' },
     // Chỉ luyện bổ sung (không đi đường FSRS): đáp án chọn trong nhóm chữ dễ nhầm có chú giải kiểm chứng sẵn.
     confusable: { id: 'confusable', label: 'Phân biệt chữ dễ nhầm',  skill: 'recall',      quizType: 'vi2hz', answerField: 'hz', exerciseFsrs: null,                exercisePractice: 'practice-confusable',   practiceOnly: true },
   };
   const MCQ_ORDER = ['hz2vi', 'vi2hz', 'listen2hz', 'listen2vi', 'hz2py', 'cloze']; // thứ tự ưu tiên khi hoà điểm
+  const TYPED_ORDER = ['typeVi2hz', 'typeHz2py'];                                   // V110: chỉ được xét khi người gọi bật allowTyped
 
   // ── Chuẩn hoá ──────────────────────────────────────────────────────────────────────────────
   function normText(s) {
@@ -123,7 +128,7 @@ const QE = (function () {
       ].filter(Boolean);
     }
     if (typeId === 'listen2hz' || typeId === 'listen2vi') return [`Bạn vừa nghe: ${base}`];
-    if (typeId === 'hz2py') return [`${word.hz} đọc là ${word.py} (${word.vi}).`];
+    if (typeId === 'hz2py' || typeId === 'typeHz2py') return [`${word.hz} đọc là ${word.py} (${word.vi}).`];
     return [base];
   }
 
@@ -221,10 +226,61 @@ const QE = (function () {
     return q;
   }
 
-  const BUILDERS = { hz2vi: buildHz2Vi, vi2hz: buildVi2Hz, listen2hz: buildListen2Hz, listen2vi: buildListen2Vi, hz2py: buildHz2Py, cloze: buildCloze, confusable: buildConfusable };
+
+  // ── V110: câu tự nhập ───────────────────────────────────────────────────────────────────────
+  // Nghĩa → tự gõ chữ Hán. Mơ hồ nếu có từ KHÁC trùng nghĩa: cùng pinyin → không dựng (không thể phân biệt bằng đề);
+  // khác pinyin → hiện pinyin làm gợi ý khử mơ hồ (đánh dấu hinted để bộ chọn/hiển thị biết đây là bài có gợi ý).
+  function buildTypeVi2Hz(word, ctx) {
+    if (!word.vi || !word.hz) return null;
+    const pool = (ctx.pool || []).filter(x => x && x.hz && x.hz !== word.hz && x.vi && meaningsOverlap(x.vi, word.vi));
+    const k = pyKey(word.py);
+    if (pool.some(x => !k || !pyKey(x.py) || pyKey(x.py) === k)) return null; // không đủ dữ liệu để khử mơ hồ
+    const hint = pool.length ? word.py : null;
+    const q = assembleTyped('typeVi2hz', word, { kind: 'text', main: word.vi, sub: hint ? `Gợi ý pinyin: ${hint}` : null, ask: 'Gõ chữ Hán có nghĩa này' });
+    if (q) q.hinted = !!hint;
+    return q;
+  }
+  // Chữ Hán → tự gõ pinyin. Cần pinyin chuẩn hợp lệ trong dữ liệu (không tự ghép/đoán).
+  function buildTypeHz2Py(word, ctx) {
+    const amod = answerMatcher();
+    if (!amod || !word.py || !word.hz) return null;
+    const alts = amod.splitAlternatives(word.py);
+    if (!alts.length || !alts.every(a => amod.parsePinyin(a))) return null; // pinyin chứa ký tự lạ → không chấm được tin cậy
+    return assembleTyped('typeHz2py', word, { kind: 'text', main: word.hz, sub: null, ask: 'Gõ pinyin có dấu thanh (nǐ hǎo) hoặc số thanh (ni3 hao3)' });
+  }
+  function answerMatcher() {
+    if (typeof AM !== 'undefined') return AM;
+    try { return (typeof require === 'function') ? require('./answer-match') : null; } catch { return null; }
+  }
+  function assembleTyped(typeId, word, prompt) {
+    const T = TYPES[typeId];
+    const correct = optionOf(T.answerField, word);
+    return {
+      typeId, hz: word.hz, l: word.l, word,
+      skill: T.skill, quizType: T.quizType, typed: T.typed,
+      exerciseFsrs: T.exerciseFsrs, exercisePractice: T.exercisePractice,
+      fsrsEligible: true,
+      prompt, options: [], correctIndex: -1, correctKey: correct.key,
+      explanation: explain(typeId, word), tip: null, sentence: null,
+    };
+  }
+
+  const BUILDERS = { typeVi2hz: buildTypeVi2Hz, typeHz2py: buildTypeHz2Py, hz2vi: buildHz2Vi, vi2hz: buildVi2Hz, listen2hz: buildListen2Hz, listen2vi: buildListen2Vi, hz2py: buildHz2Py, cloze: buildCloze, confusable: buildConfusable };
 
   // ── Kiểm tra hợp lệ (dùng cả trong build và trong test) ────────────────────────────────────
+  function validateTyped(q) {
+    const T = TYPES[q.typeId];
+    if (!q.typed || q.typed !== T.typed) return { ok: false, reason: 'câu tự nhập thiếu kiểu chấm' };
+    if (q.options && q.options.length) return { ok: false, reason: 'câu tự nhập không có lựa chọn' };
+    if (!normText(q.correctKey)) return { ok: false, reason: 'thiếu đáp án chuẩn' };
+    // Đề không được lộ đáp án.
+    const stem = JSON.stringify({ m: q.prompt.main, a: q.prompt.ask });
+    if (q.typeId === 'typeVi2hz' && stem.includes(q.word.hz)) return { ok: false, reason: 'đề lộ chữ Hán' };
+    if (q.typeId === 'typeHz2py' && q.word.py && stem.includes(q.word.py)) return { ok: false, reason: 'đề lộ pinyin' };
+    return { ok: true };
+  }
   function validate(q, opts) {
+    if (q && TYPES[q.typeId] && TYPES[q.typeId].typed) return validateTyped(q);
     const minOptions = (opts && opts.minOptions) || (q && q.typeId === 'confusable' ? 2 : 3);
     if (!q || !q.options) return { ok: false, reason: 'thiếu câu hỏi' };
     if (q.options.length < minOptions) return { ok: false, reason: 'không đủ lựa chọn' };
@@ -305,7 +361,7 @@ const QE = (function () {
     };
   }
 
-  return { TYPES, MCQ_ORDER, build, validate, buildMatch, normText, meaningSet, meaningsOverlap, pyKey, findSentences, placeCorrect };
+  return { TYPES, MCQ_ORDER, TYPED_ORDER, build, validate, buildMatch, normText, meaningSet, meaningsOverlap, pyKey, findSentences, placeCorrect };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = QE;

@@ -203,7 +203,7 @@ function submitFsrsReview(args) {
 // 'again'|'hard'|'good'|'easy' do NGƯỜI DÙNG bấm tay hoặc do countdown ở FE tự chọn khi hết giờ —
 // xem js/review.js:rvCommitRating(). Các tab khác (Flashcard/Trắc nghiệm/Gõ chữ/Nghe-chọn) không
 // truyền field này, server tự rơi về đúng hành vi V67 cũ (100% tự động, không override).
-async function _submitFsrsReviewImpl({ word, quizType, selectedAnswer, responseTimeMs, answerChanges, rating, exerciseType }) {
+async function _submitFsrsReviewImpl({ word, quizType, selectedAnswer, responseTimeMs, answerChanges, rating, exerciseType, sessionId }) {
   // FIX (Vấn đề 1 — đúng thứ tự lên Neon): nếu outbox đang kẹt sẵn các lượt CŨ hơn (chưa gửi được
   // do mất mạng/lỗi tạm thời trước đó), tranh thủ thử gửi NỀN (không await, không chặn lượt hiện
   // tại) TRƯỚC KHI thêm lượt mới vào outbox — giảm tối đa khoảng thời gian các lượt cũ hơn bị "đứng
@@ -220,6 +220,7 @@ async function _submitFsrsReviewImpl({ word, quizType, selectedAnswer, responseT
   };
   if (typeof rating === 'string' && rating) payload.rating = rating;
   if (typeof exerciseType === 'string' && exerciseType) payload.exerciseType = exerciseType; // V104: nhãn kỹ năng (server tự kiểm tra khớp quizType)
+  if (typeof sessionId === 'string' && sessionId) payload.sessionId = sessionId; // V110: id phiên học (phân tích trí nhớ dài hạn)
   addToOutbox(payload);
   let res, data;
   try {
@@ -282,7 +283,7 @@ function skillAudioAvailable() {
 
 // ── V104: gửi 1 lượt luyện kỹ năng BỔ SUNG (KHÔNG phải lượt ôn FSRS — không đổi lịch ôn). Dùng CHUNG
 //     outbox + write-ahead + idempotency với submitFsrsReview (cùng cơ chế chống mất/trùng dữ liệu). ──
-async function submitSkillPractice({ word, exerciseType, selectedAnswer, responseTimeMs }) {
+async function submitSkillPractice({ word, exerciseType, selectedAnswer, responseTimeMs, source, sessionId }) {
   flushReviewOutbox();
   const key = genIdempotencyKey();
   const payload = {
@@ -293,6 +294,8 @@ async function submitSkillPractice({ word, exerciseType, selectedAnswer, respons
     attemptKey: key,
     idempotencyKey: key, // dùng chung khoá này cho removeFromOutbox(); server chỉ đọc attemptKey
   };
+  if (source) payload.source = source;       // V110: check | redo | extra | match | practice | mode | delayed
+  if (sessionId) payload.sessionId = sessionId;
   const endpoint = '/api/skills/practice';
   addToOutbox(payload, endpoint);
   let res, data;
