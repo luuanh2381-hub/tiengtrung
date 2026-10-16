@@ -1,0 +1,2947 @@
+// ════════════════════════════════════════════════════
+// SERVER — App học từ vựng tiếng Trung (bản deploy Vercel)
+// Đăng ký / đăng nhập / lưu tiến độ theo tài khoản.
+// Dữ liệu lưu trong Postgres (xem lib/db.js) thay vì file JSON,
+// vì Vercel không giữ file lâu dài giữa các lần chạy.
+// ════════════════════════════════════════════════════
+const express = require('express');
+const compression = require('compression');
+const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
+const fs = require('fs');
+const path = require('path');
+const { readDB, updateDB, updateDBWithFsrsCleanup, getVocabByLessons, getVocabCounts, importVocab, clearVocab, deleteVocabLesson,
+  getVocabWordsByLesson, updateVocabWord, deleteVocabWord,
+  removeVocabWordFromLesson, setVocabWordLessons, findVocabWordByHz, // V93 (audit thống nhất từ vựng)
+  getAllVocabWords, updateVocabHanviet, getWordExampleCounts, insertWordExamples, getWordExamplesForLessons,
+  getAllHanziParts, getHanziPartsKeys, insertHanziParts,
+  insertActivityLog, getActivityLogs, reserveGeminiSlot, bumpGeminiRateLimit,
+  getWeakFsrsCards, getFsrsCardsDebug,
+  getWordForAnswerCheck, countKnownFsrsWords, getKnownCountsForUsers, getKnownCountsByLesson,
+  getBookDefs, createBookDef, updateBookDef, deleteBookDef, getLessonsByWordIds,
+  countDueFsrsCards } = require('../lib/db'); // countDueFsrsCards: V104 (tổng quan phân tích năng lực)
+const { getFsrsVerificationInfo } = require('../lib/fsrs');
+// V69: mọi review + toàn bộ analytics/optimizer/personal-retention giờ đi qua lib/fsrs/ (scheduler
+// layer chuẩn hóa) — api/index.js KHÔNG còn gọi thẳng db.reviewFsrsCard nữa (Phần 4 của audit).
+const reviewService = require('../lib/fsrs/reviewService');
+const skillStore = require('../lib/skill-store');
+const wordNotes = require('../lib/word-notes');
+const orphans = require('../lib/orphans');
+const { resolveExercise, isCountableAnswer, MEASURABLE_SKILLS, gradeAnswer, PRACTICE_SOURCES } = require('../lib/skills');
+const skillRecommend = require('../lib/skill-recommend'); // V110: khuyến nghị cá nhân hoá (thuần, theo quy tắc)
+const fsrsAnalytics = require('../lib/fsrs/analytics');
+const fsrsOptimizer = require('../lib/fsrs/optimizer');
+const { runInBackground } = require('../lib/runInBackground');
+// V76 (Yêu cầu 1): resolveStudyScope/resolveCurrentLesson/buildLessonPriorityOrder/formatFsrsCard
+// đã CHUYỂN vào lib/fsrs/studyScope.js (dùng bởi reviewService.getTodayOverview/getStudySession).
+// api/index.js chỉ còn cần formatFsrsCard cho /api/study/weak-words (route KHÔNG chuyển, vì đây chỉ
+// là 1 view lọc theo lapses/difficulty, không phải quyết định "từ tiếp theo").
+const { formatFsrsCard, BOOKS_RANGES, resolveStudyScope } = require('../lib/fsrs/studyScope');
+
+const app = express();
+
+process.on('uncaughtException', (err) => {
+  console.error('⚠️  [uncaughtException]:', err.message);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('⚠️  [unhandledRejection]:', err && err.message);
+});
+
+// V69 (Phần 2 audit — loại bỏ SRS cũ): "progress" KHÔNG còn field "srs" (ease-factor/step cũ) và
+// KHÔNG còn "streak"/"lastDate" do CLIENT tự gửi lên (trước đây tin tưởng mù quáng số client gửi —
+// user có thể tự POST streak bất kỳ). Nguồn sự thật duy nhất cho tiến độ học giờ là FSRS
+// (fsrs_cards/review_history) + study_sessions (server tự tính streak, xem lib/fsrs/analytics.js).
+// "progress" giờ chỉ còn giữ "ui" (cài đặt hiển thị/lựa chọn bài) — không liên quan lịch ôn tập.
+function emptyProgress() {
+  return { ui: { lastTab: 'home', selectedBookIds: [1], selectedLessons: [], lessonsAllMode: true } };
+}
+
+function makeToken() {
+  return crypto.randomBytes(24).toString('hex');
+}
+
+// ════════════════════════════════════════════════════
+// V88 (Phần 7 audit "Rate Limit") — bộ đếm rate-limit ĐƠN GIẢN, trong bộ nhớ (KHÔNG thêm dependency
+// mới — không cần express-rate-limit/Redis, đủ dùng cho quy mô app cá nhân hiện tại), áp dụng cho
+// login/register/change-password (Phần 6 chỉ định rõ 3 route này).
+//
+// RỦI RO CẦN GHI RÕ (theo đúng yêu cầu audit — không được giấu giới hạn của giải pháp): đây là bộ đếm
+// TRONG BỘ NHỚ CỦA 1 INSTANCE. Trên Vercel (serverless), nhiều instance/container có thể chạy song
+// song hoặc bị thay mới (cold start) — mỗi instance có bộ đếm RIÊNG, không dùng chung. Vì vậy đây là
+// biện pháp GIẢM THIỂU (best-effort, chặn được kịch bản phổ biến nhất: 1 script/1 người dùng gõ sai
+// liên tục từ 1 kết nối), KHÔNG PHẢI chặn tuyệt đối 1 kẻ tấn công có hạ tầng phân tán nhiều IP/nhiều
+// instance. Nâng cấp lên rate-limit CHIA SẺ ĐÚNG NGHĨA (vd đếm qua Postgres/Redis) là bước tiếp theo
+// nếu cần chống chịu mạnh hơn — NGOÀI phạm vi tối thiểu, ít thay đổi nhất của lần audit này.
+const _rateLimitBuckets = new Map(); // key: `${ip}:${routeName}` → { count, windowStartMs }
+function checkRateLimit(req, routeName, { maxAttempts, windowMs }) {
+  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || 'unknown';
+  const key = `${ip}:${routeName}`;
+  const now = Date.now();
+  const bucket = _rateLimitBuckets.get(key);
+  if (!bucket || now - bucket.windowStartMs > windowMs) {
+    _rateLimitBuckets.set(key, { count: 1, windowStartMs: now });
+    return true; // bắt đầu cửa sổ mới — trong hạn mức
+  }
+  bucket.count++;
+  return bucket.count <= maxAttempts;
+}
+// Dọn định kỳ bucket đã hết hạn từ lâu — tránh Map phình to vô hạn theo thời gian (Phần "memory leak"
+// trong yêu cầu audit polling cũng áp dụng tinh thần tương tự ở đây). unref() để KHÔNG giữ process
+// sống chỉ vì timer này (đúng tinh thần "không tạo tác vụ nền không cần thiết" trên serverless).
+const _rateLimitCleanupTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [key, bucket] of _rateLimitBuckets) {
+    if (now - bucket.windowStartMs > 15 * 60 * 1000) _rateLimitBuckets.delete(key);
+  }
+}, 5 * 60 * 1000);
+if (typeof _rateLimitCleanupTimer.unref === 'function') _rateLimitCleanupTimer.unref();
+
+const RANKS = [
+  { min: 0,   name: 'Tân binh',      icon: '🌱' },
+  { min: 20,  name: 'Mới nhập môn',  icon: '🐣' },
+  { min: 60,  name: 'Chăm chỉ',      icon: '📖' },
+  { min: 120, name: 'Vững vàng',     icon: '🎯' },
+  { min: 250, name: 'Cao thủ',       icon: '🔥' },
+  { min: 400, name: 'Đại cao thủ',   icon: '💎' },
+  { min: 600, name: 'Đại tông sư',   icon: '👑' },
+];
+function getRank(known) {
+  let cur = RANKS[0];
+  for (const r of RANKS) { if (known >= r.min) cur = r; }
+  const idx = RANKS.indexOf(cur);
+  const next = RANKS[idx + 1] || null;
+  return {
+    name: cur.name, icon: cur.icon,
+    next: next ? { name: next.name, icon: next.icon, remain: next.min - known } : null,
+  };
+}
+
+// Luôn tính "ngày hôm nay" theo GIỜ VIỆT NAM (UTC+7), không phụ thuộc múi giờ của server đang chạy
+// (server Vercel mặc định chạy UTC — nếu không quy đổi, mốc "sang ngày mới" sẽ lệch 7 tiếng,
+// ảnh hưởng tới lượt truy cập theo ngày, nhật ký hoạt động, v.v.)
+const VN_TIMEZONE = 'Asia/Ho_Chi_Minh';
+function vnDateKey(date) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: VN_TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date || new Date());
+}
+function vnTimeKey(date) {
+  return new Intl.DateTimeFormat('vi-VN', { timeZone: VN_TIMEZONE, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(date || new Date());
+}
+function todayKey() {
+  return vnDateKey();
+}
+
+const { PublicError } = require('../lib/publicError');
+
+const GENERIC_SERVER_ERROR_MESSAGE = 'Lỗi server nội bộ. Vui lòng thử lại sau.';
+// V88 (Phần 5 audit "API Error Leak") — LUÔN log ĐẦY ĐỦ e.message (+ stack, phục vụ debug) ra server
+// console, nhưng CHỈ trả cho CLIENT: fallbackMsg do caller CHỦ ĐỘNG truyền (đã tự đánh giá an toàn),
+// hoặc e.message NẾU e là PublicError (tác giả code đã chủ động đánh dấu an toàn — vd validate input),
+// còn lại (Postgres/driver error, package/module error, TypeError do bug, v.v.) → thông điệp CHUNG
+// CHUNG cố định — KHÔNG BAO GIỜ lộ SQL error/đường dẫn hệ thống/stack trace/thông tin cấu hình nội bộ.
+function publicErrorMessage(e, fallbackMsg) {
+  if (fallbackMsg) return fallbackMsg;
+  if (e instanceof PublicError) return e.message;
+  return GENERIC_SERVER_ERROR_MESSAGE;
+}
+function fail(res, e, fallbackMsg) {
+  console.error('⚠️  Lỗi:', e && e.message, e && e.stack ? '\n' + e.stack : '');
+  res.status(500).json({ ok: false, error: publicErrorMessage(e, fallbackMsg) });
+}
+
+// ── Ghi nhật ký hoạt động (không chờ, không để lỗi ghi log làm hỏng luồng chính) ──
+function logActivity(username, role, action, detail) {
+  insertActivityLog({ username, role, action, detail }).catch((e) => {
+    console.error('⚠️  Không ghi được nhật ký:', e && e.message);
+  });
+}
+
+// Nén gzip/brotli các response JSON (đặc biệt danh sách từ vựng, ví dụ, chiết tự — có thể khá
+// lớn) — giảm dung lượng truyền qua mạng, giúp tải nhanh hơn nhất là mạng chậm/di động.
+app.use(compression());
+app.use(express.json({ limit: '20mb' }));
+
+// ── Xác thực: kiểm tra token, KHÔNG khoá dữ liệu (chỉ đọc) ──
+async function requireAuth(req, res) {
+  const header = req.headers['authorization'] || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) { res.status(401).json({ ok: false, error: 'Chưa đăng nhập' }); return null; }
+  const db = await readDB();
+  const username = db.tokens[token];
+  if (!username || !db.users[username]) {
+    res.status(401).json({ ok: false, error: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại' });
+    return null;
+  }
+  return { username, token, db };
+}
+
+function requireAdmin(user, res) {
+  if (!user || (user.role !== 'admin' && user.role !== 'superadmin')) {
+    res.status(403).json({ ok: false, error: 'Chỉ quản trị viên mới dùng được chức năng này' });
+    return false;
+  }
+  return true;
+}
+function requireSuperAdmin(user, res) {
+  if (!user || user.role !== 'superadmin') {
+    res.status(403).json({ ok: false, error: 'Chỉ quản trị cao nhất mới dùng được chức năng này' });
+    return false;
+  }
+  return true;
+}
+
+// ── Ghi nhận 1 lượt truy cập ──
+app.post('/api/visit', async (req, res) => {
+  try {
+    await updateDB((db) => {
+      const key = todayKey();
+      db.visits.total = (db.visits.total || 0) + 1;
+      db.visits.byDate[key] = (db.visits.byDate[key] || 0) + 1;
+    });
+    res.json({ ok: true });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Đăng ký ──
+app.post('/api/register', async (req, res) => {
+  // V88 (Phần 7) — chặn tạo hàng loạt tài khoản kịch bản tự động (5 lần/10 phút mỗi IP).
+  if (!checkRateLimit(req, 'register', { maxAttempts: 5, windowMs: 10 * 60 * 1000 })) {
+    return res.status(429).json({ ok: false, error: 'Quá nhiều lần đăng ký. Vui lòng thử lại sau vài phút.' });
+  }
+  const { username, password } = req.body || {};
+  if (!username || !password) return res.json({ ok: false, error: 'Thiếu tên đăng nhập hoặc mật khẩu' });
+  if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
+    return res.json({ ok: false, error: 'Tên đăng nhập 3-20 ký tự, chỉ gồm chữ/số/gạch dưới' });
+  }
+  if (String(password).length < 4) return res.json({ ok: false, error: 'Mật khẩu cần tối thiểu 4 ký tự' });
+  try {
+    const key = username.toLowerCase();
+    const passwordHash = await bcrypt.hash(String(password), 10);
+    const token = makeToken();
+    const result = await updateDB((db) => {
+      if (db.users[key]) return { ok: false, error: 'Tên đăng nhập đã tồn tại' };
+      const isFirstUser = Object.keys(db.users).length === 0;
+      db.users[key] = {
+        username, passwordHash,
+        role: isFirstUser ? 'superadmin' : 'user',
+        progress: emptyProgress(),
+        createdAt: Date.now(),
+      };
+      db.tokens[token] = key;
+      // Tài khoản vừa tạo → chắc chắn chưa có fsrs_cards/review nào (known=0, streak=0), không
+      // cần query DB (V70: trả sẵn streak/known ngay lúc đăng ký, để badge không hiện sai 0 tạm
+      // thời rồi mới đúng sau — xem ghi chú tương tự ở /api/login).
+      return {
+        ok: true, token, username, role: db.users[key].role, progress: db.users[key].progress,
+        rank: getRank(0), known: 0, streak: 0, longestStreak: 0,
+      };
+    });
+    if (result.ok) logActivity(result.username, result.role, 'auth', 'Đăng ký tài khoản mới');
+    res.json(result);
+  } catch (e) { fail(res, e); }
+});
+
+// ── Đăng nhập ──
+app.post('/api/login', async (req, res) => {
+  // V88 (Phần 7) — chặn brute-force mật khẩu (10 lần/5 phút mỗi IP — đủ rộng cho gõ nhầm thật, đủ hẹp
+  // để làm chậm đáng kể 1 script thử nhiều mật khẩu).
+  if (!checkRateLimit(req, 'login', { maxAttempts: 10, windowMs: 5 * 60 * 1000 })) {
+    return res.status(429).json({ ok: false, error: 'Quá nhiều lần thử đăng nhập. Vui lòng thử lại sau vài phút.' });
+  }
+  const { username, password } = req.body || {};
+  if (!username || !password) return res.json({ ok: false, error: 'Thiếu tên đăng nhập hoặc mật khẩu' });
+  try {
+    const key = String(username).toLowerCase();
+    const db = await readDB();
+    const user = db.users[key];
+    // V88 (Phần 6 — "username enumeration") — TRƯỚC ĐÂY 2 nhánh "tài khoản không tồn tại" vs "sai mật
+    // khẩu" trả 2 THÔNG ĐIỆP KHÁC NHAU — cho phép kẻ tấn công dò xem 1 username có tồn tại trong hệ
+    // thống hay không (thử đăng nhập, đọc thông điệp lỗi) mà KHÔNG cần biết mật khẩu. Giờ CẢ 2 trường
+    // hợp trả CÙNG 1 thông điệp chung — không còn phân biệt được từ phía client. Log server (chỉ
+    // admin/nội bộ thấy) VẪN ghi rõ lý do thật (tài khoản không tồn tại/sai mật khẩu) để phục vụ điều
+    // tra khi cần — chỉ ẩn khỏi RESPONSE cho client, không ẩn khỏi chính hệ thống.
+    const GENERIC_LOGIN_ERROR = 'Tên đăng nhập hoặc mật khẩu không đúng';
+    if (!user) {
+      logActivity(username, null, 'auth', 'Đăng nhập thất bại (tài khoản không tồn tại)');
+      return res.json({ ok: false, error: GENERIC_LOGIN_ERROR });
+    }
+    const match = await bcrypt.compare(String(password), user.passwordHash);
+    if (!match) {
+      logActivity(user.username, user.role, 'auth', 'Đăng nhập thất bại (sai mật khẩu)');
+      return res.json({ ok: false, error: GENERIC_LOGIN_ERROR });
+    }
+    const token = makeToken();
+    const result = await updateDB((db2) => {
+      const u = db2.users[key];
+      if (!u.role) u.role = 'user';
+      db2.tokens[token] = key;
+      const progress = u.progress || emptyProgress();
+      return { ok: true, token, username: u.username, role: u.role, progress };
+    });
+    if (result.ok) {
+      // Tính known/rank/streak NGOÀI transaction app_store (query fsrs_cards/study_sessions không
+      // cần giữ khoá FOR UPDATE của app_store lâu hơn cần thiết — Phần 13 hiệu năng).
+      // V70 (Task 2 audit): trả sẵn known + streak thật ngay lúc đăng nhập, để client không còn
+      // phải tự tính streak cục bộ bằng SRS cũ (đã bị xoá) — badge hiện đúng ngay từ đầu.
+      const [known, streakInfo] = await Promise.all([
+        countKnownFsrsWords(key),
+        fsrsAnalytics.getStreak(key),
+      ]);
+      result.rank = getRank(known);
+      result.known = known;
+      result.streak = streakInfo.currentStreak;
+      result.longestStreak = streakInfo.longestStreak;
+      logActivity(result.username, result.role, 'auth', 'Đăng nhập');
+    }
+    res.json(result);
+  } catch (e) { fail(res, e); }
+});
+
+// ── Đăng xuất ──
+app.post('/api/logout', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    await updateDB((db) => { delete db.tokens[authed.token]; });
+    logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'auth', 'Đăng xuất');
+    res.json({ ok: true });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Lấy tiến độ ──
+app.get('/api/progress', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const user = authed.db.users[authed.username];
+  const progress = user.progress || emptyProgress();
+  try {
+    // V69: known-word count + streak giờ tính từ FSRS/study_sessions (server là nguồn sự thật
+    // duy nhất), KHÔNG còn đọc từ progress.srs/progress.streak do client tự gửi.
+    const [known, streakInfo] = await Promise.all([
+      countKnownFsrsWords(authed.username),
+      fsrsAnalytics.getStreak(authed.username),
+    ]);
+    res.json({
+      ok: true, username: user.username, role: user.role || 'user', progress,
+      rank: getRank(known), known,
+      streak: streakInfo.currentStreak, longestStreak: streakInfo.longestStreak,
+    });
+  } catch (e) { fail(res, e); }
+});
+
+// -- Luu tien do (V69: chi con "ui" - cai dat hien thi/lua chon bai, KHONG con srs/streak) --
+// FIX (Audit Neon - ghi de/race nhieu tab, Task 5): truoc day moi field khong hop le tu client se
+// roi ve `undefined` -> JSON.stringify XOA HAN field do khoi ban ghi (mat cai dat da luu truoc do).
+// Va currentLesson (field CHI server duoc phep doi, xem /api/study/review) van bi nhan tu client ->
+// 1 tab mo lau, chi doi 1 setting khong lien quan (vd theme) cung gui kem currentLesson CU, ghi de
+// mat gia tri vua duoc 1 tab/request khac cap nhat nen. Sua: doc "ui" dang luu THAT trong CHINH
+// transaction nay lam nen cho moi fallback (khong con `undefined`), va currentLesson luon lay tu
+// gia tri dang luu, khong bao gio nhan tu client o endpoint nay.
+app.post('/api/progress', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const { ui } = req.body || {};
+  const src = (ui && typeof ui === 'object') ? ui : {};
+  try {
+    await updateDB((db) => {
+      const u = db.users[authed.username];
+      if (!u.progress) u.progress = emptyProgress();
+      const existingUi = u.progress.ui || {};
+      const safeUi = {
+        lastTab: typeof src.lastTab === 'string' ? src.lastTab : (existingUi.lastTab || 'home'),
+        selectedBookIds: Array.isArray(src.selectedBookIds)
+          ? src.selectedBookIds.filter(n => Number.isFinite(n))
+          : (Array.isArray(existingUi.selectedBookIds) ? existingUi.selectedBookIds : [1]),
+        selectedLessons: Array.isArray(src.selectedLessons)
+          ? src.selectedLessons.filter(n => Number.isFinite(n))
+          : (Array.isArray(existingUi.selectedLessons) ? existingUi.selectedLessons : []),
+        lessonsAllMode: typeof src.lessonsAllMode === 'boolean' ? src.lessonsAllMode
+          : (typeof existingUi.lessonsAllMode === 'boolean' ? existingUi.lessonsAllMode : true),
+        // Cac cai dat hien thi (An/Hien Pinyin, nghia, Han Viet, giao dien toi/sang, toc do doc,
+        // che do + so cau Trac nghiem mac dinh) - luu de mo lai app khoi phai chon lai tu dau.
+        showPinyin: typeof src.showPinyin === 'boolean' ? src.showPinyin
+          : (typeof existingUi.showPinyin === 'boolean' ? existingUi.showPinyin : true),
+        showMeaning: typeof src.showMeaning === 'boolean' ? src.showMeaning
+          : (typeof existingUi.showMeaning === 'boolean' ? existingUi.showMeaning : true),
+        showHanViet: typeof src.showHanViet === 'boolean' ? src.showHanViet
+          : (typeof existingUi.showHanViet === 'boolean' ? existingUi.showHanViet : true),
+        theme: (src.theme === 'dark' || src.theme === 'light') ? src.theme : (existingUi.theme || 'light'),
+        ttsRate: (typeof src.ttsRate === 'number' && src.ttsRate >= 0.3 && src.ttsRate <= 1.0) ? src.ttsRate
+          : (Number.isFinite(existingUi.ttsRate) ? existingUi.ttsRate : 0.65),
+        qzType: ['漢→Việt', 'Việt→漢', 'Âm→漢'].includes(src.qzType) ? src.qzType : (existingUi.qzType || '漢→Việt'),
+        qzQuestionCount: Number.isFinite(src.qzQuestionCount) ? src.qzQuestionCount
+          : (Number.isFinite(existingUi.qzQuestionCount) ? existingUi.qzQuestionCount : 30),
+        questionCount: Number.isFinite(src.questionCount) ? src.questionCount
+          : (Number.isFinite(existingUi.questionCount) ? existingUi.questionCount : 10),
+        // currentLesson: SERVER SO HUU field nay (chi tu doi khi user hoc 1 tu MOI - xem
+        // /api/study/review). Khong bao gio nhan tu client o day, tranh mat tien do "bai hien tai"
+        // khi 1 tab gui len ban cu hon lan cap nhat nen gan nhat.
+        currentLesson: Number.isFinite(existingUi.currentLesson) ? existingUi.currentLesson : null,
+        dailyReviewLimit: Number.isFinite(src.dailyReviewLimit) ? src.dailyReviewLimit
+          : (Number.isFinite(existingUi.dailyReviewLimit) ? existingUi.dailyReviewLimit : 50),
+        dailyNewLimit: Number.isFinite(src.dailyNewLimit) ? src.dailyNewLimit
+          : (Number.isFinite(existingUi.dailyNewLimit) ? existingUi.dailyNewLimit : 10),
+        newOnlyAfterDue: typeof src.newOnlyAfterDue === 'boolean' ? src.newOnlyAfterDue
+          : (typeof existingUi.newOnlyAfterDue === 'boolean' ? existingUi.newOnlyAfterDue : true),
+        // unlimitedStudy: bật thì reviewService.getDailyBudget() bỏ qua phần TRỪ theo số đã học
+        // hôm nay (không bị chặn lại vì "đã đủ hôm nay") — KHÔNG bỏ 2 giới hạn dailyReviewLimit/
+        // dailyNewLimit, vẫn là mức trần cho MỖI LƯỢT lấy phiên (V101 — theo đúng ý người dùng).
+        unlimitedStudy: typeof src.unlimitedStudy === 'boolean' ? src.unlimitedStudy
+          : (typeof existingUi.unlimitedStudy === 'boolean' ? existingUi.unlimitedStudy : false),
+      };
+      u.progress.ui = safeUi;
+    });
+    res.json({ ok: true });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Bảng xếp hạng ── (Phần 13: tránh N+1 — 1 query GROUP BY cho known count của TẤT CẢ user;
+//     streak chính xác (cần quét study_sessions) chỉ tính cho top 100 sau khi đã sort theo known,
+//     không lặp query cho toàn bộ user base khi hệ thống có hàng chục nghìn user — xem "Hiệu năng"
+//     trong báo cáo audit).
+app.get('/api/leaderboard', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const db = authed.db;
+  try {
+    const usernames = Object.keys(db.users);
+    const knownMap = await getKnownCountsForUsers(usernames);
+    const ranked = usernames.map((username) => ({
+      username, known: knownMap[username] || 0,
+      isMe: username.toLowerCase() === authed.username,
+    })).sort((a, b) => b.known - a.known).slice(0, 100);
+    const streaks = await Promise.all(ranked.map((u) => fsrsAnalytics.getStreak(u.username)));
+    const list = ranked.map((u, i) => ({
+      username: u.username, known: u.known,
+      streak: streaks[i].currentStreak,
+      rank: getRank(u.known).name,
+      isMe: u.isMe,
+    })).sort((a, b) => b.known - a.known || b.streak - a.streak);
+    res.json({ ok: true, leaderboard: list });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Thống kê lượt truy cập ──
+app.get('/api/admin/visits', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const db = authed.db;
+  if (!requireAdmin(db.users[authed.username], res)) return;
+  const visits = db.visits || { total: 0, byDate: {} };
+  const today = todayKey();
+  const last14 = [];
+  for (let i = 13; i >= 0; i--) {
+    const d = vnDateKey(new Date(Date.now() - i * 86400000));
+    last14.push({ date: d, count: visits.byDate[d] || 0 });
+  }
+  res.json({
+    ok: true,
+    total: visits.total || 0,
+    today: visits.byDate[today] || 0,
+    totalUsers: Object.keys(db.users).length,
+    last14,
+  });
+});
+
+// ── [ADMIN] Nhật ký hoạt động — tối đa 10 ngày gần nhất, gộp theo ngày (mới nhất trước) ──
+app.get('/api/admin/logs', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const rows = await getActivityLogs();
+    const byDay = new Map();
+    for (const row of rows) {
+      if (!byDay.has(row.day)) byDay.set(row.day, []);
+      byDay.get(row.day).push({
+        time: row.time, username: row.username, role: row.role,
+        action: row.action, detail: row.detail,
+      });
+    }
+    const days = [...byDay.entries()].map(([date, logs]) => ({ date, count: logs.length, logs }));
+    res.json({ ok: true, days });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Danh sách toàn bộ user ──
+app.get('/api/admin/users', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const db = authed.db;
+  if (!requireAdmin(db.users[authed.username], res)) return;
+  try {
+    const keys = Object.keys(db.users);
+    const knownMap = await getKnownCountsForUsers(keys); // 1 query GROUP BY, không N+1 (Phần 13).
+    const list = keys.map((key) => {
+      const u = db.users[key];
+      return {
+        key,
+        username: u.username,
+        role: u.role || 'user',
+        known: knownMap[key] || 0,
+        createdAt: u.createdAt,
+      };
+    }).sort((a, b) => b.createdAt - a.createdAt);
+    res.json({ ok: true, users: list });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Xoá tài khoản ──
+app.post('/api/admin/users/:key/delete', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const targetKey = req.params.key.toLowerCase();
+  try {
+    // FIX (audit V68, Phần 5): xoá tài khoản PHẢI xoá luôn fsrs_cards + review_history của user
+    // đó trong CÙNG 1 transaction với việc xoá user khỏi app_store — nếu không sẽ để lại
+    // fsrs_cards/review_history "mồ côi" (orphan) trỏ tới 1 user_id không còn tồn tại nữa.
+    const result = await updateDBWithFsrsCleanup(targetKey, (db) => {
+      if (targetKey === authed.username) return { ok: false, error: 'Không thể tự xoá chính mình' };
+      if (!db.users[targetKey]) return { ok: false, error: 'Không tìm thấy tài khoản' };
+      if (db.users[targetKey].role === 'superadmin') return { ok: false, error: 'Không thể xoá tài khoản quản trị cao nhất' };
+      delete db.users[targetKey];
+      for (const t in db.tokens) { if (db.tokens[t] === targetKey) delete db.tokens[t]; }
+      return { ok: true };
+    }, { alsoDeleteAnalytics: true });
+    if (result.ok) {
+      const actingUser = authed.db.users[authed.username];
+      logActivity(authed.username, actingUser.role, 'admin',
+        `Xoá tài khoản "${targetKey}" (fsrs_cards: ${result.fsrsCardsDeleted}, review_history: ${result.reviewHistoryDeleted})`);
+    }
+    res.json(result);
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Reset tiến độ của 1 tài khoản ──
+app.post('/api/admin/users/:key/reset', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const targetKey = req.params.key.toLowerCase();
+  try {
+    // FIX (audit V68, Phần 4): reset tiến độ PHẢI xoá luôn fsrs_cards + review_history của user
+    // đó trong CÙNG 1 transaction với việc reset "progress" trong app_store — nếu không, sau khi
+    // reset, các thẻ FSRS cũ (due/stability/difficulty/state cũ) vẫn còn nguyên, "reset" không
+    // thực sự đưa user về trạng thái học từ đầu.
+    const result = await updateDBWithFsrsCleanup(targetKey, (db) => {
+      if (!db.users[targetKey]) return { ok: false, error: 'Không tìm thấy tài khoản' };
+      const actingUser = db.users[authed.username];
+      if (db.users[targetKey].role === 'superadmin' && actingUser.role !== 'superadmin') {
+        return { ok: false, error: 'Chỉ quản trị cao nhất mới được reset tài khoản này' };
+      }
+      db.users[targetKey].progress = emptyProgress();
+      return { ok: true };
+    });
+    if (result.ok) {
+      const actingUser = authed.db.users[authed.username];
+      logActivity(authed.username, actingUser.role, 'admin',
+        `Reset tiến độ tài khoản "${targetKey}" (fsrs_cards: ${result.fsrsCardsDeleted}, review_history: ${result.reviewHistoryDeleted})`);
+    }
+    res.json(result);
+  } catch (e) { fail(res, e); }
+});
+
+// ── [SUPERADMIN] Thăng/giáng quyền admin ──
+app.post('/api/admin/users/:key/role', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireSuperAdmin(authed.db.users[authed.username], res)) return;
+  const { role } = req.body || {};
+  if (role !== 'admin' && role !== 'user') return res.json({ ok: false, error: 'Role không hợp lệ' });
+  const targetKey = req.params.key.toLowerCase();
+  try {
+    const result = await updateDB((db) => {
+      if (!db.users[targetKey]) return { ok: false, error: 'Không tìm thấy tài khoản' };
+      if (db.users[targetKey].role === 'superadmin') return { ok: false, error: 'Không thể đổi quyền của tài khoản quản trị cao nhất' };
+      if (targetKey === authed.username && role === 'user') return { ok: false, error: 'Không thể tự hạ quyền chính mình' };
+      db.users[targetKey].role = role;
+      return { ok: true };
+    });
+    if (result.ok) {
+      const actingUser = authed.db.users[authed.username];
+      logActivity(authed.username, actingUser.role, 'admin', `Đổi quyền tài khoản "${targetKey}" thành "${role}"`);
+    }
+    res.json(result);
+  } catch (e) { fail(res, e); }
+});
+
+// ── Lấy từ vựng THEO ĐÚNG các bài được yêu cầu (?lessons=32,33,34) — không tải cả kho ──
+app.get('/api/vocab', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const raw = String(req.query.lessons || '').trim();
+    if (!raw) return res.json({ ok: true, vocab: [] });
+    const lessons = raw.split(',').map(s => parseInt(s, 10)).filter(Number.isFinite);
+    const vocab = await getVocabByLessons(lessons);
+    // Từ vựng hiếm khi đổi (chỉ đổi khi admin nhập/xoá bài) — cho phép trình duyệt lưu tạm
+    // (private vì có gắn token) để mở lại app trong ít phút không phải tải lại qua mạng.
+    res.set('Cache-Control', 'private, max-age=60');
+    res.json({ ok: true, vocab });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Lấy từ vựng cho KHÁCH (chưa đăng nhập) — không cần token, nhưng chỉ cho phép tối đa
+//     Bài 1-5 (giới hạn dùng thử của khách), server tự chặn dù client gửi số bài nào khác ──
+const GUEST_MAX_LESSON_SERVER = 5;
+app.get('/api/vocab/public', async (req, res) => {
+  try {
+    const raw = String(req.query.lessons || '').trim();
+    if (!raw) return res.json({ ok: true, vocab: [] });
+    const lessons = raw.split(',').map(s => parseInt(s, 10)).filter(n => Number.isFinite(n) && n >= 1 && n <= GUEST_MAX_LESSON_SERVER);
+    if (lessons.length === 0) return res.json({ ok: true, vocab: [] });
+    const vocab = await getVocabByLessons(lessons);
+    res.set('Cache-Control', 'public, max-age=60');
+    res.json({ ok: true, vocab });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Đếm nhanh số từ theo từng bài (payload rất nhỏ, không chứa dữ liệu nhạy cảm) — để hiện số từ
+//     ở màn chọn Quyển/level mà không cần tải cả nội dung. Công khai, không cần đăng nhập. ──
+app.get('/api/vocab/counts', async (req, res) => {
+  try {
+    const counts = await getVocabCounts();
+    res.set('Cache-Control', 'public, max-age=60');
+    res.json({ ok: true, counts });
+  } catch (e) { fail(res, e); }
+});
+
+// ── V102 (yêu cầu người dùng — "tự khai báo giáo trình, số bài ngay trên web, không phải sửa code
+//     mỗi lần thêm bài mới"): CHỈ trả các Quyển admin TỰ KHAI BÁO qua book_defs (id đã cộng 3000,
+//     xem lib/fsrs/studyScope.js) — KHÔNG gồm Quyển/HSK hardcoded (mảng BOOKS trong js/ui.js đã có
+//     sẵn). FE tự gộp (concat) danh sách này vào BOOKS lúc khởi động (xem loadBookDefs ở js/app.js).
+//     Công khai, không cần đăng nhập — giống /api/vocab/counts, chỉ là metadata hiển thị. ──
+app.get('/api/books', async (req, res) => {
+  try {
+    const defs = await getBookDefs();
+    const books = defs.map(d => ({
+      id: 3000 + d.id, name: d.name, group: d.group_name, from: d.lesson_from, to: d.lesson_to,
+    }));
+    res.set('Cache-Control', 'public, max-age=60');
+    res.json({ ok: true, books });
+  } catch (e) { fail(res, e); }
+});
+
+// ════════════════════════════════════════════════════
+// FSRS STUDY — hệ thống ôn tập cá nhân hoá: FSRS quyết định khi nào ôn, lesson-priority chỉ
+// quyết định NEW word nào được học trước. Xem docs/fsrs.md để biết chi tiết kiến trúc.
+//
+// V76 (Yêu cầu 1 — reviewService là nguồn sự thật duy nhất): toàn bộ logic "còn bao nhiêu thẻ đến
+// hạn, từ mới nào, ưu tiên bài nào" ĐÃ CHUYỂN sang lib/fsrs/reviewService.js (+ lib/fsrs/
+// studyScope.js) — 2 route dưới đây giờ chỉ còn: xác thực, đọc "ui" của user, gọi reviewService,
+// trả JSON. KHÔNG còn tự query DB / tự quyết định thứ tự ở lớp API nữa.
+// ════════════════════════════════════════════════════
+
+// ── Dashboard "Hôm nay học" ──
+app.get('/api/study/today', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const user = authed.db.users[authed.username];
+    const ui = (user.progress && user.progress.ui) || {};
+    const overview = await reviewService.getTodayOverview(authed.username, ui);
+    // V110: các nhóm từ (đếm theo TỪ DUY NHẤT, có số giao nhau) + tiến độ hôm nay. Best-effort: nếu phần mở rộng lỗi,
+    // dashboard cũ vẫn hiện bình thường (không làm hỏng chức năng đang chạy).
+    let breakdown = null, progress = null;
+    try {
+      [breakdown, progress] = await Promise.all([
+        skillStore.getTodayBreakdown(authed.username, overview.scopeLessons),
+        skillStore.getTodayProgress(authed.username),
+      ]);
+    } catch (extErr) { console.error('⚠️  [today] Không tải được phần mở rộng V110:', extErr && extErr.message); }
+    const { scopeLessons: _omit, ...publicOverview } = overview; // scopeLessons chỉ dùng nội bộ, không trả ra ngoài
+    res.json({ ok: true, ...publicOverview, breakdown, progress });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Lấy 1 session học: REVIEW trước, NEW sau; FSRS luôn ưu tiên hơn NEW ──
+app.get('/api/study/session', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const user = authed.db.users[authed.username];
+    const ui = (user.progress && user.progress.ui) || {};
+    const result = await reviewService.getStudySession(authed.username, ui);
+    res.json({ ok: true, ...result });
+  } catch (e) { fail(res, e); }
+});
+
+// ── V67: xác định đáp án đúng theo đúng "chiều" câu hỏi mà client đang hỏi (Phần 3) — hz→vi
+//     (nhìn chữ Hán đoán nghĩa), vi→hz (nhìn nghĩa đoán chữ Hán), py→hz (nhìn pinyin đoán chữ Hán).
+//     Không nhận thêm quizType nào khác ngoài 3 giá trị này (Phần 20: server luôn tự xác định
+//     đúng/sai, không tin giá trị answerCorrect nào từ client).
+function correctAnswerForQuizType(word, quizType) {
+  if (quizType === 'vi2hz' || quizType === 'py2hz') return word.hz;
+  if (quizType === 'hz2py') return word.py; // V106: chữ Hán → chọn Pinyin (đối chiếu đúng chuỗi pinyin lưu trong DB)
+  return word.vi; // mặc định/'hz2vi': nhìn chữ Hán → chọn nghĩa
+}
+
+// ── Ghi nhận 1 lượt trả lời trắc nghiệm (V67 — AUTO RATING) ──────────────────────────────
+// SERVER là nguồn sự thật duy nhất (Phần 3/20): client CHỈ gửi selectedAnswer + responseTimeMs
+// (+ answerChanges nếu có) — KHÔNG gửi rating/answerCorrect/due/stability/difficulty/state.
+// Server tự tra DB để xác định đáp án đúng, tự suy ra FSRS rating (lib/fsrs-auto-rating.js), rồi
+// mới gọi ts-fsrs thật (lib/fsrs.js) để tính lịch ôn tiếp theo (Phần 20/23).
+// ── Bổ sung "Highlight System Rating": xem TRƯỚC gợi ý rating hệ thống — CHỈ ĐỌC, không ghi gì lên
+//     FSRS/review_history. Dùng để FE (Review tab) hiện 4 nút Again/Hard/Good/Easy, highlight đúng
+//     nút hệ thống đề xuất bằng glow, kèm countdown cho user xác nhận/đổi trước khi commit thật qua
+//     /api/study/review bên dưới (Yêu cầu bổ sung). Xác định đáp án đúng/sai theo ĐÚNG cách làm của
+//     /api/study/review (Phần 3/20: server luôn tự xác định, không tin client). ──
+app.post('/api/study/review/preview', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const { wordId, quizType, selectedAnswer, responseTimeMs, answerChanges, exerciseType } = req.body || {};
+  const hz = wordId && wordId.hz;
+  const l = wordId && Number(wordId.l);
+  if (!hz || !Number.isFinite(l)) return res.json({ ok: false, error: 'Thiếu wordId {hz, l} hợp lệ' });
+  if (typeof selectedAnswer !== 'string' || !selectedAnswer.trim()) {
+    return res.json({ ok: false, error: 'Thiếu selectedAnswer' });
+  }
+  const rtRaw = Number(responseTimeMs);
+  const rt = Number.isFinite(rtRaw) && rtRaw >= 0 ? Math.min(rtRaw, 10 * 60 * 1000) : null;
+  const chRaw = Number(answerChanges);
+  const changes = Number.isFinite(chRaw) && chRaw >= 0 ? Math.min(Math.round(chRaw), 50) : 0;
+  try {
+    const word = await getWordForAnswerCheck(hz, l);
+    if (!word) return res.json({ ok: false, error: 'Không tìm thấy từ vựng' });
+    const correctAnswer = correctAnswerForQuizType(word, quizType);
+    // V110: câu TỰ NHẬP (nhãn bài tập khai báo `typed`) được chấm chuẩn hoá bằng js/answer-match.js — preview và
+    // commit dùng CÙNG hàm chấm nên gợi ý rating luôn khớp kết quả thật. Trắc nghiệm giữ nguyên so chuỗi.
+    const exPrev = resolveExercise(exerciseType, quizType);
+    const graded = gradeAnswer(correctAnswer, selectedAnswer, exPrev);
+    const answerCorrect = graded.answerCorrect;
+    const systemRating = await reviewService.previewRating({
+      userId: authed.username, hz, l, answerCorrect, responseTimeMs: rt, answerChanges: changes,
+    });
+    res.json({ ok: true, answerCorrect, verdict: graded.verdict, correctAnswer, systemRating });
+  } catch (e) { fail(res, e); }
+});
+
+app.post('/api/study/review', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const { wordId, quizType, selectedAnswer, responseTimeMs, answerChanges, idempotencyKey, rating, exerciseType, sessionId } = req.body || {};
+  const hz = wordId && wordId.hz;
+  const l = wordId && Number(wordId.l);
+  if (!hz || !Number.isFinite(l)) return res.json({ ok: false, error: 'Thiếu wordId {hz, l} hợp lệ' });
+  if (typeof selectedAnswer !== 'string' || !selectedAnswer.trim()) {
+    return res.json({ ok: false, error: 'Thiếu selectedAnswer' });
+  }
+  // Bổ sung "Highlight System Rating": `rating` do FE gửi lên khi NGƯỜI DÙNG bấm tay 1 trong 4 nút
+  // Again/Hard/Good/Easy, hoặc do countdown ở FE tự chọn khi hết giờ chờ. Chỉ chấp nhận đúng 1
+  // trong 4 chuỗi hợp lệ — không tin mù quáng giá trị lạ từ client; giá trị không hợp lệ/không gửi
+  // thì coi như không có override, rơi về đúng hành vi V67 cũ (100% tự động).
+  const VALID_RATINGS = new Set(['again', 'hard', 'good', 'easy']);
+  const ratingOverride = (typeof rating === 'string' && VALID_RATINGS.has(rating.toLowerCase()))
+    ? rating.toLowerCase() : null;
+  // FIX (Ưu tiên 6 — chống spam review): idempotencyKey do client sinh 1 LẦN cho mỗi lượt trả lời
+  // thật (xem js/study-queue.js submitFsrsReview) — dùng để reviewFsrsCard() nhận diện double-click
+  // / gửi trùng từ outbox mà không tạo thêm dòng review_history hay chạy FSRS 2 lần. Không bắt
+  // buộc (client cũ có thể chưa gửi) nhưng khi có phải là chuỗi hợp lệ, không tin mù quáng độ dài.
+  const idemKey = (typeof idempotencyKey === 'string' && idempotencyKey.length >= 8 && idempotencyKey.length <= 100)
+    ? idempotencyKey : null;
+  // responseTimeMs/answerChanges là input hành vi, không phải nguồn sự thật FSRS — vẫn phải làm
+  // sạch (sanitize) trước khi dùng, không tin tuyệt đối số client gửi lên (Phần 3/4).
+  const rtRaw = Number(responseTimeMs);
+  const rt = Number.isFinite(rtRaw) && rtRaw >= 0 ? Math.min(rtRaw, 10 * 60 * 1000) : null; // trần 10 phút, tránh giá trị rác
+  const chRaw = Number(answerChanges);
+  const changes = Number.isFinite(chRaw) && chRaw >= 0 ? Math.min(Math.round(chRaw), 50) : 0;
+  try {
+    // Server tự xác định đáp án đúng từ DB (Phần 3) — không tin bất kỳ answerCorrect nào từ client.
+    const word = await getWordForAnswerCheck(hz, l);
+    if (!word) return res.json({ ok: false, error: 'Không tìm thấy từ vựng' });
+    const correctAnswer = correctAnswerForQuizType(word, quizType);
+    // V110: chấm tự nhập chuẩn hoá nếu nhãn bài tập khai báo `typed` (xem lib/skills.js gradeAnswer); còn lại so chuỗi như cũ.
+    const ex = resolveExercise(exerciseType, quizType);
+    const graded = gradeAnswer(correctAnswer, selectedAnswer, ex);
+    const answerCorrect = graded.answerCorrect;
+
+    // V69 (Phần 4): đi qua reviewService (scheduler layer) thay vì gọi thẳng db.reviewFsrsCard —
+    // đây cũng là nơi desired_retention riêng của user (Phần 5) được áp dụng + study_sessions
+    // (Phần 9) được cập nhật.
+    // Hồ sơ kỹ năng: chỉ ghi khi nhãn bài tập KHỚP với chiều câu hỏi thật (quizType) và đây là 1 bài
+    // tập thực sự kiểm tra kỹ năng (Flashcard tự chấm không có nhãn → không ghi). Server không tin mù
+    // quáng nhãn từ client: resolveExercise() loại mọi nhãn lạ/sai chiều.
+    // (ex đã được xác định ở trên cùng với việc chấm điểm.)
+    const skillRecord = (ex && ex.fsrs && isCountableAnswer(selectedAnswer))
+      ? { skill: ex.skill, exerciseType: ex.exerciseType, sessionId, wrongAnswer: selectedAnswer } : null;
+    const result = await reviewService.reviewCard({
+      userId: authed.username, hz, l, answerCorrect, responseTimeMs: rt, answerChanges: changes, idempotencyKey: idemKey, ratingOverride, skillRecord,
+    });
+    // Cập nhật "current lesson" CHỈ khi đây là 1 NEW word vừa được học lần đầu — tự động lùi/tiến
+    // theo đúng bài user vừa thực sự học, không cần thao tác thủ công (Phần 6). Review của các từ
+    // cũ không được phép đổi current lesson.
+    // V72 (audit hiệu năng — nguyên nhân lớn nhất khiến "học chậm"): đây TRƯỚC ĐÂY là 1 `await
+    // updateDB(...)` — tức MỌI LẦN học 1 từ MỚI (rất thường xuyên) phải xếp hàng chờ khoá
+    // `SELECT ... FOR UPDATE` trên ĐÚNG 1 dòng app_store DUY NHẤT cho TOÀN BỘ hệ thống (mọi user,
+    // mọi request ghi khác đều dùng chung dòng này) trước khi user thấy đúng/sai của câu vừa trả
+    // lời — nếu đúng lúc đó có request ghi khác (user khác đăng ký/đổi progress/…) đang giữ khoá,
+    // cả 2 phải NỐI HÀNG. response trả về (answerCorrect/correctAnswer/card) không phụ thuộc field
+    // nào ở đây, nên đẩy ra chạy nền an toàn — user thấy kết quả ngay, currentLesson vẫn được ghi
+    // đúng, chỉ trễ hơn vài trăm ms (không quan sát được vì FE không đọc lại currentLesson ngay
+    // sau MỖI câu, chỉ đọc lại /api/progress sau khi xong cả phiên — xem index.html).
+    if (result.wasNew) {
+      runInBackground(() => updateDB((db) => {
+        const u = db.users[authed.username];
+        if (!u) return;
+        if (!u.progress) u.progress = emptyProgress();
+        if (!u.progress.ui) u.progress.ui = emptyProgress().ui;
+        u.progress.ui.currentLesson = l;
+      }), (e) => console.error('⚠️  [currentLesson] Không cập nhật được:', e && e.message));
+    }
+    const userRole = authed.db.users[authed.username] && authed.db.users[authed.username].role;
+    const isAdmin = userRole === 'admin' || userRole === 'superadmin';
+    res.json({
+      ok: result.ok,
+      answerCorrect,
+      verdict: graded.verdict, // V110: exact | wrong | toneless | tone_mismatch — để UI giải thích vì sao sai (pinyin thiếu thanh...)
+      correctAnswer, // để UI hiện đáp án đúng khi user chọn sai, không cần đoán lại ở client
+      card: result.card,
+      // Bổ sung "Highlight System Rating": khác V67 (trước đây CHỈ admin thấy autoRating qua
+      // `debug`) — giờ MỌI user đều cần thấy `rating` (rating THẬT SỰ đã gửi vào FSRS, có thể là
+      // override do chính user chọn tay) và `systemRating` (gợi ý ban đầu của hệ thống) để UI hiện
+      // đúng nút nào đã được highlight/chọn. Đây là dữ liệu về CHÍNH lượt trả lời của user đó, không
+      // phải nội bộ nhạy cảm cần giấu.
+      rating: result.rating,
+      systemRating: result.systemRating,
+      // Debug data chi tiết hơn (Phần 22) — vẫn CHỈ trả về cho admin.
+      debug: isAdmin ? result.debug : undefined,
+    });
+  } catch (e) { fail(res, e); }
+});
+
+// ════════════════════════════════════════════════════
+// V104 — PHÂN TÍCH NĂNG LỰC THEO KỸ NĂNG (bổ sung cho FSRS, KHÔNG thay FSRS)
+// Mọi route dưới đây: bắt buộc đăng nhập, và CHỈ đọc/ghi dữ liệu của ĐÚNG user trong token
+// (authed.username) — không có tham số userId nào từ client, nên không thể đọc/sửa hồ sơ người khác.
+// ════════════════════════════════════════════════════
+
+// Tổng quan: số từ đã kiểm tra, số từ cần ôn theo FSRS, số từ yếu theo từng kỹ năng, số từ đủ dữ liệu.
+app.get('/api/skills/overview', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const [overview, dueCount] = await Promise.all([
+      skillStore.getOverview(authed.username),
+      countDueFsrsCards(authed.username),
+    ]);
+    res.json({
+      ok: true,
+      testedWords: overview.testedWords,
+      fsrsDueCount: dueCount,
+      skills: overview.skills,
+      // Kỹ năng CHƯA có bài tập kiểm tra đáng tin → UI hiện "chưa hỗ trợ", không bịa điểm.
+      unsupportedSkills: ['pronunciation'], // V110: 'context' (điền từ vào câu) đã có bài kiểm tra thật từ V106
+    });
+  } catch (e) { fail(res, e); }
+});
+
+// Danh sách từ cần cải thiện (phân trang): mỗi dòng = 1 (từ, kỹ năng yếu) — chỉ gồm kỹ năng ĐỦ dữ liệu.
+app.get('/api/skills/weak-words', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const skill = MEASURABLE_SKILLS.includes(req.query.skill) ? req.query.skill : null;
+    const out = await skillStore.listWeakWords(authed.username, {
+      skill, limit: req.query.limit, offset: req.query.offset,
+    });
+    res.json({ ok: true, ...out });
+  } catch (e) { fail(res, e); }
+});
+
+// Xu hướng theo ngày/tuần, tách riêng từng kỹ năng.
+app.get('/api/skills/trend', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const bucket = req.query.bucket === 'week' ? 'week' : 'day';
+    const rows = await skillStore.getTrend(authed.username, { days: req.query.days, bucket });
+    res.json({ ok: true, bucket, rows });
+  } catch (e) { fail(res, e); }
+});
+
+// Chọn từ cho bài luyện kỹ năng bổ sung (recall | listening | mixed). `allowListening` do client báo
+// (chỉ client biết trình duyệt có giọng đọc tiếng Trung không) — "listening" chỉ được chọn khi có âm thanh.
+app.get('/api/skills/practice-words', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const wantListening = req.query.allowListening === '1';
+    const allowed = MEASURABLE_SKILLS.filter(s => s !== 'recognition' && (s !== 'listening' || wantListening));
+    const skill = req.query.skill === 'mixed' ? 'mixed' : req.query.skill;
+    if (skill !== 'mixed' && !allowed.includes(skill)) {
+      return res.json({ ok: false, error: 'Dạng luyện này hiện chưa khả dụng' });
+    }
+    const words = await skillStore.getPracticeWords(authed.username, { skill, limit: req.query.limit, allowedSkills: allowed, weakOnly: req.query.weakOnly === '1' });
+    res.json({ ok: true, words });
+  } catch (e) { fail(res, e); }
+});
+
+// Ghi 1 lượt luyện kỹ năng BỔ SUNG. KHÔNG phải lượt ôn FSRS: không đụng fsrs_cards/review_history,
+// không đổi lịch ôn. Server tự chấm đúng/sai (không tin client). Idempotent theo attemptKey.
+app.post('/api/skills/practice', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const { wordId, exerciseType, selectedAnswer, responseTimeMs, attemptKey, sessionId, source } = req.body || {};
+  const hz = wordId && wordId.hz;
+  const l = wordId && Number(wordId.l);
+  if (!hz || !Number.isFinite(l)) return res.json({ ok: false, error: 'Thiếu wordId {hz, l} hợp lệ' });
+  if (typeof selectedAnswer !== 'string' || !selectedAnswer.trim()) return res.json({ ok: false, error: 'Thiếu selectedAnswer' });
+  const ex = resolveExercise(exerciseType, null);
+  if (!ex || ex.fsrs) return res.json({ ok: false, error: 'Dạng bài luyện không hợp lệ' });
+  const rtRaw = Number(responseTimeMs);
+  const rt = Number.isFinite(rtRaw) && rtRaw >= 0 ? Math.min(rtRaw, 10 * 60 * 1000) : null;
+  try {
+    const word = await getWordForAnswerCheck(hz, l);
+    if (!word) return res.json({ ok: false, error: 'Không tìm thấy từ vựng' });
+    const correctAnswer = correctAnswerForQuizType(word, ex.quizType);
+    const graded = gradeAnswer(correctAnswer, selectedAnswer, ex); // V110: chấm tự nhập chuẩn hoá khi bài khai báo `typed`
+    const answerCorrect = graded.answerCorrect;
+    const out = await skillStore.recordPractice({
+      userId: authed.username, hz, exerciseType: ex.exerciseType, answerCorrect, selectedAnswer, responseTimeMs: rt, attemptKey,
+      sessionId, source: PRACTICE_SOURCES.includes(source) ? source : 'practice',
+    });
+    if (!out.ok) return res.json(out);
+    res.json({ ok: true, answerCorrect, verdict: graded.verdict, correctAnswer, recorded: !!out.recorded, duplicate: !!out.duplicate });
+  } catch (e) { fail(res, e); }
+});
+
+// ════════════════════════════════════════════════════
+// V110 — TRÍ NHỚ DÀI HẠN, CHI TIẾT TỪNG TỪ, KHUYẾN NGHỊ. Mọi route: bắt buộc đăng nhập; chỉ đọc dữ liệu của ĐÚNG
+// user trong token. CHỈ ĐỌC — không route nào ở đây ghi/đổi lịch FSRS.
+// ════════════════════════════════════════════════════
+
+// Trí nhớ theo khoảng cách kể từ lần gặp trước (cửa sổ ≤ 180 ngày) + kết quả theo dạng bài. Chỉ gọi khi mở màn phân tích.
+app.get('/api/skills/retention', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const [retention, byType] = await Promise.all([
+      skillStore.getRetention(authed.username, { days: req.query.days }),
+      skillStore.getTypeBreakdown(authed.username, { days: req.query.days }),
+    ]);
+    res.json({ ok: true, ...retention, byType });
+  } catch (e) { fail(res, e); }
+});
+
+// Khuyến nghị TỔNG THỂ (quy tắc rõ ràng, có giải thích). Không AI ngoài.
+app.get('/api/skills/recommendations', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const [overview, retention] = await Promise.all([
+      skillStore.getOverview(authed.username),
+      skillStore.getRetention(authed.username, { days: req.query.days }),
+    ]);
+    res.json({ ok: true, ...skillRecommend.recommendGlobal({ overview, retention: retention.buckets }) });
+  } catch (e) { fail(res, e); }
+});
+
+// Từ cho chế độ "Kiểm tra sau một khoảng nghỉ" — luyện bổ sung (không đổi FSRS). Cùng phạm vi bài với bảng Hôm nay học.
+app.get('/api/skills/delayed-words', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const ui = (authed.db.users[authed.username].progress && authed.db.users[authed.username].progress.ui) || {};
+    const { scopeLessons } = await resolveStudyScope(ui);
+    const words = await skillStore.getDelayedWords(authed.username, { limit: req.query.limit, scopeLessons });
+    res.json({ ok: true, words: words.map(w => ({ ...w, skill: 'mixed' })) });
+  } catch (e) { fail(res, e); }
+});
+
+// Chi tiết 1 từ: kỹ năng, trạng thái FSRS, lịch sử gần đây, dạng hay sai, khuyến nghị riêng cho từ đó.
+app.get('/api/skills/word', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const hz = typeof req.query.hz === 'string' ? req.query.hz.trim() : '';
+  if (!hz || hz.length > 40) return res.json({ ok: false, error: 'Thiếu hoặc sai chữ Hán cần xem' });
+  try {
+    const d = await skillStore.getWordDetail(authed.username, hz);
+    if (!d || !d.word) return res.json({ ok: false, error: 'Không tìm thấy từ vựng' });
+    // Số lượt kỹ năng trong 7 ngày gần nhất (từ lịch sử đã tải, tối đa 30 dòng) — để khuyến nghị không lặp lại vô ích.
+    const weekAgo = Date.now() - 7 * 86400000;
+    const recentBySkill = {};
+    for (const h of d.history) if (h.skill && new Date(h.ts).getTime() >= weekAgo) recentBySkill[h.skill] = (recentBySkill[h.skill] || 0) + 1;
+    const recommendation = skillRecommend.recommendForWord({ stats: d.stats, recentBySkill, repeatedWrong: d.repeatedWrong });
+    const { classify } = require('../lib/skills');
+    const skills = {};
+    for (const sk of MEASURABLE_SKILLS) {
+      const row = d.stats[sk];
+      skills[sk] = { ...classify(row), correct: row ? row.correct : 0, lastAttemptAt: row ? row.last_attempt_at : null };
+    }
+    // typeStats: dạng bài hay sai (cần ≥ 3 lượt mới xếp hạng, tránh kết luận từ 1–2 câu).
+    const weakTypes = d.typeStats.filter(t => t.n >= 3 && t.wrong / t.n >= 0.5).sort((a, b) => b.wrong / b.n - a.wrong / a.n);
+    res.json({ ok: true, word: d.word, card: d.card, skills, history: d.history, typeStats: d.typeStats, weakTypes, recommendation });
+  } catch (e) { fail(res, e); }
+});
+
+// ════════════════════════════════════════════════════
+// V105 — "MẸO NHỚ CỦA BẠN": ghi chú liên tưởng riêng cho từng từ. Bắt buộc đăng nhập; chỉ đọc/ghi
+// ghi chú của ĐÚNG user trong token (authed.username) — không nhận userId từ client.
+// ════════════════════════════════════════════════════
+app.get('/api/notes', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    res.json({ ok: true, notes: await wordNotes.listNotes(authed.username) });
+  } catch (e) { fail(res, e); }
+});
+
+app.put('/api/notes', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const { hz, note } = req.body || {};
+  try {
+    const out = await wordNotes.setNote(authed.username, hz, note);
+    res.json(out);
+  } catch (e) { fail(res, e); }
+});
+
+// ── Weak words (Phần 17) — chỉ là view lọc theo lapses/difficulty, không đổi FSRS state ──
+app.get('/api/study/weak-words', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const cards = await getWeakFsrsCards(authed.username, 200);
+    // V103 (hiện "từ này thuộc những bài nào" lúc đang học/ôn) — cùng cách làm với getStudySession
+    // ở reviewService.js: tra 1 lần cho CẢ danh sách, không phải mỗi thẻ 1 query riêng.
+    const lessonsMap = await getLessonsByWordIds(cards.map(c => c.resolved_word_id));
+    // V71 (audit lặp từ): khử trùng theo hz, cùng lý do với /api/study/session ở trên.
+    const seenHz = new Set();
+    const words = cards.map(c => formatFsrsCard(c, lessonsMap)).filter(w => {
+      if (seenHz.has(w.hz)) return false;
+      seenHz.add(w.hz);
+      return true;
+    });
+    res.json({ ok: true, words });
+  } catch (e) { fail(res, e); }
+});
+
+// ── V70 (Task 2 audit — hợp nhất FSRS): số từ "đã thuộc" GOM THEO BÀI, thay cho SRS cũ đã bị xoá
+//     khỏi client. Dùng cho tab HSK4 + tab Thống kê. Chỉ đọc dữ liệu FSRS thật của CHÍNH user đang
+//     đăng nhập (không cần quyền admin, không lộ dữ liệu user khác). ──
+app.get('/api/study/known-by-lesson', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const raw = String(req.query.lessons || '').trim();
+    const lessons = raw ? raw.split(',').map(s => parseInt(s, 10)).filter(Number.isFinite) : [];
+    if (!lessons.length) return res.json({ ok: true, known: {} });
+    const known = await getKnownCountsByLesson(authed.username, lessons);
+    res.json({ ok: true, known });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [DEV/ADMIN] Debug thẻ FSRS thô — xem đúng state/due/stability/difficulty (Phần 30) ──
+app.get('/api/study/debug', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const raw = String(req.query.lessons || '').trim();
+    const lessons = raw ? raw.split(',').map(s => parseInt(s, 10)).filter(Number.isFinite) : null;
+    const cards = await getFsrsCardsDebug(authed.username, lessons);
+    res.json({ ok: true, cards });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Xác minh FSRS-6 đang chạy thật trên production (không cần chạy code ở máy khác) ──
+// Trả về version package "ts-fsrs" thực tế đã cài + số lượng parameters (w) mà scheduler đang
+// dùng + so khớp với bộ default FSRS-6 công bố chính thức. Nếu module `lib/fsrs.js` load thành
+// công (tức app đang chạy, không lỗi 500 hàng loạt) thì điều đó đã tự chứng minh assertion "21
+// parameters" trong buildScheduler() đã pass lúc cold start — endpoint này chỉ hiển thị lại chi
+// tiết đó cho admin xem trực tiếp, không tính toán gì thêm.
+app.get('/api/study/fsrs-verify', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const info = getFsrsVerificationInfo();
+    let pkgVersion = 'unknown';
+    try { pkgVersion = require('ts-fsrs/package.json').version; } catch (e) { /* ignore */ }
+
+    const OFFICIAL_FSRS6_DEFAULT_W = [
+      0.212, 1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001, 1.8722, 0.1666,
+      0.796, 1.4835, 0.0614, 0.2629, 1.6483, 0.6014, 1.8729, 0.5425, 0.0912, 0.0658, 0.1542,
+    ];
+    const matchesOfficialDefault = info.w.length === OFFICIAL_FSRS6_DEFAULT_W.length &&
+      info.w.every((v, i) => Math.abs(v - OFFICIAL_FSRS6_DEFAULT_W[i]) < 1e-6);
+
+    res.json({
+      ok: true,
+      tsFsrsPackageVersion: pkgVersion,
+      paramCount: info.paramCount,
+      isFsrs6: info.isFsrs6,
+      matchesOfficialFsrs6Default: matchesOfficialDefault,
+      requestRetention: info.requestRetention,
+      enableFuzz: info.enableFuzz,
+      enableShortTerm: info.enableShortTerm,
+      w: info.w,
+      nodeVersion: process.version,
+    });
+  } catch (e) { fail(res, e); }
+});
+
+// ════════════════════════════════════════════════════
+// V69 — Desired Retention theo user (Phần 5), FSRS Analytics (Phần 8), Study Session / Dashboard /
+// Streak / Heatmap (Phần 9-12). Toàn bộ nằm trong lib/fsrs/ (reviewService.js/analytics.js).
+// ════════════════════════════════════════════════════
+
+// ── Cài đặt desired retention (Phần 5) — GET để hiển thị lựa chọn hiện tại + POST để đổi ──
+app.get('/api/settings/retention', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const settings = await reviewService.getUserSettings(authed.username);
+    res.json({ ok: true, ...settings });
+  } catch (e) { fail(res, e); }
+});
+
+app.post('/api/settings/retention', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const { desiredRetention } = req.body || {};
+  try {
+    const result = await reviewService.setUserRetention(authed.username, desiredRetention);
+    logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'settings',
+      `Đổi desired retention → ${result.desiredRetention}`);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    // Sai giá trị retention là lỗi input của user, không phải lỗi server — trả 200/ok:false thay
+    // vì 500, đúng convention lỗi nghiệp vụ của các endpoint khác trong file này.
+    console.error('⚠️  Lỗi:', e && e.message);
+    res.json({ ok: false, error: publicErrorMessage(e) });
+  }
+});
+
+// ── V76 Yêu cầu 6 — Reset FSRS (tự phục vụ, CHÍNH user đang đăng nhập tự làm cho tài khoản của
+//     mình, khác /api/admin/users/:key/reset vốn dành cho admin thao tác trên tài khoản NGƯỜI
+//     KHÁC). Chỉ xoá lịch ôn tập + dữ liệu ghi nhớ FSRS (fsrs_cards, review_history) — KHÔNG đụng
+//     study_sessions/user_settings/user_fsrs_weights/progress.ui (giữ nguyên cài đặt hiển thị,
+//     Quyển/bài đang chọn, desired retention...). Toàn bộ nằm trong 1 transaction Postgres
+//     (updateDBWithFsrsCleanup → BEGIN/COMMIT, lỗi giữa chừng tự ROLLBACK — Yêu cầu 8), không thể
+//     có trạng thái xoá dở dang. ──
+app.post('/api/fsrs/reset', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const result = await updateDBWithFsrsCleanup(authed.username, (db) => {
+      if (!db.users[authed.username]) return { ok: false, error: 'Không tìm thấy tài khoản' };
+      return { ok: true }; // không sửa gì trong app_store — Reset FSRS không đụng progress.ui/cài đặt
+    });
+    if (!result.ok) return res.json({ success: false, message: result.error || 'FSRS reset failed' });
+    reviewService.invalidateUserSettingsCache(authed.username);
+    logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'settings',
+      `Tự reset FSRS (fsrs_cards: ${result.fsrsCardsDeleted}, review_history: ${result.reviewHistoryDeleted})`);
+    // V76 Yêu cầu 6 — response shape CỐ ĐỊNH đúng contract yêu cầu (chi tiết số dòng đã xoá vẫn
+    // được ghi vào activity_logs ở trên cho mục đích audit nội bộ, không trả ra ngoài response).
+    res.json({ success: true, message: 'FSRS reset completed' });
+  } catch (e) {
+    console.error('⚠️  Lỗi:', e && e.message);
+    res.status(500).json({ success: false, message: e.message || 'FSRS reset failed' });
+  }
+});
+
+// ── V76 Yêu cầu 7 — Xoá toàn bộ dữ liệu học tập (tự phục vụ): đưa tài khoản về trạng thái như
+//     người dùng mới — xoá FSRS + toàn bộ analytics (study_sessions/user_settings/
+//     user_fsrs_weights, alsoDeleteAnalytics=true) + reset progress.ui về mặc định. GIỮ NGUYÊN tài
+//     khoản/email/mật khẩu/role và từ vựng hệ thống (không đụng bảng vocab_words/word_examples/
+//     hanzi_parts). Cùng transaction/khoá dòng app_store như mọi updateDB khác — Yêu cầu 8. ──
+app.post('/api/user/reset-learning-data', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const result = await updateDBWithFsrsCleanup(authed.username, (db) => {
+      const u = db.users[authed.username];
+      if (!u) return { ok: false, error: 'Không tìm thấy tài khoản' };
+      u.progress = emptyProgress(); // như tài khoản vừa đăng ký — KHÔNG đụng email/passwordHash/role
+      return { ok: true };
+    }, { alsoDeleteAnalytics: true });
+    if (!result.ok) return res.json({ success: false, message: result.error || 'Learning data reset failed' });
+    reviewService.invalidateUserSettingsCache(authed.username);
+    // V82 (FSRS Personal Optimizer): alsoDeleteAnalytics=true đã xoá luôn dòng user_fsrs_weights
+    // (xem lib/db.js:updateDBWithFsrsCleanup) — dọn cache active-weights CÙNG lúc, tránh lượt review
+    // tiếp theo (trong CÙNG instance) vẫn dùng nhầm weights cá nhân đã bị xoá.
+    fsrsOptimizer.invalidateActiveWeightsCache(authed.username);
+    logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'settings',
+      `Tự xoá toàn bộ dữ liệu học tập (fsrs_cards: ${result.fsrsCardsDeleted}, review_history: ${result.reviewHistoryDeleted})`);
+    // V76 Yêu cầu 6 — response shape CỐ ĐỊNH đúng contract yêu cầu.
+    res.json({ success: true, message: 'Learning data reset completed' });
+  } catch (e) {
+    console.error('⚠️  Lỗi:', e && e.message);
+    res.status(500).json({ success: false, message: e.message || 'Learning data reset failed' });
+  }
+});
+
+// ── GET /api/fsrs/stats (Phần 8) ──
+app.get('/api/fsrs/stats', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const stats = await fsrsAnalytics.getFsrsStats(authed.username);
+    res.json({ ok: true, ...stats });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Dashboard thời gian học: Hôm nay / 7 ngày / Toàn bộ + streak (Phần 10-11) ──
+app.get('/api/study/dashboard', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const [summary, streak] = await Promise.all([
+      fsrsAnalytics.getDashboardSummary(authed.username),
+      fsrsAnalytics.getStreak(authed.username),
+    ]);
+    res.json({ ok: true, ...summary, streak: streak.currentStreak, longestStreak: streak.longestStreak });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Heatmap kiểu GitHub (Phần 12) — mặc định 365 ngày gần nhất, tối đa 366 ──
+app.get('/api/study/heatmap', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const days = Number.isFinite(Number(req.query.days)) ? Number(req.query.days) : 365;
+    const heatmap = await fsrsAnalytics.getHeatmap(authed.username, days);
+    res.json({ ok: true, heatmap });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Study session tracking chủ động (tùy chọn — xem ghi chú trong lib/fsrs/analytics.js) ──
+app.post('/api/study/session/start', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const sessionId = await fsrsAnalytics.startExplicitSession(authed.username, new Date());
+    res.json({ ok: true, sessionId });
+  } catch (e) { fail(res, e); }
+});
+
+app.post('/api/study/session/heartbeat', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const { sessionId, activeSeconds } = req.body || {};
+  if (!Number.isFinite(Number(sessionId))) return res.json({ ok: false, error: 'Thiếu sessionId hợp lệ' });
+  // V112: activeSeconds (tuỳ chọn) = số giây học thực client đo được; server vẫn chặn bằng thời gian thực + trần (lib/fsrs/study-time.js).
+  const active = (activeSeconds === undefined || activeSeconds === null) ? undefined : Number(activeSeconds);
+  try {
+    const session = await fsrsAnalytics.heartbeatExplicitSession(authed.username, Number(sessionId), new Date(), active);
+    if (!session) return res.json({ ok: false, error: 'Không tìm thấy session' });
+    res.json({ ok: true, durationSeconds: session.duration_seconds });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] FSRS Optimizer — xuất review history + kiểm tra sẵn sàng train weights riêng (Phần 6/7) ──
+// CHƯA train tự động (đúng yêu cầu) — endpoint này chỉ XUẤT dữ liệu + cho biết đã đủ review chưa.
+app.get('/api/admin/fsrs-optimizer/export', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const targetUser = String(req.query.userId || authed.username).toLowerCase();
+  try {
+    const [rows, readiness] = await Promise.all([
+      fsrsOptimizer.exportReviewHistoryForOptimizer(targetUser, { limit: Number(req.query.limit) || 2000 }),
+      fsrsOptimizer.getOptimizerReadiness(targetUser),
+    ]);
+    res.json({ ok: true, readiness, rows });
+  } catch (e) { fail(res, e); }
+});
+
+app.get('/api/admin/fsrs-optimizer/weights/:userId', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const weights = await fsrsOptimizer.getUserWeights(req.params.userId.toLowerCase());
+    res.json({ ok: true, ...weights });
+  } catch (e) { fail(res, e); }
+});
+
+// ════════════════════════════════════════════════════
+// FSRS PERSONAL OPTIMIZER — tự phục vụ (V82). CHÍNH user đang đăng nhập chạy optimizer trên dữ
+// liệu review CỦA CHÍNH MÌNH (khác 2 endpoint admin phía trên — chỉ xem/xuất, không train).
+// Toàn bộ logic thật nằm ở lib/fsrs/optimizer.js — route ở đây chỉ auth + gọi + trả JSON.
+// ════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════
+// V87 — GET /api/fsrs-optimizer/health (Phần VI của yêu cầu audit "Failed to fetch").
+//
+// Mục tiêu DUY NHẤT: chứng minh route /api/fsrs-optimizer/* nói chung — routing (vercel.json rewrite)
+// + Express app — SỐNG, TÁCH BIỆT hoàn toàn khỏi auth/DB/native optimizer. TUYỆT ĐỐI KHÔNG:
+//   - requireAuth() (không cần đăng nhập mới gọi được — health check không phải dữ liệu riêng tư)
+//   - đọc DB (không ensureOptimizerTables/query gì)
+//   - đụng tới native binding dưới bất kỳ hình thức nào
+// Dùng để phân biệt (A) route chết hẳn (Failed to fetch ở CHÍNH /health) vs (B) auth chết (health OK,
+// status 401) vs (C) DB chết (health OK, status 500) vs (D) native chết (health OK, status vẫn 200
+// nhờ fix ở getOptimizerStatus() — không còn cách nào để "native chết" làm hỏng health/status nữa).
+// ════════════════════════════════════════════════════
+app.get('/api/fsrs-optimizer/health', (req, res) => {
+  res.json({ ok: true, service: 'fsrs-optimizer', api: true });
+});
+
+// GET status: nhẹ (Phần "STATUS API") — đọc job mới nhất + weights hiện tại theo khoá chính, KHÔNG
+// quét lại toàn bộ review_history mỗi lần poll (data quality lấy từ cache của job, hoặc ước tính rẻ
+// nếu chưa từng chạy — xem lib/fsrs/optimizer.js:getOptimizerStatus). isAdmin quyết định có được xem
+// chi tiết lỗi/chẩn đoán kỹ thuật đầy đủ hay không (Phần "ERROR SECURITY").
+//
+// V86: FE poll route này mỗi ~2s trong lúc job active (xem js/fsrs-optimizer.js) — tận dụng ĐÚNG chu
+// kỳ đó làm cơ chế kích hoạt lại /worker cho các job vừa được TỰ ĐỘNG requeue (retry có kiểm soát —
+// xem recoverStaleJobsForUser, Phần IX/VI). requeuedJobIds là field NỘI BỘ, KHÔNG trả về cho client.
+//
+// V87 (QUAN TRỌNG — xem AUDIT-REPORT-V87-FAILED-TO-FETCH.md): route này TUYỆT ĐỐI KHÔNG được gọi
+// require('@open-spaced-repetition/binding') hay bất kỳ hàm nào chạm native code, dù trực tiếp hay
+// gián tiếp qua fsrsOptimizer.getOptimizerStatus() — đã sửa tận gốc bên lib/fsrs/optimizer.js, xem
+// comment ở getOptimizerStatus(). Muốn kiểm tra engine THẬT, dùng GET /diagnostics (admin, có rủi ro
+// riêng — không được FE tự poll).
+app.get('/api/fsrs-optimizer/status', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const role = authed.db.users[authed.username].role;
+    const isAdmin = role === 'admin' || role === 'superadmin';
+    const status = await fsrsOptimizer.getOptimizerStatus(authed.username, { isAdmin });
+    const { requeuedJobIds, ...publicStatus } = status;
+    (requeuedJobIds || []).forEach((jobId) => triggerOptimizerWorker(req, jobId));
+    res.json({ ok: true, ...publicStatus });
+  } catch (e) { fail(res, e); }
+});
+
+// ════════════════════════════════════════════════════
+// V87 — GET /api/fsrs-optimizer/diagnostics (Phần IV/V của yêu cầu audit).
+//
+// CHỈ admin — endpoint này CÓ THỂ chạm native code (khi ?probe=1), khác hẳn /health và /status. KHÔNG
+// được FE tự động gọi định kỳ (không có polling nào trỏ tới route này) — chỉ gọi khi 1 admin CHỦ ĐỘNG
+// mở trang chẩn đoán/bấm nút kiểm tra. requireAdmin() chặn user thường TRƯỚC khi chạm bất kỳ code
+// nguy hiểm nào; sanitizeEngineStatusForUser() (dù lẽ ra không cần vì đã chặn ở trên) vẫn được áp
+// dụng làm lớp phòng thủ thứ 2 — phòng khi có lỗi auth trong tương lai vẫn không lộ thông tin hệ
+// thống chi tiết (Phần "ERROR SECURITY", nguyên tắc phòng thủ theo chiều sâu).
+// (audit "Optimizer lỗi trong trình duyệt" lặp lại nhiều lần dù đã sửa logic resolve 2 lần — xem
+// AUDIT-REPORT-V97): sau khi xác định NGUYÊN NHÂN GỐC THỰC SỰ là includeFiles trong vercel.json quá
+// hẹp (chỉ "node_modules/@open-spaced-repetition/**", không đóng gói transitive dependency nằm NGOÀI
+// scope đó vào Vercel Function) — bài học rút ra: đừng tiếp tục ĐOÁN, hãy để SERVER TỰ BÁO CÁO.
+//
+// Hàm này đọc package.json của CẢ "binding" lẫn "binding-wasm32-wasi" (đã biết root), lấy TOÀN BỘ
+// "dependencies" chúng khai báo, rồi kiểm tra TRỰC TIẾP TRÊN ĐĨA (fs.existsSync — "ground truth", độc
+// lập hoàn toàn với require.resolve()/createRequire(), không thể bị ảnh hưởng bởi "exports" map hay
+// bất kỳ quy tắc resolve phức tạp nào) xem TỪNG dependency có THỰC SỰ CÓ MẶT trên server đang chạy hay
+// không — không chỉ kiểm tra đúng "@napi-rs/wasm-runtime" (tên đã biết từ lỗi hiện tại), mà kiểm tra
+// TẤT CẢ, để phát hiện SỚM nếu còn thiếu package nào khác (chưa từng gặp lỗi) — một lần chẩn đoán,
+// biết hết, không phải chờ user gặp lỗi rồi báo lại từng cái một.
+function checkTransitiveDepsOnDisk(bindingRoot, wasmRoot) {
+  const results = [];
+  const seen = new Set();
+  const candidateRoots = [bindingRoot, wasmRoot].filter(Boolean);
+
+  function existsAt(pkgName) {
+    const parts = pkgName.startsWith('@') ? pkgName.split('/') : [pkgName];
+    const foundPaths = [];
+    for (const root of candidateRoots) {
+      const p = path.join(root, 'node_modules', ...parts);
+      if (fs.existsSync(path.join(p, 'package.json'))) foundPaths.push(p);
+    }
+    // Hoisted lên gốc project (node_modules cùng cấp với api/index.js)
+    const rootP = path.join(__dirname, 'node_modules', ...parts);
+    if (fs.existsSync(path.join(rootP, 'package.json'))) foundPaths.push(rootP);
+    return foundPaths;
+  }
+
+  for (const root of candidateRoots) {
+    let pkgJson;
+    try { pkgJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')); }
+    catch { continue; }
+    const deps = { ...(pkgJson.dependencies || {}), ...(pkgJson.optionalDependencies || {}) };
+    for (const depName of Object.keys(deps)) {
+      if (seen.has(depName)) continue;
+      seen.add(depName);
+      const foundPaths = existsAt(depName);
+      results.push({ package: depName, requiredBy: pkgJson.name, onDisk: foundPaths.length > 0, foundAt: foundPaths });
+    }
+  }
+  return results;
+}
+
+app.get('/api/fsrs-optimizer/diagnostics', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const user = authed.db.users[authed.username];
+  const isAdmin = user && (user.role === 'admin' || user.role === 'superadmin');
+  if (!requireAdmin(user, res)) return;
+  try {
+    const probe = req.query.probe === '1' || req.query.probe === 'true';
+    const diag = fsrsOptimizer.getOptimizerDiagnostics({ probe });
+    if (isAdmin) {
+      // V92 — cùng gói vào đây thay vì route riêng, để admin chỉ cần nhớ 1 địa chỉ duy nhất
+      // (/api/fsrs-optimizer/diagnostics) cho MỌI thứ liên quan tới optimizer, kể cả bản browser mới.
+      diag.browserTraining = computeBrowserOptimizerAssetUrlsDetailed();
+      // V97 — chẩn đoán VẬT LÝ, độc lập với logic resolve (xem checkTransitiveDepsOnDisk phía trên).
+      try {
+        const bindingRoot = resolveBrowserOptimizerPkgRoot('binding');
+        const wasmRoot = resolveBrowserOptimizerPkgRoot('binding-wasm32-wasi');
+        diag.browserTraining.diskCheck = checkTransitiveDepsOnDisk(bindingRoot, wasmRoot);
+      } catch (e) {
+        diag.browserTraining.diskCheck = { error: e && e.message };
+      }
+    }
+    res.json({ ok: true, diagnostics: isAdmin ? diag : fsrsOptimizer.sanitizeEngineStatusForUser(diag) });
+  } catch (e) { fail(res, e); }
+});
+
+// Địa chỉ TUYỆT ĐỐI để tự gọi ngược lại CHÍNH deployment đang chạy (Phần "YÊU CẦU KIẾN TRÚC" — POST
+// /run phải trả về NGAY, việc train THẬT chạy ở 1 request HTTP MỚI, TÁCH RỜI request mà trình duyệt
+// đang chờ). Dùng req.headers.host (đúng domain/rewrite đang phục vụ request gốc — kể cả custom
+// domain) thay vì VERCEL_URL (có thể trỏ tới hostname auto-generate khác domain đang dùng thật).
+function buildInternalUrl(req, path) {
+  const proto = req.headers['x-forwarded-proto'] || req.protocol || (process.env.VERCEL ? 'https' : 'http');
+  const host = req.headers['host'];
+  return `${proto}://${host}${path}`;
+}
+
+// V86 — gộp logic "tự gọi ngược /worker cho 1 jobId" thành 1 helper DÙNG CHUNG cho cả 3 nơi cần kích
+// hoạt worker: /run (job vừa tạo), /worker (tự kích hoạt TIẾP nếu runOptimizerJob báo continuation:
+// true — xem lib/fsrs/optimizer.js), /status (job vừa được tự động requeue). Tách riêng 2 hàm:
+// fetchOptimizerWorker() = chỉ gửi request (trả Promise, KHÔNG tự bọc waitUntil) — dùng khi ĐÃ ở
+// trong 1 background task sẵn có (/worker, xem bên dưới, tránh waitUntil lồng nhau không cần thiết).
+// triggerOptimizerWorker() = tự bọc runInBackground/waitUntil — dùng khi CÒN ở đường găng chính (/run,
+// /status). Lỗi kích hoạt (network/5xx) CHỈ log, KHÔNG throw — vòng heartbeat/stale-recovery hiện có
+// vẫn là lưới an toàn cuối nếu lần kích hoạt này thất bại hoàn toàn (Phần X).
+function fetchOptimizerWorker(req, jobId) {
+  const workerUrl = buildInternalUrl(req, '/api/fsrs-optimizer/worker');
+  const authHeader = req.headers['authorization'];
+  return fetch(workerUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
+    body: JSON.stringify({ jobId }),
+  }).then((r) => {
+    if (!r.ok) console.error(`[fsrs-optimizer] kích hoạt worker cho job #${jobId} trả HTTP ${r.status}`);
+  }).catch((e) => console.error(`[fsrs-optimizer] kích hoạt worker cho job #${jobId} lỗi mạng:`, e && e.message));
+}
+function triggerOptimizerWorker(req, jobId) {
+  return runInBackground(() => fetchOptimizerWorker(req, jobId));
+}
+
+// POST run: TẠO JOB rồi trả về NGAY (202) — KHÔNG train trong chính request này (Phần "ĐỪNG CHỈ SỬA
+// SYMPTOM": đây là thay đổi kiến trúc thật, không phải tăng timeout). Idempotent với double-click/
+// nhiều tab (Phần "IDEMPOTENCY/CONCURRENCY") — createOptimizerJob() tự xử lý race condition ở DB,
+// route này chỉ cần gọi và trả lại đúng job (mới tạo hoặc đã có sẵn).
+app.post('/api/fsrs-optimizer/run', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const { desiredRetention } = await reviewService.getUserSettings(authed.username);
+    const { job, created, requeuedJobIds } = await fsrsOptimizer.createOptimizerJob(authed.username, { desiredRetention });
+
+    if (created) {
+      // Kích hoạt worker qua 1 request HTTP TÁCH RỜI — KHÔNG await response đầy đủ của nó (worker tự
+      // trả 202 gần như ngay lập tức rồi mới chạy pipeline nặng ở nền qua waitUntil CỦA CHÍNH NÓ, xem
+      // route /worker bên dưới) — runInBackground() (lib/runInBackground.js) chỉ đảm bảo request KÍCH
+      // HOẠT này thật sự được gửi đi trước khi Vercel có thể đóng băng invocation hiện tại, KHÔNG giữ
+      // invocation hiện tại sống để chờ toàn bộ optimizer train xong (đó chính là điều bị cấm).
+      triggerOptimizerWorker(req, job.id);
+      logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'fsrs-optimizer', `Tạo optimizer job #${job.id} (queued)`);
+    }
+    // V86: (hiếm) job KHÁC của CÙNG user vừa được tự động requeue đúng lúc gọi /run — kích hoạt luôn,
+    // không chờ tới lượt poll /status kế tiếp.
+    (requeuedJobIds || []).forEach((jobId) => triggerOptimizerWorker(req, jobId));
+
+    res.status(202).json({ ok: true, job, alreadyRunning: !created });
+  } catch (e) { fail(res, e); }
+});
+
+// POST worker: route NỘI BỘ — CHỈ được gọi bởi chính route /run (hoặc bởi CHÍNH route /worker này, tự
+// gọi TIẾP 1 invocation MỚI khi cần — xem "continuation" bên dưới), KHÔNG phải endpoint dành cho
+// trình duyệt gọi trực tiếp. Vẫn bắt buộc requireAuth (forward NGUYÊN Authorization header của user
+// từ nơi gọi) để: (1) không ai gọi được route này mà không có 1 phiên đăng nhập hợp lệ, (2)
+// claimQueuedJob() bên trong runOptimizerJob() chỉ khớp ĐÚNG job thuộc VỀ user đó (jobId + user_id
+// cùng khớp) — không thể vô tình/cố ý chạy job của người khác dù có đoán được jobId. Trả 202 NGAY LẬP
+// TỨC rồi mới chạy pipeline ở nền qua waitUntil — invocation NÀY có đồng hồ maxDuration RIÊNG (xem
+// vercel.json), hoàn toàn tách rời khỏi request mà trình duyệt đang chờ.
+//
+// V86 (Phần VI): runOptimizerJob() giờ có thể DỪNG SẠCH giữa chừng ở checkpoint 'prepared' (hết ngân
+// sách AN TOÀN tự áp — xem OPTIMIZER_MIN_TRAIN_BUDGET_MS) và trả về {continuation:true} thay vì chạy
+// hết TOÀN BỘ pipeline trong 1 invocation duy nhất. Khi đó, NGAY TRONG CÙNG background task này (vẫn
+// đang được waitUntil giữ sống), tự kích hoạt 1 invocation /worker HOÀN TOÀN MỚI cho ĐÚNG jobId đó —
+// invocation mới sẽ claim lại (thấy training_payload đã lưu), nhảy thẳng vào train với ngân sách MỚI
+// TINH, không phải chia sẻ với phần load/validate đã xong ở invocation này.
+app.post('/api/fsrs-optimizer/worker', async (req, res) => {
+  // V90-FIX-3 — mốc THỜI GIAN THẬT của invocation này, lấy NGAY DÒNG ĐẦU TIÊN của handler, TRƯỚC CẢ
+  // requireAuth() (có query DB để xác thực session, có thể chậm nếu Neon đang cold-start) — xem giải
+  // thích đầy đủ ở runOptimizerJob() trong lib/fsrs/optimizer.js. Đây là mốc GẦN NHẤT có thể lấy được
+  // với thời điểm Vercel thật sự bắt đầu tính giờ maxDuration cho invocation này — phần trước đó (cold
+  // start container) nằm ngoài tầm với của code ứng dụng.
+  const invocationStartedAt = Date.now();
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  const jobId = Number(req.body && req.body.jobId);
+  if (!Number.isFinite(jobId)) { res.status(400).json({ ok: false, error: 'Thiếu jobId hợp lệ' }); return; }
+  // Đăng ký việc chạy nền TRƯỚC khi trả response — đảm bảo waitUntil (bên trong runInBackground) giữ
+  // ĐÚNG invocation này sống tới khi runOptimizerJob() xong, không phụ thuộc thứ tự I/O của res.json().
+  runInBackground(async () => {
+    const result = await fsrsOptimizer.runOptimizerJob(jobId, authed.username, { invocationStartedAt });
+    if (result && result.continuation) {
+      // ĐÃ ở trong background task này rồi (waitUntil ngoài cùng đã bao trọn cả runOptimizerJob() lẫn
+      // lời gọi tiếp theo đây) — dùng fetchOptimizerWorker() trực tiếp, KHÔNG bọc thêm waitUntil lồng.
+      await fetchOptimizerWorker(req, jobId);
+    }
+  });
+  res.status(202).json({ ok: true, accepted: true, jobId });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// BROWSER-SIDE TRAINING (audit lại "AUDIT V91 – FIX FSRS OPTIMIZER DỨT ĐIỂM", Phần I-X)
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// computeParameters() dời hẳn sang trình duyệt — KHÔNG route nào dưới đây gọi nó (xem test tĩnh ở
+// test/fsrs-optimizer.test.js xác nhận điều này trên chính source thật). 2 route /run và /worker phía
+// TRÊN GIỮ NGUYÊN không đụng (tương thích ngược, Phần V) nhưng js/fsrs-optimizer.js (frontend) không
+// còn gọi tới nữa — "không để 2 optimizer chạy song song" nhờ vậy mà đúng trong THỰC TẾ sản phẩm.
+
+app.post('/api/fsrs-optimizer/browser/prepare', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const { desiredRetention } = await reviewService.getUserSettings(authed.username);
+    const result = await fsrsOptimizer.createBrowserOptimizerJob(authed.username, { desiredRetention });
+    if (result.created && result.job.status === 'running') {
+      logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'fsrs-optimizer', `Tạo optimizer job #${result.job.id} (browser training)`);
+    }
+    res.status(200).json({
+      ok: true,
+      job: result.job,
+      alreadyRunning: !result.created,
+      trainingPayload: result.trainingPayload || null,
+      // Phần VIII — FE PHẢI dùng ĐÚNG các URL này (tính TOÀN BỘ bằng require.resolve() thật trên
+      // server lúc trả lời, KHÔNG hardcode ở phía JS) — nếu null, package chưa cài/chưa bundle đúng
+      // trên server, FE hiện thông báo rõ ràng NGAY thay vì thử tải 1 URL đoán mò rồi lỗi khó hiểu.
+      assetUrls: computeBrowserOptimizerAssetUrls(),
+    });
+  } catch (e) { fail(res, e); }
+});
+
+app.post('/api/fsrs-optimizer/browser/heartbeat', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const jobId = Number(req.body && req.body.jobId);
+    if (!Number.isFinite(jobId)) { res.status(400).json({ ok: false, error: 'Thiếu jobId hợp lệ' }); return; }
+    const progressCurrent = Number(req.body && req.body.progressCurrent);
+    const progressTotal = Number(req.body && req.body.progressTotal);
+    const ok = await fsrsOptimizer.updateBrowserJobHeartbeat(jobId, authed.username, {
+      stage: 'training',
+      progressCurrent: Number.isFinite(progressCurrent) ? progressCurrent : undefined,
+      progressTotal: Number.isFinite(progressTotal) ? progressTotal : undefined,
+    });
+    // ok:false ở đây KHÔNG phải lỗi đáng báo động — nghĩa là job đã kết thúc/hủy/thuộc người khác từ
+    // phía server RỒI (vd user bấm Hủy ở tab khác) — FE nên dừng Worker của mình khi thấy ok:false.
+    res.status(200).json({ ok });
+  } catch (e) { fail(res, e); }
+});
+
+app.post('/api/fsrs-optimizer/browser/cancel', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const jobId = Number(req.body && req.body.jobId);
+    if (!Number.isFinite(jobId)) { res.status(400).json({ ok: false, error: 'Thiếu jobId hợp lệ' }); return; }
+    const reason = (req.body && typeof req.body.reason === 'string') ? req.body.reason : undefined;
+    const ok = await fsrsOptimizer.cancelBrowserJob(jobId, authed.username, { reason });
+    res.status(200).json({ ok });
+  } catch (e) { fail(res, e); }
+});
+
+app.post('/api/fsrs-optimizer/browser/commit', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const jobId = Number(req.body && req.body.jobId);
+    const weights = req.body && req.body.weights;
+    if (!Number.isFinite(jobId)) { res.status(400).json({ ok: false, error: 'Thiếu jobId hợp lệ' }); return; }
+    const result = await fsrsOptimizer.commitBrowserOptimizerResult(jobId, authed.username, { weights });
+    logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'fsrs-optimizer', `Job #${jobId} train xong trong trình duyệt (recommend=${result.recommend})`);
+    res.status(200).json({ ok: true, recommend: result.recommend, improvement: result.improvement });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Serve file WASM + JS glue code của optimizer TRỰC TIẾP từ node_modules (đã được Vercel bundle
+//     theo đúng "includeFiles": "node_modules/@open-spaced-repetition/**" có sẵn trong vercel.json —
+//     Phần VIII). Project này KHÔNG có bundler (Vite/webpack) nên KHÔNG dùng được cú pháp `?url`/
+//     `?worker` trong ví dụ chính thức của package — đọc file thật qua route Express là cách thay thế
+//     tương đương, không cần thêm build step mới.
+//
+//     Đường dẫn CHÍNH XÁC bên trong package (tên file dynamic-wasi thật, có import quan hệ tới file
+//     nào khác hay không) KHÔNG được tài liệu công khai xác nhận rõ — thay vì đoán, route bên dưới
+//     mirror TOÀN BỘ cấu trúc thư mục thật của 2 package (qua require.resolve() chạy NGAY trên server
+//     lúc request tới, không phải lúc code này được viết) dưới 1 tiền tố URL, để BẤT KỲ import tương
+//     đối nào bên trong dynamic-wasi cũng tự động resolve đúng qua module resolution chuẩn của trình
+//     duyệt (import tương đối lấy theo URL của chính file đang import, không phải URL trang) — không
+//     cần biết trước file đó có bao nhiêu import phụ. An toàn path-traversal: resolve() rồi so khớp
+//     tiền tố thư mục gốc trước khi đọc.
+const BROWSER_OPTIMIZER_PACKAGES = {
+  binding: '@open-spaced-repetition/binding',
+  'binding-wasm32-wasi': '@open-spaced-repetition/binding-wasm32-wasi',
+};
+const BROWSER_OPTIMIZER_CONTENT_TYPES = {
+  '.wasm': 'application/wasm',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.cjs': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+};
+const _browserOptimizerPkgRootCache = {};
+// Tìm thư mục gốc của 1 package bằng cách "đi lên từ 1 entry point CHẮC CHẮN resolve được" rồi tìm
+// đúng package.json khai tên khớp — KHÔNG dùng require.resolve('<pkg>/package.json') trực tiếp như
+// bản trước (audit lại lần 3, có log thật từ production mới phát hiện ra): nhiều package hiện đại khai
+// "exports" map CHẶT, không cho resolve subpath "./package.json" từ ngoài dù package đó vẫn cài đặt/
+// dùng được HOÀN TOÀN bình thường — bằng chứng trực tiếp: log thật cho thấy "Engine (server): Native"
+// hoạt động tốt (tức @open-spaced-repetition/binding chắc chắn có cài + native binary chạy được) NGAY
+// TRONG CÙNG 1 lần probe mà "bindingRoot" vẫn ra null — mâu thuẫn đó tự nó chỉ ra lỗi nằm ở CÁCH TÌM
+// thư mục của tôi, không phải do thiếu package thật.
+//
+// `fromFilePath` (audit lỗi "Failed to resolve module specifier @napi-rs/wasm-runtime" — lỗi THẬT
+// gặp trong trình duyệt, xem AUDIT-REPORT-V95): TUỲ CHỌN — nếu có, resolve TỪ NGỮ CẢNH của file đó
+// (dùng createRequire) thay vì từ api/index.js. Các package TOP-LEVEL của project (binding/
+// binding-wasm32-wasi, khai trực tiếp trong package.json) hầu như luôn được npm hoist lên
+// node_modules gốc nên KHÔNG cần context (2 lời gọi cũ ở resolveBrowserOptimizerPkgRoot() dưới đây
+// vẫn không truyền, giữ nguyên hành vi đã hoạt động đúng — "Engine (server): Native" đã xác nhận).
+// Nhưng các package "runtime-helper" mà bản thân binding/binding-wasm32-wasi phụ thuộc (transitive
+// dependency, vd @napi-rs/wasm-runtime) rất có thể KHÔNG được hoist — npm/pnpm có thể đặt chúng NESTED
+// bên trong node_modules/<package-cha>/node_modules/ (đặc biệt nếu có version khác ở nơi khác trong
+// cây phụ thuộc). require.resolve() gọi từ api/index.js chỉ tìm theo cây node_modules xuất phát từ
+// CHÍNH FILE api/index.js — sẽ KHÔNG thấy các package nested kiểu này (đây là hành vi ĐÚNG, ĐẶC TẢ
+// CHÍNH THỨC của Node Module Resolution, không phải bug của Node) — createRequire(fromFilePath) tạo
+// 1 "require" có gốc ĐÚNG tại vị trí file cha thật, đi lên node_modules từ ĐÓ, tìm được cả các
+// node_modules lồng bên trong package đó.
+function findPackageRootByEntry(pkgName, entrySubpath, fromFilePath) {
+  let entryPath;
+  const localRequire = fromFilePath ? require('module').createRequire(fromFilePath) : require;
+  try { entryPath = localRequire.resolve(entrySubpath ? `${pkgName}/${entrySubpath}` : pkgName); }
+  catch { return null; }
+  let dir = path.dirname(entryPath);
+  for (let i = 0; i < 12; i++) { // giới hạn số bước đi lên — tránh vòng lặp nếu có gì bất thường, 12 tầng thừa đủ cho mọi cấu trúc node_modules thực tế
+    const pkgJsonPath = path.join(dir, 'package.json');
+    if (fs.existsSync(pkgJsonPath)) {
+      try { if (JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8')).name === pkgName) return dir; }
+      catch { /* package.json ở đây lỗi định dạng (hiếm) — cứ tiếp tục đi lên */ }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null; // đã tới gốc ổ đĩa, không tìm thấy
+    dir = parent;
+  }
+  return null;
+}
+
+function resolveBrowserOptimizerPkgRoot(pkgKey) {
+  if (pkgKey in _browserOptimizerPkgRootCache) return _browserOptimizerPkgRootCache[pkgKey];
+  let root = null;
+  if (pkgKey === 'binding') {
+    // Dùng thẳng subpath "dynamic-wasi" làm entry chắc chắn resolve được (nếu resolve được thì tự
+    // nhiên suy ra package đã cài đủ, đỡ phải thử "main" riêng) — fallback về entry chính nếu vì lý do
+    // gì đó dynamic-wasi không có nhưng package chính vẫn cài (vd version khác không có subpath này).
+    root = findPackageRootByEntry('@open-spaced-repetition/binding', 'dynamic-wasi')
+        || findPackageRootByEntry('@open-spaced-repetition/binding', null);
+  } else if (pkgKey === 'binding-wasm32-wasi') {
+    // Package này thường CHỈ chứa asset (.wasm + .mjs), không có "main" JS nào để require.resolve()
+    // suông được — cách đáng tin cậy nhất: suy ra từ vị trí package CHÍNH (luôn nằm cùng thư mục cha,
+    // đúng cách npm/pnpm cài các package chung 1 scope @open-spaced-repetition/) thay vì tự resolve
+    // riêng lẻ package này.
+    const bindingRoot = resolveBrowserOptimizerPkgRoot('binding');
+    if (bindingRoot) {
+      const sibling = path.join(path.dirname(bindingRoot), 'binding-wasm32-wasi');
+      if (fs.existsSync(path.join(sibling, 'package.json'))) root = sibling;
+    }
+    // Phòng khi node_modules hoisting KHÔNG đặt 2 package này cạnh nhau — thử thêm 1 cách nữa trước
+    // khi kết luận thiếu package thật.
+    if (!root) root = findPackageRootByEntry('@open-spaced-repetition/binding-wasm32-wasi', 'package.json');
+  }
+  _browserOptimizerPkgRootCache[pkgKey] = root;
+  return root;
+}
+
+// Tính URL thật cho FE dùng — dynamic-wasi entry được định vị bằng CHÍNH require.resolve() của Node
+// (tôn trọng "exports" map thật của package), KHÔNG đoán tên file, nên luôn đúng bất kể cấu trúc nội
+// bộ của package là gì. Trả null nếu bất kỳ phần nào không resolve được trên server này (Phần VIII —
+// FE phải coi null là "chưa sẵn sàng", không thử tải URL đoán mò).
+// Quét thư mục (tối đa 1 tầng con — đủ cho cấu trúc phổ biến kiểu package/dist/... mà KHÔNG quét
+// nhầm sang thứ không liên quan) tìm file khớp điều kiện — thay vì ĐOÁN đúng tên file cố định. Lý do:
+// môi trường sửa code không có mạng để tự cài + soi trực tiếp package thật, nên tên file chính xác
+// bên trong @open-spaced-repetition/binding-wasm32-wasi CHỈ dựa vào 1 ví dụ đọc được trên mạng — nếu
+// version thật khác đi (đổi tên file, đổi cấu trúc thư mục), hardcode tên sẽ luôn thất bại im lặng.
+function findFileInPkg(root, matcher) {
+  let entries;
+  try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return null; }
+  for (const e of entries) if (e.isFile() && matcher(e.name)) return path.join(root, e.name);
+  for (const e of entries) {
+    if (e.isDirectory() && e.name !== 'node_modules') {
+      let sub;
+      try { sub = fs.readdirSync(path.join(root, e.name), { withFileTypes: true }); } catch { continue; }
+      for (const se of sub) if (se.isFile() && matcher(se.name)) return path.join(root, e.name, se.name);
+    }
+  }
+  return null;
+}
+
+function computeBrowserOptimizerAssetUrlsDetailed() {
+  const diag = {};
+  const bindingRoot = resolveBrowserOptimizerPkgRoot('binding');
+  const wasmRoot = resolveBrowserOptimizerPkgRoot('binding-wasm32-wasi');
+  diag.bindingRoot = bindingRoot;
+  diag.wasmRoot = wasmRoot;
+  if (!bindingRoot || !wasmRoot) {
+    diag.failedAt = 'package_resolve';
+    diag.hint = 'npm install có thể đã bỏ qua optionalDependency này trên Vercel — kiểm tra Build Logs.';
+    return { ok: false, diag };
+  }
+
+  // KHÔNG dùng require.resolve('.../dynamic-wasi') nữa — audit lại lần 6 (log thật: "require is not
+  // defined" khi chạy trong trình duyệt) phát hiện: require.resolve() chạy TỪ api/index.js (1 file
+  // CommonJS) sẽ resolve theo điều kiện "require" trong "exports" map của package — RẤT CÓ THỂ khác
+  // với file dành cho điều kiện "import" (bản ESM, đúng cái trình duyệt cần). Nếu package công bố 2
+  // bản riêng cho 2 điều kiện này, require.resolve() sẽ luôn trả về ĐÚNG bản CommonJS (có chứa
+  // require(...) bên trong) — dù bản đó "resolve được" và "tồn tại trên đĩa" hoàn toàn bình thường
+  // (đúng như log trước đó cho thấy — không phải lỗi thiếu file). Đọc THẲNG "exports" map trong
+  // package.json, tự chọn nhánh "import" (ưu tiên) thay vì để Node tự chọn theo ngữ cảnh CommonJS.
+  let dynamicWasiEntry = null;
+  try {
+    const bindingPkgJson = JSON.parse(fs.readFileSync(path.join(bindingRoot, 'package.json'), 'utf8'));
+    const exportsMap = bindingPkgJson.exports;
+    const entry = exportsMap && exportsMap['./dynamic-wasi'];
+    let chosen = null;
+    if (typeof entry === 'string') chosen = entry;
+    else if (entry && typeof entry === 'object') {
+      chosen = entry.import || entry.browser || entry.default || entry.require || null;
+      if (chosen && typeof chosen === 'object') chosen = chosen.default || chosen.import || null; // 1 số package lồng thêm 1 tầng điều kiện nữa bên trong "import"
+    }
+    diag.dynamicWasiExportsMapEntry = entry || null; // lưu lại NGUYÊN VẸN để nếu vẫn sai, thấy ngay cấu trúc thật thay vì đoán tiếp
+    if (chosen) dynamicWasiEntry = path.resolve(bindingRoot, chosen);
+  } catch (e) { diag.dynamicWasiResolveError = e && e.message; }
+  // Dự phòng: package không có "exports" map dạng object (hiếm, nhưng có thể xảy ra ở version khác) —
+  // quay lại cách cũ CHỈ khi cách đọc trực tiếp ở trên hoàn toàn thất bại.
+  if (!dynamicWasiEntry) {
+    try { dynamicWasiEntry = require.resolve('@open-spaced-repetition/binding/dynamic-wasi'); } catch { /* đã có diag.dynamicWasiResolveError ở trên nếu có */ }
+  }
+  diag.dynamicWasiEntry = dynamicWasiEntry;
+  if (!dynamicWasiEntry || !fs.existsSync(dynamicWasiEntry)) {
+    diag.failedAt = 'dynamic_wasi_subpath';
+    diag.hint = 'Package không có export "dynamic-wasi" ở version đang cài, hoặc version quá cũ/mới so với tài liệu đã tra cứu.';
+    return { ok: false, diag };
+  }
+  // Kiểm tra NGAY ở đây (trước khi trình duyệt phải tự thử rồi báo lỗi) — nếu file được chọn vẫn có
+  // dấu hiệu CommonJS thô (require(...)/module.exports không đi kèm cú pháp ESM), rất có thể sẽ gặp lại
+  // đúng lỗi "require is not defined" khi chạy trong trình duyệt. KHÔNG chặn (vẫn có thể là false
+  // positive — 1 số file ESM hợp lệ vẫn có thể chứa chữ "require" trong chuỗi/comment) — chỉ cảnh báo
+  // rõ trong diagnostics để không phải đợi thêm 1 vòng deploy-thử-chụp-ảnh mới biết.
+  try {
+    const entrySrc = fs.readFileSync(dynamicWasiEntry, 'utf8');
+    const hasBareRequire = /(^|[^.\w])require\s*\(/.test(entrySrc);
+    const hasEsmSyntax = /(^|\n)\s*(import\s|export\s)/.test(entrySrc);
+    diag.dynamicWasiLooksLikeCommonJS = hasBareRequire && !hasEsmSyntax;
+  } catch { /* không đọc được để soi thử — không quan trọng, việc chính (tìm đúng file) đã xong */ }
+
+  const wasmFile = findFileInPkg(wasmRoot, (name) => name.endsWith('.wasm'));
+  // "worker" + ("browser" HOẶC "wasi") ở BẤT KỲ thứ tự nào trong tên (không giả định thứ tự cụ thể —
+  // audit lại lần 4 phát hiện: ví dụ duy nhất đọc được là "wasi-worker-browser.mjs", nhưng không có gì
+  // đảm bảo version thật/tương lai giữ ĐÚNG thứ tự đó). Nếu vẫn không khớp, dự phòng: chấp nhận BẤT KỲ
+  // file .mjs/.js nào khác trong thư mục (gói asset kiểu này hiếm khi có file JS không liên quan) —
+  // wasmRootListing trong log/diagnostics vẫn cho thấy đủ để tự sửa tay nếu dự phòng này cũng sai.
+  const workerFile = findFileInPkg(wasmRoot, (name) => /worker/i.test(name) && (/browser/i.test(name) || /wasi/i.test(name)))
+    || findFileInPkg(wasmRoot, (name) => /\.m?js$/i.test(name));
+  diag.wasmFile = wasmFile;
+  diag.workerFile = workerFile;
+  if (!wasmFile || !workerFile) {
+    diag.failedAt = 'asset_files_not_found';
+    try { diag.wasmRootListing = fs.readdirSync(wasmRoot); } catch { /* ignore */ }
+    return { ok: false, diag };
+  }
+
+  const dynamicWasiRelPath = path.relative(bindingRoot, dynamicWasiEntry).split(path.sep).join('/');
+  const wasmRelPath = path.relative(wasmRoot, wasmFile).split(path.sep).join('/');
+  const workerRelPath = path.relative(wasmRoot, workerFile).split(path.sep).join('/');
+  const importMap = buildImportMapForFile(dynamicWasiEntry, 2);
+  diag.importMap = importMap; // lưu cả khi thành công — nếu sau này vẫn còn bare specifier nào lọt lưới, thấy ngay map thật đã tính ra là gì thay vì đoán
+  return {
+    ok: true,
+    warnings: diag.dynamicWasiLooksLikeCommonJS
+      ? ['File dynamic-wasi được chọn có dấu hiệu là CommonJS thô (require(...) không kèm cú pháp ESM) — trình duyệt có thể báo lỗi "require is not defined" khi chạy. Xem dynamicWasiExportsMapEntry ở lần probe trước để kiểm tra lại nhánh "import" có đúng không.']
+      : [],
+    importMap,
+    urls: {
+      dynamicWasiEntryUrl: `/api/fsrs-optimizer/browser/pkg/binding/${dynamicWasiRelPath}`,
+      wasmAssetUrl: `/api/fsrs-optimizer/browser/pkg/binding-wasm32-wasi/${wasmRelPath}`,
+      workerScriptUrl: `/api/fsrs-optimizer/browser/pkg/binding-wasm32-wasi/${workerRelPath}`,
+    },
+  };
+}
+
+function computeBrowserOptimizerAssetUrls() {
+  const result = computeBrowserOptimizerAssetUrlsDetailed();
+  if (!result.ok) {
+    console.error('[fsrs-optimizer/browser] computeBrowserOptimizerAssetUrls() thất bại — xem chi tiết ở GET /api/fsrs-optimizer/diagnostics (admin) hoặc log dưới đây:', JSON.stringify(result.diag));
+    return null;
+  }
+  return { ...result.urls, importMap: result.importMap };
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// IMPORT MAP cho các "bare specifier" (vd `import ... from '@napi-rs/wasm-runtime'`) — audit lại lần 7
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// Log thật (production) cho thấy file dynamic-wasi (ESM) mà ta serve có import "trần" (bare specifier,
+// tên package thường dùng trong Node — KHÔNG phải đường dẫn tương đối) tới 1 package KHÁC
+// (@napi-rs/wasm-runtime — thư viện WASM runtime dùng chung của napi-rs, không phải phần riêng của
+// FSRS binding). Trình duyệt KHÔNG tự resolve được specifier kiểu này (đúng lỗi thật: "Failed to
+// resolve module specifier... Relative references must start with..."). Cách chuẩn của web platform để
+// giải quyết là "import map" (`<script type="importmap">`) — NHƯNG import map CHỈ áp dụng cho module
+// nạp vào DOCUMENT chính, KHÔNG áp dụng cho module nạp trong Worker/Worklet (xác nhận từ tài liệu chính
+// thức MDN) — đây là lý do kiến trúc "chạy trong Worker riêng" (bản trước) không thể dùng cách này được.
+// => Thiết kế lại: initOptimizer()/computeParameters() giờ chạy TRÊN LUỒNG CHÍNH (không còn
+// js/fsrs-optimizer-worker.js) — bản thân package đã tự spawn 1 Worker RIÊNG của nó
+// (`worker: () => new WasiWorker()`) để thực hiện phần tính toán nặng, nên luồng chính vẫn KHÔNG bị
+// chặn dù gọi trực tiếp — và import map (chỉ hoạt động ở luồng chính) mới dùng được.
+//
+// KHÔNG thể biết trước TẤT CẢ bare specifier nào sẽ cần (tài liệu không liệt kê đầy đủ, và các gói phụ
+// thuộc lồng nhau có thể tự thay đổi qua từng version) — nên thay vì liệt kê tay, code dưới đây tự ĐỌC
+// nội dung file entry, tự tìm mọi bare specifier, tự resolve + đăng ký route serve cho từng cái, và
+// quét thêm 1-2 tầng vào các file được require/import bởi chính chúng (đa số các gói WASM-runtime nhỏ,
+// gọn, ít khi sâu hơn vài tầng phụ thuộc).
+
+const _dynamicPkgUrlKeyByName = {};
+const _dynamicPkgNameByUrlKey = {};
+// (audit lỗi "Failed to resolve module specifier" — xem AUDIT-REPORT-V95) — cache LẠI root ĐÃ XÁC
+// ĐỊNH ĐÚNG (bằng context/createRequire, xem resolveBareSpecifierUrl) theo urlKey, để route
+// serveDynamicPkgFile (nơi trình duyệt thực sự GET file về) dùng LẠI ĐÚNG root này thay vì tự tính
+// lại bằng require.resolve() KHÔNG có context (context sai — chính là bug thứ 2 cùng gốc: dù import
+// map build đúng, request tải file thật vẫn 404 nếu route serve tính root theo cách khác).
+const _dynamicPkgRootByUrlKey = {};
+function sanitizePkgNameForUrl(pkgName) {
+  if (_dynamicPkgUrlKeyByName[pkgName]) return _dynamicPkgUrlKeyByName[pkgName];
+  const key = pkgName.replace(/^@/, '').replace(/\//g, '__');
+  _dynamicPkgUrlKeyByName[pkgName] = key;
+  _dynamicPkgNameByUrlKey[key] = pkgName;
+  return key;
+}
+
+// Bắt CẢ 3 dạng: "import ... from 'x'"/"export ... from 'x'" (gộp chung nhờ đều kết thúc bằng "from
+// '...'"), "import('x')" (dynamic import), VÀ "import 'x'" (side-effect-only, không gán biến — trước
+// đây CHỦ Ý bỏ qua vì cho là hiếm gặp, nhưng audit lỗi thật "Failed to resolve module specifier
+// @napi-rs/wasm-runtime" cho thấy KHÔNG thể loại trừ khả năng 1 package runtime-helper dùng đúng dạng
+// này để chạy side-effect khởi tạo — bắt thêm không có tác dụng phụ, chỉ tăng độ phủ).
+const RE_STATIC_FROM = /\bfrom(\s*)(['"])([^'"]+)\2/g;
+const RE_DYNAMIC_IMPORT = /\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g;
+const RE_SIDE_EFFECT_IMPORT = /\bimport\s+(?!\()(['"])([^'"]+)\1/g; // (?!\() loại trừ "import (" (dynamic import có khoảng trắng lạ) khỏi bị nhầm match
+
+function isBareSpecifier(spec) {
+  return !!spec && !spec.startsWith('.') && !spec.startsWith('/') && !/^https?:/.test(spec);
+}
+
+function extractBareSpecifiers(sourceText) {
+  const found = new Set();
+  let m;
+  RE_STATIC_FROM.lastIndex = 0;
+  while ((m = RE_STATIC_FROM.exec(sourceText))) if (isBareSpecifier(m[3])) found.add(m[3]);
+  RE_DYNAMIC_IMPORT.lastIndex = 0;
+  while ((m = RE_DYNAMIC_IMPORT.exec(sourceText))) if (isBareSpecifier(m[2])) found.add(m[2]);
+  RE_SIDE_EFFECT_IMPORT.lastIndex = 0;
+  while ((m = RE_SIDE_EFFECT_IMPORT.exec(sourceText))) if (isBareSpecifier(m[2])) found.add(m[2]);
+  return [...found];
+}
+
+function splitPkgNameAndSubpath(spec) {
+  const m = spec.match(/^(@[^/]+\/[^/]+|[^/]+)(\/.*)?$/);
+  return m ? { pkgName: m[1], subpath: m[2] || '' } : { pkgName: spec, subpath: '' };
+}
+
+// Trả về { url, filePath } cho 1 bare specifier cụ thể (đã tách sẵn tên package/subpath).
+// `fromFilePath` — xem giải thích đầy đủ ở findPackageRootByEntry() phía trên: BẮT BUỘC truyền vào
+// (là file ĐANG CHỨA câu import/export này, do buildImportMapForFile()/rewriteBareSpecifiersInSource()
+// truyền xuống) để resolve ĐÚNG theo ngữ cảnh thật, không phải theo ngữ cảnh cố định của api/index.js.
+//
+// (audit lỗi "vẫn Failed to resolve module specifier" SAU KHI V95 đã fix context-resolution — xem
+// AUDIT-REPORT-V96): chỉ thử ĐÚNG 1 context (fromFilePath) CHƯA ĐỦ — phát hiện qua test: package
+// "runtime-helper" như @napi-rs/wasm-runtime có thể được npm nested vào BÊN TRONG package "binding"
+// HOẶC "binding-wasm32-wasi" — đây là 2 package "ANH EM" (sibling), KHÔNG PHẢI package con của nhau —
+// nên nếu nó nested trong "binding" nhưng specifier lại nằm trong 1 file THUỘC "binding-wasm32-wasi"
+// (đúng thực tế: package đó tự spawn Worker, code worker import '@napi-rs/wasm-runtime'), context của
+// riêng file worker đó KHÔNG THẤY ĐƯỢC dependency nested bên "binding". Thử LẦN LƯỢT: (1) context của
+// chính file đang chứa specifier, (2) root của package "binding", (3) root của "binding-wasm32-wasi" —
+// dừng ở ứng viên ĐẦU TIÊN resolve thành công. Dùng "__probe__.js" (không cần tồn tại thật)
+// làm điểm neo — createRequire() chỉ cần 1 đường dẫn để suy ra thư mục xuất phát, không đọc file đó.
+function resolveBareSpecifierUrl(spec, fromFilePath) {
+  const { pkgName, subpath } = splitPkgNameAndSubpath(spec);
+  const candidates = [];
+  if (fromFilePath) candidates.push(fromFilePath);
+  const bindingRoot = resolveBrowserOptimizerPkgRoot('binding');
+  const wasmRoot = resolveBrowserOptimizerPkgRoot('binding-wasm32-wasi');
+  if (bindingRoot) candidates.push(path.join(bindingRoot, '__probe__.js'));
+  if (wasmRoot) candidates.push(path.join(wasmRoot, '__probe__.js'));
+
+  let filePath = null;
+  let usedFrom = null;
+  for (const candidate of candidates) {
+    const localRequire = require('module').createRequire(candidate);
+    try {
+      filePath = localRequire.resolve(subpath ? `${pkgName}${subpath}` : pkgName);
+      usedFrom = candidate;
+      break;
+    } catch { /* thử ứng viên tiếp theo */ }
+  }
+  const root = findPackageRootByEntry(pkgName, subpath ? subpath.slice(1) : null, usedFrom) || (filePath ? path.dirname(filePath) : null);
+  if (!filePath || !root) return null;
+  const relPath = path.relative(root, filePath).split(path.sep).join('/');
+  const urlKey = sanitizePkgNameForUrl(pkgName);
+  _dynamicPkgRootByUrlKey[urlKey] = root; // cache lại — serveDynamicPkgFile() dùng đúng root này, không tính lại
+  return { url: `/api/fsrs-optimizer/browser/pkg-dyn/${urlKey}/${relPath}`, filePath, root, pkgName, urlKey };
+}
+
+// Quét đệ quy (giới hạn độ sâu — các gói runtime-helper nhỏ hiếm khi sâu hơn vài tầng, và giới hạn này
+// tránh quét vô hạn nếu có gì bất thường) — trả về { "specifier": "url", ... } dùng thẳng cho import map.
+function buildImportMapForFile(entryFilePath, maxDepth) {
+  const importMap = {};
+  const visited = new Set();
+  function visit(filePath, depth) {
+    if (depth > maxDepth || visited.has(filePath)) return;
+    visited.add(filePath);
+    let src;
+    try { src = fs.readFileSync(filePath, 'utf8'); } catch { return; }
+    for (const spec of extractBareSpecifiers(src)) {
+      if (importMap[spec]) continue;
+      const resolved = resolveBareSpecifierUrl(spec, filePath); // filePath = ngữ cảnh ĐÚNG (file đang chứa specifier này)
+      if (!resolved) continue; // không resolve được thì bỏ qua — import map thiếu 1 mục sẽ lộ lỗi rõ ràng giống hiện tại (không giấu đi), không làm hỏng thêm gì
+      importMap[spec] = resolved.url;
+      visit(resolved.filePath, depth + 1);
+    }
+  }
+  visit(entryFilePath, 0);
+  return importMap;
+}
+
+// (audit lỗi "Failed to resolve module specifier" khi Optimizer chạy trong trình duyệt — xem
+// AUDIT-REPORT-V96): import map (V95) đã đúng ở tầng resolve, NHƯNG import map, theo đặc tả WHATWG,
+// KHÔNG áp dụng cho module nạp bên trong 1 Worker (dedicated Worker có "module map" RIÊNG, không kế
+// thừa từ document) — trong khi CHÍNH package binding-wasm32-wasi lại TỰ TẠO 1 Worker RIÊNG của nó để
+// chạy phần tính toán nặng (xem comment "audit lại lần 7" ở đầu js/fsrs-optimizer.js — app đã cố
+// tránh Worker CỦA CHÍNH NÓ, nhưng không tránh được Worker mà THƯ VIỆN tự spawn bên trong). Vì vậy dù
+// import map ở document chính đã đúng, module bên trong Worker đó vẫn không resolve được.
+//
+// GIẢI PHÁP TRIỆT ĐỂ: thay vì trông cậy trình duyệt tự áp dụng import map, SERVER tự "viết lại" mọi
+// bare specifier NGAY TRONG NỘI DUNG file .js/.mjs/.cjs thành URL TUYỆT ĐỐI (bắt đầu bằng "/") trước
+// khi trả về — 1 đường dẫn tuyệt đối luôn hợp lệ trong ES module resolution ở MỌI ngữ cảnh (main
+// thread hay Worker), không phụ thuộc trình duyệt có hỗ trợ "import map cho Worker" hay không. Giữ
+// NGUYÊN import map (V95) chạy song song làm lưới an toàn — không hại gì, một số đường vẫn cần.
+const JS_TEXT_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
+
+function rewriteBareSpecifiersInSource(sourceText, filePath) {
+  const resolveFn = (spec) => {
+    const resolved = resolveBareSpecifierUrl(spec, filePath);
+    return resolved ? resolved.url : null;
+  };
+  let out = sourceText;
+  out = out.replace(/\bfrom(\s*)(['"])([^'"]+)\2/g, (whole, ws, quote, spec) => {
+    if (!isBareSpecifier(spec)) return whole;
+    const url = resolveFn(spec);
+    return url ? `from${ws}${quote}${url}${quote}` : whole; // không resolve được thì GIỮ NGUYÊN — lộ lỗi rõ ràng giống trước, không giấu đi
+  });
+  out = out.replace(/\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g, (whole, quote, spec) => {
+    if (!isBareSpecifier(spec)) return whole;
+    const url = resolveFn(spec);
+    return url ? whole.replace(`${quote}${spec}${quote}`, `${quote}${url}${quote}`) : whole;
+  });
+  out = out.replace(/\bimport\s+(?!\()(['"])([^'"]+)\1/g, (whole, quote, spec) => {
+    if (!isBareSpecifier(spec)) return whole;
+    const url = resolveFn(spec);
+    return url ? `import ${quote}${url}${quote}` : whole;
+  });
+  return out;
+}
+
+// Dùng CHUNG cho cả 2 route serve file bên dưới — file JS/MJS/CJS thì đọc hẳn vào bộ nhớ để rewrite
+// (luôn nhỏ, vài chục KB, an toàn) rồi gửi text; file khác (.wasm nhị phân, không có gì để rewrite)
+// GIỮ NGUYÊN stream như cũ (hiệu năng, không tải hẳn vào RAM những file có thể vài MB).
+function sendPackageFile(filePath, res) {
+  const ext = path.extname(filePath);
+  res.setHeader('Content-Type', BROWSER_OPTIMIZER_CONTENT_TYPES[ext] || 'application/octet-stream');
+  if (JS_TEXT_EXTENSIONS.has(ext)) {
+    let src;
+    try { src = fs.readFileSync(filePath, 'utf8'); }
+    catch (e) { res.status(500).json({ ok: false, error: 'Không đọc được file: ' + e.message }); return; }
+    // Cache ngắn hơn nhiều so với .wasm — nội dung phụ thuộc kết quả resolve tại thời điểm serve (dù
+    // trong thực tế hiếm đổi giữa các lần deploy, không nên cache "immutable" như trước nữa).
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.send(rewriteBareSpecifiersInSource(src, filePath));
+  } else {
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    fs.createReadStream(filePath).pipe(res);
+  }
+}
+
+function serveDynamicPkgFile(req, res) {
+  const urlKey = req.params.urlKey;
+  const pkgName = _dynamicPkgNameByUrlKey[urlKey];
+  // Ưu tiên root ĐÃ CACHE (tính đúng theo context/createRequire lúc build import map — xem
+  // resolveBareSpecifierUrl) — fallback về cách tính KHÔNG có context chỉ khi cache miss (vd server
+  // vừa restart mất cache trong-memory) — biết trước fallback này CÓ THỂ thất bại với package nested
+  // không hoist (đúng gốc rễ của bug — xem AUDIT-REPORT-V95), nhưng vẫn giữ làm lưới an toàn còn hơn
+  // 404 thẳng, và trường hợp "vừa restart" hiếm khi trùng đúng lúc user đang có job đang chạy dở.
+  const root = pkgName ? (_dynamicPkgRootByUrlKey[urlKey] || findPackageRootByEntry(pkgName, null)) : null;
+  if (!pkgName || !root) {
+    res.status(404).json({ ok: false, error: 'Không rõ package (có thể server đã restart và mất cache đăng ký — thử tải lại trang rồi bấm Run lại).' });
+    return;
+  }
+  const relPath = (req.params[0] || '').replace(/\\/g, '/');
+  const filePath = path.resolve(root, relPath);
+  if (filePath !== root && !filePath.startsWith(root + path.sep)) {
+    res.status(400).json({ ok: false, error: 'Đường dẫn không hợp lệ.' });
+    return;
+  }
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    res.status(404).json({ ok: false, error: `Không tìm thấy file: ${relPath}` });
+    return;
+  }
+  sendPackageFile(filePath, res);
+}
+
+function serveBrowserOptimizerPackageFile(pkgKey) {
+  return (req, res) => {
+    const root = resolveBrowserOptimizerPkgRoot(pkgKey);
+    if (!root) {
+      console.error(`[fsrs-optimizer/browser] Package "${BROWSER_OPTIMIZER_PACKAGES[pkgKey]}" không resolve được trên server — kiểm tra đã cài + includeFiles (vercel.json) đã bundle đúng chưa.`);
+      res.status(503).json({ ok: false, error: 'Optimizer chưa sẵn sàng trên server (thiếu package) — xem Vercel Function Logs.' });
+      return;
+    }
+    const relPath = (req.params[0] || '').replace(/\\/g, '/');
+    const filePath = path.resolve(root, relPath);
+    if (filePath !== root && !filePath.startsWith(root + path.sep)) {
+      res.status(400).json({ ok: false, error: 'Đường dẫn không hợp lệ.' });
+      return;
+    }
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      res.status(404).json({ ok: false, error: `Không tìm thấy file trong package: ${relPath}` });
+      return;
+    }
+    sendPackageFile(filePath, res);
+  };
+}
+app.get('/api/fsrs-optimizer/browser/pkg/binding/*', serveBrowserOptimizerPackageFile('binding'));
+app.get('/api/fsrs-optimizer/browser/pkg/binding-wasm32-wasi/*', serveBrowserOptimizerPackageFile('binding-wasm32-wasi'));
+app.get('/api/fsrs-optimizer/browser/pkg-dyn/:urlKey/*', serveDynamicPkgFile);
+
+// ── Import map RIÊNG, KHÔNG cần đăng nhập (audit lại lần 8) — theo đặc tả chính thức của import map
+//     (WICG/import-maps): "1 khi ĐÃ có BẤT KỲ lần tải module nào (kể cả lần đã THẤT BẠI) xảy ra trên
+//     trang, mọi import map thêm vào SAU ĐÓ đều bị trình duyệt lờ đi hoàn toàn" — nghĩa là chèn import
+//     map ngay trước lúc bấm "Run" (như bản trước) có thể bị "khoá" bởi 1 lần thử TRƯỚC ĐÓ đã thất bại
+//     trên CÙNG 1 lần tải trang (chưa reload) — đúng như hiện tượng "sửa rồi mà vẫn lỗi y hệt" đã gặp.
+//     Endpoint riêng này cho phép FE gọi NGAY LÚC TRANG VỪA TẢI XONG (trước khi user kịp bấm Run lần
+//     nào) — không cần đăng nhập vì đây chỉ là thông tin resolve package công khai, không phải dữ liệu
+//     riêng tư, và tách khỏi luồng xác thực giúp việc gọi sớm không phụ thuộc token đã sẵn sàng chưa.
+app.get('/api/fsrs-optimizer/browser/importmap', (req, res) => {
+  const result = computeBrowserOptimizerAssetUrlsDetailed();
+  res.setHeader('Cache-Control', 'no-store'); // luôn phản ánh code MỚI NHẤT — loại trừ khả năng trình duyệt dùng response JSON đã cache từ lần deploy trước
+  res.json({ ok: result.ok, importMap: result.ok ? result.importMap : {} });
+});
+
+// POST apply / rollback / reset: lỗi ở đây là lỗi NGHIỆP VỤ (vd bấm Apply khi chưa Run) — trả
+// ok:false/200 thay vì 500, đúng convention của /api/settings/retention.
+app.post('/api/fsrs-optimizer/apply', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const result = await fsrsOptimizer.applyPersonalWeights(authed.username);
+    logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'fsrs-optimizer', 'Apply personal FSRS weights');
+    res.json({ ok: true, ...result });
+  } catch (e) { console.error('⚠️  Lỗi:', e && e.message); res.json({ ok: false, error: publicErrorMessage(e) }); }
+});
+
+app.post('/api/fsrs-optimizer/rollback', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const result = await fsrsOptimizer.rollbackPersonalWeights(authed.username);
+    logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'fsrs-optimizer', 'Rollback FSRS weights về trạng thái trước đó');
+    res.json({ ok: true, ...result });
+  } catch (e) { console.error('⚠️  Lỗi:', e && e.message); res.json({ ok: false, error: publicErrorMessage(e) }); }
+});
+
+app.post('/api/fsrs-optimizer/reset', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const result = await fsrsOptimizer.resetToDefaultWeights(authed.username);
+    logActivity(authed.username, authed.db.users[authed.username].role || 'user', 'fsrs-optimizer', 'Reset FSRS weights về mặc định');
+    res.json({ ok: true, ...result });
+  } catch (e) { console.error('⚠️  Lỗi:', e && e.message); res.json({ ok: false, error: publicErrorMessage(e) }); }
+});
+
+// ── [ADMIN] Nhập từ vựng hàng loạt (từ file Excel đã được parse ở trình duyệt, hoặc nhập thủ công 1 từ) ──
+app.post('/api/admin/vocab/import', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const { words, overwrite } = req.body || {};
+  if (!Array.isArray(words) || words.length === 0) {
+    return res.json({ ok: false, error: 'Không có dữ liệu từ vựng để nhập' });
+  }
+  try {
+    const result = await importVocab(words, !!overwrite);
+    const actingUser = authed.db.users[authed.username];
+    logActivity(authed.username, actingUser.role, 'vocab',
+      `Nhập từ vựng: thêm mới ${result.added}, cập nhật ${result.updated}, gắn thêm bài cho ${result.lessonLinked || 0} từ đã có, bỏ qua ${result.skipped} (tổng ${result.total} từ)`);
+    res.json({ ok: true, ...result });
+  } catch (e) { fail(res, e); }
+});
+
+// ── V93 (Phần 7 audit) — [ADMIN] Kiểm tra 1 chữ Hán đã tồn tại trong vocabulary chưa, TRƯỚC KHI
+//     admin bấm "Thêm từ" thủ công — FE dùng để quyết định có cần hiện dialog "Giữ dữ liệu hiện
+//     tại / Ghi đè bằng dữ liệu mới" hay không (Phần 7). CHỈ ĐỌC. ──
+app.get('/api/admin/vocab/find-by-hz', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const hz = String(req.query.hz || '').trim();
+  if (!hz) return res.json({ ok: false, error: 'Thiếu chữ Hán cần kiểm tra' });
+  try {
+    const word = await findVocabWordByHz(hz);
+    res.json({ ok: true, word });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Xoá toàn bộ từ vựng của MỘT bài cụ thể (không đụng các bài khác) ──
+app.post('/api/admin/vocab/delete-lesson', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const l = parseInt((req.body || {}).l, 10);
+  if (!Number.isFinite(l) || l < 1) {
+    return res.json({ ok: false, error: 'Số bài không hợp lệ' });
+  }
+  try {
+    const removed = await deleteVocabLesson(l);
+    const actingUser = authed.db.users[authed.username];
+    logActivity(authed.username, actingUser.role, 'vocab', `Xoá bài số ${l} (${removed} từ)`);
+    res.json({ ok: true, removed });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Dọn bản ghi ôn tập MỒ CÔI của từ đã bị xoá (xem lib/orphans.js) ──
+// Ảnh hưởng dữ liệu của MỌI người học nên chia 3 bước: xem trước (chỉ đọc) → tải bản sao lưu → xoá có xác nhận.
+app.get('/api/admin/orphans', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try { res.json({ ok: true, ...(await orphans.previewOrphans()) }); } catch (e) { fail(res, e); }
+});
+app.get('/api/admin/orphans/export', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const data = await orphans.exportOrphans();
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="orphan-review-backup.json"');
+    res.send(JSON.stringify(data));
+  } catch (e) { fail(res, e); }
+});
+app.get('/api/admin/due-breakdown', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const target = (typeof req.query.user === 'string' && req.query.user) ? req.query.user : authed.username;
+  try { res.json({ ok: true, ...(await orphans.dueBreakdown(target)) }); } catch (e) { fail(res, e); }
+});
+app.post('/api/admin/orphans/cleanup', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const { expectedCards, expectedHistory, confirm } = req.body || {};
+  if (confirm !== 'XOA') return res.json({ ok: false, error: 'Cần gõ đúng chữ XOA để xác nhận' });
+  try {
+    const out = await orphans.cleanupOrphans({ expectedCards, expectedHistory });
+    if (out.ok) {
+      const actingUser = authed.db.users[authed.username];
+      logActivity(authed.username, actingUser.role, 'vocab', `Dọn bản ghi ôn tập mồ côi (${out.removedCards} thẻ, ${out.removedHistory} lượt ôn)`);
+    }
+    res.json(out);
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Lấy danh sách từng từ (kèm id) của MỘT bài cụ thể — để hiện danh sách sửa/xoá từng từ ──
+app.get('/api/admin/vocab/lesson-words', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const l = parseInt(req.query.l, 10);
+  if (!Number.isFinite(l) || l < 1) {
+    return res.json({ ok: false, error: 'Số bài không hợp lệ' });
+  }
+  try {
+    const words = await getVocabWordsByLesson(l);
+    res.json({ ok: true, words });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Sửa 1 từ theo id ──
+// V93: `l` giờ chỉ mang nghĩa "đảm bảo có thuộc bài này" (KHÔNG di chuyển khỏi bài khác — Phần 15
+// audit). Nếu FE gửi kèm `lessons` (mảng số bài) thì THAY THẾ TOÀN BỘ tập bài bằng đúng mảng đó
+// (dùng cho form multi-lesson "☑ Bài 1 ☑ Bài 5 ☑ Bài 8") — ưu tiên hơn `l` đơn lẻ nếu có cả 2.
+app.post('/api/admin/vocab/update', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const id = parseInt((req.body || {}).id, 10);
+  const hz = String((req.body || {}).hz || '').trim();
+  const py = String((req.body || {}).py || '').trim();
+  const vi = String((req.body || {}).vi || '').trim();
+  const l = parseInt((req.body || {}).l, 10);
+  const tag = (req.body || {}).tag || null;
+  const lessons = Array.isArray((req.body || {}).lessons) ? (req.body || {}).lessons.map(Number).filter(Number.isFinite) : null;
+  if (!Number.isFinite(id)) return res.json({ ok: false, error: 'Thiếu id của từ cần sửa' });
+  if (!hz || !vi || (!Number.isFinite(l) && !lessons)) {
+    return res.json({ ok: false, error: 'Vui lòng nhập đủ Chữ Hán, Nghĩa và ít nhất 1 Số bài' });
+  }
+  try {
+    const updated = await updateVocabWord(id, { hz, py, vi, l: Number.isFinite(l) ? l : undefined, tag });
+    if (!updated) return res.json({ ok: false, error: 'Không tìm thấy từ này (có thể đã bị xoá)' });
+    let finalWord = updated;
+    if (lessons && lessons.length) {
+      const r = await setVocabWordLessons(id, lessons);
+      if (r) finalWord = { ...updated, l: r.lessons[0], lessons: r.lessons };
+    }
+    const actingUser = authed.db.users[authed.username];
+    logActivity(authed.username, actingUser.role, 'vocab', `Sửa từ #${id}: ${hz} (${py}) — ${vi}, bài [${(finalWord.lessons || [l]).join(',')}]`);
+    res.json({ ok: true, word: finalWord });
+  } catch (e) {
+    // V93: constraint đổi từ UNIQUE(hz, l) sang UNIQUE(hz) toàn cục (sau khi migration đã dedupe) —
+    // vi phạm 23505 giờ nghĩa là chữ Hán này đã tồn tại ở 1 bản ghi KHÁC rồi (đổi hz trùng 1 từ có sẵn).
+    if (e && e.code === '23505') {
+      return res.json({ ok: false, error: `Chữ Hán "${hz}" đã tồn tại ở một bản ghi khác rồi — không thể đổi trùng.` });
+    }
+    fail(res, e);
+  }
+});
+
+// ── [ADMIN] Xoá 1 từ theo id ──
+// V93 (Phần 16 audit): nếu body có `lesson`, CHỈ gỡ quan hệ (id, lesson) — vocab_words chỉ thực sự
+// bị xoá nếu đây là bài CUỐI CÙNG mà từ đó còn thuộc về (không còn dependency lesson nào khác).
+// KHÔNG gửi `lesson` (tương thích ngược) -> giữ hành vi cũ: xoá hẳn theo id, không phân biệt bài.
+app.post('/api/admin/vocab/delete-word', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const id = parseInt((req.body || {}).id, 10);
+  const lessonRaw = (req.body || {}).lesson;
+  const lesson = lessonRaw === undefined || lessonRaw === null || lessonRaw === '' ? null : parseInt(lessonRaw, 10);
+  if (!Number.isFinite(id)) return res.json({ ok: false, error: 'Thiếu id của từ cần xoá' });
+  try {
+    const actingUser = authed.db.users[authed.username];
+    if (Number.isFinite(lesson)) {
+      const result = await removeVocabWordFromLesson(id, lesson);
+      if (!result.ok) return res.json({ ok: false, error: 'Từ này không thuộc bài đã chọn (có thể đã bị xoá trước đó)' });
+      logActivity(authed.username, actingUser.role, 'vocab',
+        result.fullyDeleted
+          ? `Xoá từ #${id} khỏi Bài ${lesson} — đây là bài cuối cùng nên đã xoá hẳn vocabulary`
+          : `Gỡ từ #${id} khỏi Bài ${lesson} — vẫn còn thuộc bài [${result.remainingLessons.join(',')}]`);
+      return res.json({ ok: true, fullyDeleted: result.fullyDeleted, remainingLessons: result.remainingLessons });
+    }
+    const removed = await deleteVocabWord(id);
+    if (!removed) return res.json({ ok: false, error: 'Không tìm thấy từ này (có thể đã bị xoá)' });
+    logActivity(authed.username, actingUser.role, 'vocab', `Xoá hẳn từ #${id} (mọi bài)`);
+    res.json({ ok: true, fullyDeleted: true });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Xoá toàn bộ từ vựng đã thêm qua Excel/thủ công (không đụng tới 781 từ có sẵn của app) ──
+app.post('/api/admin/vocab/clear', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const removed = await clearVocab();
+    const actingUser = authed.db.users[authed.username];
+    logActivity(authed.username, actingUser.role, 'vocab', `Xoá toàn bộ từ vựng đã thêm (${removed} từ)`);
+    res.json({ ok: true, removed });
+  } catch (e) { fail(res, e); }
+});
+
+// ── V102 (yêu cầu người dùng — "tự khai báo giáo trình, số bài ngay trên web, không phải sửa code
+//     mỗi lần thêm bài mới") — [ADMIN] Thêm/sửa/xoá 1 Quyển/giáo trình TỰ KHAI BÁO. Kiểm tra trùng
+//     khoảng bài với Quyển HARDCODED (BOOKS_RANGES) ở NGAY ĐÂY (lib/db.js chỉ tự kiểm tra trùng với
+//     book_defs khác, không có BOOKS_RANGES để tránh vòng lặp require ngược lại nó). ──
+function overlapsHardcodedBook(from, to) {
+  return BOOKS_RANGES.find(b => b.from <= to && b.to >= from) || null;
+}
+app.post('/api/admin/books/create', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const { name, group, from, to } = req.body || {};
+  const clash = overlapsHardcodedBook(parseInt(from, 10), parseInt(to, 10));
+  if (clash) {
+    return res.json({ ok: false, error: `Khoảng bài ${from}-${to} trùng với Quyển có sẵn của app (Bài ${clash.from}-${clash.to}) — hãy chọn khoảng bài khác.` });
+  }
+  try {
+    const def = await createBookDef({ name, groupName: group, lessonFrom: from, lessonTo: to });
+    const actingUser = authed.db.users[authed.username];
+    logActivity(authed.username, actingUser.role, 'books', `Thêm Quyển "${def.name}" (Bài ${def.lesson_from}-${def.lesson_to})`);
+    res.json({ ok: true, book: { id: 3000 + def.id, name: def.name, group: def.group_name, from: def.lesson_from, to: def.lesson_to } });
+  } catch (e) { fail(res, e); }
+});
+app.post('/api/admin/books/update', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const { id, name, group, from, to } = req.body || {};
+  const dbId = parseInt(id, 10) - 3000; // FE gửi lại đúng id đã +3000 lúc GET /api/books trả về
+  if (!Number.isFinite(dbId) || dbId < 1) return res.json({ ok: false, error: 'Thiếu hoặc sai id Quyển cần sửa.' });
+  const clash = overlapsHardcodedBook(parseInt(from, 10), parseInt(to, 10));
+  if (clash) {
+    return res.json({ ok: false, error: `Khoảng bài ${from}-${to} trùng với Quyển có sẵn của app (Bài ${clash.from}-${clash.to}) — hãy chọn khoảng bài khác.` });
+  }
+  try {
+    const def = await updateBookDef(dbId, { name, groupName: group, lessonFrom: from, lessonTo: to });
+    const actingUser = authed.db.users[authed.username];
+    logActivity(authed.username, actingUser.role, 'books', `Sửa Quyển "${def.name}" (Bài ${def.lesson_from}-${def.lesson_to})`);
+    res.json({ ok: true, book: { id: 3000 + def.id, name: def.name, group: def.group_name, from: def.lesson_from, to: def.lesson_to } });
+  } catch (e) { fail(res, e); }
+});
+app.post('/api/admin/books/delete', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  const dbId = parseInt((req.body || {}).id, 10) - 3000;
+  if (!Number.isFinite(dbId) || dbId < 1) return res.json({ ok: false, error: 'Thiếu hoặc sai id Quyển cần xoá.' });
+  try {
+    const removed = await deleteBookDef(dbId);
+    if (!removed) return res.json({ ok: false, error: 'Không tìm thấy Quyển này (có thể đã bị xoá).' });
+    const actingUser = authed.db.users[authed.username];
+    logActivity(authed.username, actingUser.role, 'books', `Xoá khai báo Quyển id ${dbId}`);
+    res.json({ ok: true });
+  } catch (e) { fail(res, e); }
+});
+
+// ── Đổi mật khẩu ──
+app.post('/api/change-password', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  // V88 (Phần 7) — chặn thử nhiều mật khẩu cũ liên tiếp (5 lần/10 phút mỗi IP) — vd nếu token bị lộ,
+  // hạn chế số lần kẻ chiếm được token có thể dò "mật khẩu hiện tại" (dù đổi mật khẩu không tự lộ gì
+  // thêm ngoài đúng/sai, vẫn nên giới hạn tốc độ dò theo nguyên tắc chung).
+  if (!checkRateLimit(req, 'change-password', { maxAttempts: 5, windowMs: 10 * 60 * 1000 })) {
+    return res.status(429).json({ ok: false, error: 'Quá nhiều lần thử. Vui lòng thử lại sau vài phút.' });
+  }
+  const { oldPassword, newPassword } = req.body || {};
+  if (!oldPassword || !newPassword) return res.json({ ok: false, error: 'Thiếu dữ liệu' });
+  if (String(newPassword).length < 4) return res.json({ ok: false, error: 'Mật khẩu mới cần tối thiểu 4 ký tự' });
+  try {
+    const user = authed.db.users[authed.username];
+    const match = await bcrypt.compare(String(oldPassword), user.passwordHash);
+    if (!match) return res.json({ ok: false, error: 'Mật khẩu hiện tại không đúng' });
+    const newHash = await bcrypt.hash(String(newPassword), 10);
+    await updateDB((db) => { db.users[authed.username].passwordHash = newHash; });
+    logActivity(authed.username, user.role || 'user', 'auth', 'Đổi mật khẩu');
+    res.json({ ok: true });
+  } catch (e) { fail(res, e); }
+});
+
+// ════════════════════════════════════════════════════
+// AI DỊCH — Sinh câu luyện dịch & chấm bài bằng Google Gemini (free tier)
+// Cần đặt biến môi trường GEMINI_API_KEY (lấy tại https://aistudio.google.com/apikey)
+// ════════════════════════════════════════════════════
+const https = require('https');
+// QUAN TRỌNG: Tài liệu chính thức của Google (ai.google.dev/gemini-api/docs/models) nói rõ
+// "gemini-flash-latest" CỐ TÌNH trỏ tới model thử nghiệm (experimental) — không dành cho production,
+// và có quota free tier rất hẹp (từng đo được chỉ 5 request/phút). Đó là lý do dù giãn cách bao lâu
+// vẫn bị "quota exceeded" liên tục. Model ổn định "gemini-3.5-flash" ĐƯỢC CHỌN làm mặc định, nhưng
+// quota free tier THỰC TẾ đo được của model này qua lỗi Google trả về cũng chỉ là 5 request/phút
+// (không phải 15-20 request/phút như tài liệu công khai gợi ý cho các model Flash khác — quota free
+// tier có thể khác nhau tuỳ từng Google Cloud project). Có thể ghi đè bằng biến môi trường
+// GEMINI_MODEL trên Vercel nếu sau này muốn thử model khác (vd "gemini-3.1-flash-lite" thường có
+// quota free tier cao hơn) mà không cần sửa code.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+// Luôn đảm bảo khoảng cách tối thiểu giữa 2 lần gọi Gemini để không vượt quota free tier —
+// dùng hàng đợi CHUNG lưu trong Postgres (reserveGeminiSlot ở lib/db.js) thay vì chỉ đếm trong RAM,
+// vì RAM của mỗi tiến trình là riêng biệt, không ngăn được việc nhiều tiến trình (vd nhiều lượt cron
+// GitHub Actions chồng nhau) cùng vượt quota chung.
+// Quota THỰC TẾ Google báo qua lỗi 429 là "limit: 5" (5 request/phút) — dùng 13s/lần (~4.6 request/
+// phút) để có biên độ an toàn, tránh sát ngưỡng gây lỗi liên tục. Có thể ghi đè bằng biến môi trường
+// GEMINI_MIN_INTERVAL_MS (đơn vị mili-giây) trên Vercel nếu quota thực tế của bạn khác.
+const GEMINI_MIN_INTERVAL_MS = Number(process.env.GEMINI_MIN_INTERVAL_MS) || 13000;
+async function waitForGeminiSlot() {
+  const mySlot = await reserveGeminiSlot(GEMINI_MIN_INTERVAL_MS);
+  const waitMs = mySlot.getTime() - Date.now();
+  if (waitMs > 0) await sleep(waitMs);
+}
+
+// Gemini thường trả kèm số giây cụ thể cần đợi khi hết quota, dạng "...Please retry in 40.67s."
+// hoặc "retryDelay":"41s" — trích số giây này ra (làm tròn lên, cộng thêm 1s cho chắc) để biết
+// CHÍNH XÁC cần đợi bao lâu, thay vì đoán mò.
+function extractRetryDelayMs(msg) {
+  if (!msg) return null;
+  let m = msg.match(/retry in\s+([\d.]+)\s*s/i);
+  if (!m) m = msg.match(/"retryDelay"\s*:\s*"([\d.]+)s"/i);
+  if (!m) return null;
+  const seconds = parseFloat(m[1]);
+  if (!Number.isFinite(seconds)) return null;
+  return Math.ceil(seconds + 1) * 1000;
+}
+
+// Nhận diện lỗi HẾT QUOTA (429 / "quota exceeded" / "resource exhausted") — khác lỗi tạm thời ở dưới,
+// vì lỗi quota thì thử lại ngay lập tức chắc chắn vẫn lỗi, phải đẩy lùi HÀNG ĐỢI CHUNG ra xa hơn.
+function isQuotaGeminiError(msg) {
+  if (!msg) return false;
+  const m = msg.toLowerCase();
+  return m.includes('quota') || m.includes('resource_exhausted') || m.includes('429');
+}
+
+// Nhận diện các lỗi TẠM THỜI từ Gemini (model đang quá tải/high demand, lỗi 503, lỗi nội bộ...) —
+// khác với lỗi quota (429) là loại lỗi này Google khuyên "thử lại sau" và thường chỉ cần đợi vài giây
+// là qua ngay, nên có thể tự động thử lại thay vì bắt người dùng bấm lại.
+function isTransientGeminiError(msg) {
+  if (!msg) return false;
+  const m = msg.toLowerCase();
+  return m.includes('overloaded') || m.includes('high demand') || m.includes('unavailable')
+    || m.includes('try again later') || m.includes('internal error') || m.includes('503');
+}
+
+// Gọi hàm gemini thực tế (doFn):
+// - Lỗi HẾT QUOTA (429): không có ích gì khi thử lại ngay (chắc chắn vẫn lỗi) — đẩy lùi HÀNG ĐỢI
+//   CHUNG ra đúng khoảng thời gian Google yêu cầu đợi (đọc được từ nội dung lỗi), rồi báo lỗi luôn để
+//   vòng lặp xử lý lô tiếp theo (hoặc lượt cron kế tiếp) tự động tôn trọng khoảng đợi đó.
+// - Lỗi TẠM THỜI khác (quá tải, 503...): thử lại tối đa 2 lần, đợi 3s rồi 6s giữa các lần thử — vẫn
+//   tôn trọng giãn cách quota (waitForGeminiSlot) ở mỗi lần gọi.
+async function callWithRetry(doFn) {
+  const MAX_RETRIES = 2;
+  let lastErr;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    await waitForGeminiSlot();
+    try {
+      return await doFn();
+    } catch (e) {
+      lastErr = e;
+      if (isQuotaGeminiError(e.message)) {
+        const delayMs = extractRetryDelayMs(e.message) || GEMINI_MIN_INTERVAL_MS * 4;
+        await bumpGeminiRateLimit(delayMs).catch(() => {});
+        throw e;
+      }
+      if (attempt < MAX_RETRIES && isTransientGeminiError(e.message)) {
+        await sleep(3000 * (attempt + 1));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
+}
+
+function callGemini(prompt) {
+  return callWithRetry(() => doCallGemini(prompt));
+}
+function doCallGemini(prompt) {
+  return new Promise((resolve, reject) => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return reject(new Error('Chưa cấu hình GEMINI_API_KEY trên server'));
+    const payload = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 4096,
+        thinkingConfig: { thinkingBudget: 0 },
+        responseMimeType: 'application/json',
+      },
+    });
+    const options = {
+      hostname: 'generativelanguage.googleapis.com',
+      path: `/v1beta/models/${GEMINI_MODEL}:generateContent`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+        'x-goog-api-key': apiKey,
+      },
+    };
+    const reqq = https.request(options, (resp) => {
+      let body = '';
+      resp.on('data', (chunk) => (body += chunk));
+      resp.on('end', () => {
+        if (!body || !body.trim()) {
+          return reject(new Error(`Không nhận được phản hồi từ Gemini (HTTP ${resp.statusCode}).`));
+        }
+        try {
+          const json = JSON.parse(body);
+          if (resp.statusCode >= 400) {
+            return reject(new Error(json?.error?.message || `Gemini lỗi HTTP ${resp.statusCode}`));
+          }
+          const text = json?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
+          if (!text) {
+            const reason = json?.candidates?.[0]?.finishReason;
+            return reject(new Error(`Gemini không trả về nội dung (finishReason: ${reason || 'không rõ'})`));
+          }
+          resolve(text);
+        } catch (e) {
+          reject(new Error(`Phản hồi từ Gemini không hợp lệ (HTTP ${resp.statusCode}): ${e.message}`));
+        }
+      });
+    });
+    reqq.on('error', (e) => reject(new Error('Không kết nối được tới Gemini API: ' + e.message)));
+    reqq.setTimeout(20000, () => { reqq.destroy(new Error('Gemini API timeout sau 20s')); });
+    reqq.write(payload);
+    reqq.end();
+  });
+}
+
+// Giống callGemini() nhưng gửi kèm file âm thanh (multimodal) — dùng để chấm phát âm.
+// Dùng chung "hàng đợi" thời gian với callGemini() ở trên vì cùng chia sẻ 1 quota API key.
+function callGeminiWithAudio(prompt, audioBase64, mimeType) {
+  return callWithRetry(() => doCallGeminiWithAudio(prompt, audioBase64, mimeType));
+}
+function doCallGeminiWithAudio(prompt, audioBase64, mimeType) {
+  return new Promise((resolve, reject) => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return reject(new Error('Chưa cấu hình GEMINI_API_KEY trên server'));
+    const payload = JSON.stringify({
+      contents: [{
+        parts: [
+          { text: prompt },
+          { inline_data: { mime_type: mimeType || 'audio/webm', data: audioBase64 } },
+        ],
+      }],
+      generationConfig: {
+        temperature: 0.4,
+        maxOutputTokens: 1024,
+        thinkingConfig: { thinkingBudget: 0 },
+        responseMimeType: 'application/json',
+      },
+    });
+    const options = {
+      hostname: 'generativelanguage.googleapis.com',
+      path: `/v1beta/models/${GEMINI_MODEL}:generateContent`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+        'x-goog-api-key': apiKey,
+      },
+    };
+    const reqq = https.request(options, (resp) => {
+      let body = '';
+      resp.on('data', (chunk) => (body += chunk));
+      resp.on('end', () => {
+        if (!body || !body.trim()) {
+          return reject(new Error(`Không nhận được phản hồi từ Gemini (HTTP ${resp.statusCode}).`));
+        }
+        try {
+          const json = JSON.parse(body);
+          if (resp.statusCode >= 400) {
+            return reject(new Error(json?.error?.message || `Gemini lỗi HTTP ${resp.statusCode}`));
+          }
+          const text = json?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
+          if (!text) {
+            const reason = json?.candidates?.[0]?.finishReason;
+            return reject(new Error(`Gemini không trả về nội dung (finishReason: ${reason || 'không rõ'})`));
+          }
+          resolve(text);
+        } catch (e) {
+          reject(new Error(`Phản hồi từ Gemini không hợp lệ (HTTP ${resp.statusCode}): ${e.message}`));
+        }
+      });
+    });
+    reqq.on('error', (e) => reject(new Error('Không kết nối được tới Gemini API: ' + e.message)));
+    reqq.setTimeout(25000, () => { reqq.destroy(new Error('Gemini API timeout sau 25s')); });
+    reqq.write(payload);
+    reqq.end();
+  });
+}
+
+function parseAiJson(text) {
+  const cleaned = text.replace(/```json|```/g, '').trim();
+  return JSON.parse(cleaned);
+}
+
+// Logic sinh ví dụ THEO TỪNG TỪ CỤ THỂ — đảm bảo mỗi từ có sẵn TARGET_EXAMPLES_PER_WORD câu ví dụ,
+// mỗi câu được kiểm tra chắc chắn có chứa đúng chữ Hán của từ đó (nếu AI trả sai, câu đó bị loại,
+// từ vẫn coi là "chưa xong" và sẽ được thử lại ở lượt chạy sau).
+const TARGET_EXAMPLES_PER_WORD = 3;
+const WORD_BATCH_SIZE = 12;
+// Logic sinh CHIẾT TỰ BỘ THỦ cho từng chữ Hán đơn lẻ (khác word_examples — đây là phân tích cấu tạo
+// mặt chữ, không phải câu ví dụ). Chữ nào không tách được rõ ràng thì AI chỉ ghi 1 ghi chú ngắn.
+const HANZI_BATCH_SIZE = 20;
+function extractUniqueChars(words) {
+  const set = new Set();
+  const cjk = /[\u4e00-\u9fff]/;
+  for (const w of words) for (const ch of [...w.hz]) if (cjk.test(ch)) set.add(ch);
+  return set;
+}
+// Gom các lỗi mẫu lại, coi 2 lỗi là "giống nhau" nếu bỏ hết số đi mà văn bản còn lại khớp nhau
+// (vd lỗi "quota exceeded... Please retry in 34.1s" và "...retry in 21.7s" chỉ khác số giây đếm ngược,
+// nên chỉ cần giữ 1 mẫu là đủ, tránh log bị lặp lại y hệt nhau hàng chục lần).
+const MAX_ERROR_SAMPLES = 5;
+// Bỏ bớt các URL dài dòng trong thông báo lỗi Gemini (vd link docs/rate-limits) — chúng chiếm rất
+// nhiều ký tự nhưng không có giá trị chẩn đoán, khiến phần quan trọng nhất (limit, tên model...)
+// bị cắt mất khi giới hạn độ dài hiển thị.
+function cleanErrorMsg(msg) {
+  return msg.replace(/https?:\/\/\S+/g, '').replace(/\s{2,}/g, ' ').trim();
+}
+function addErrorSample(errorSamples, msg) {
+  if (errorSamples.length >= MAX_ERROR_SAMPLES) return;
+  const cleaned = cleanErrorMsg(msg);
+  const normalize = (s) => s.replace(/[\d.]+/g, '#');
+  const key = normalize(cleaned);
+  if (errorSamples.some(s => normalize(s) === key)) return;
+  errorSamples.push(cleaned.length > 400 ? cleaned.slice(0, 400) + '…' : cleaned);
+}
+
+// Logic sinh NGHĨA HÁN VIỆT cho từng từ (âm Hán Việt ghép lại theo từng chữ, vd 学习 → "Học tập") —
+// khác với "vi" (nghĩa thuần Việt, do người nhập sẵn) — hanviet là cách đọc/nghĩa Hán Việt truyền
+// thống, giúp người học liên hệ từ Hán Việt đã biết trong tiếng Việt để nhớ nghĩa nhanh hơn.
+const HANVIET_BATCH_SIZE = 20;
+
+async function runHanVietGeneration(timeBudgetMs) {
+  const startedAt = Date.now();
+  const TIME_BUDGET_MS = timeBudgetMs || 50000;
+  const allWords = await getAllVocabWords();
+  // "Chưa xong" = chưa có hanviet, hoặc rỗng. Dùng key hz+l vì cùng chữ có thể ở nhiều bài.
+  const pending = allWords.filter(w => !w.hanviet || !String(w.hanviet).trim());
+  let batches = 0, done = 0, errors = 0;
+  const errorSamples = [];
+
+  for (let i = 0; i < pending.length; i += HANVIET_BATCH_SIZE) {
+    if (Date.now() - startedAt > TIME_BUDGET_MS) break;
+    const batch = pending.slice(i, i + HANVIET_BATCH_SIZE);
+    try {
+      const wordList = batch.map((w, idx) => `${idx + 1}. ${w.hz} (${w.py}) = ${w.vi}`).join('\n');
+      const prompt = `Bạn là chuyên gia Hán Nôm, thông thạo Từ điển Hán Nôm/Thiều Chửu, dạy tiếng Trung cho người Việt. Với MỖI từ tiếng Trung sau, hãy cho biết ÂM HÁN VIỆT CHUẨN, ĐÚNG VÀ PHỔ BIẾN NHẤT của từ đó — viết hoa chữ cái đầu, các chữ còn lại viết thường, cách nhau bằng dấu cách.
+
+QUY TẮC BẮT BUỘC (rất quan trọng, nhiều lỗi xảy ra vì bỏ qua các quy tắc này):
+1. ƯU TIÊN CAO NHẤT: nếu CẢ TỪ (không phải từng chữ riêng lẻ) đã có sẵn 1 cách đọc Hán Việt chuẩn, quen thuộc, được ghi nhận rộng rãi trong từ điển Hán Việt/Hán Nôm (vd trên hvdic.thivien.net, Thiều Chửu) hoặc trong tiếng Việt hàng ngày, thì PHẢI dùng đúng cách đọc đó của cả từ, TUYỆT ĐỐI KHÔNG tự ghép âm phổ biến của từng chữ riêng lẻ lại. Ví dụ kinh điển: chữ 你 tự nó có 2 âm (nhĩ, nễ), nhưng từ "你好" đã có sẵn cách đọc chuẩn ghi trong từ điển là "Nhĩ hảo" — PHẢI trả lời "Nhĩ hảo", KHÔNG được trả lời "Nễ hảo" dù "nễ" cũng là 1 âm hợp lệ của chữ 你 khi đứng riêng.
+2. Khi 1 chữ Hán có NHIỀU âm Hán Việt khác nhau và từ ghép đó KHÔNG có sẵn cách đọc chuẩn quen thuộc, hãy chọn âm được dùng NHIỀU NHẤT, PHỔ BIẾN NHẤT trong tiếng Việt hiện đại (âm xuất hiện trong các từ Hán Việt quen thuộc hàng ngày) — TUYỆT ĐỐI tránh âm cổ, âm hiếm, âm địa phương, âm ít người biết đến.
+3. Ví dụ khác cho chuẩn xác: "学习"→"Học tập", "老师"→"Lão sư", "中国"→"Trung Quốc" (viết hoa cả 2 vì là danh từ riêng), "谢谢"→"Tạ tạ", "什么"→"Thập ma".
+4. Nếu thực sự không tìm được âm Hán Việt hợp lý cho 1 chữ trong từ (rất hiếm gặp, thường chỉ với chữ giản thể/phương ngữ đặc biệt), vẫn cố gắng cho âm gần đúng nhất theo bộ thủ/thành phần biểu âm của chữ đó, không được bỏ trống.
+5. Trước khi trả lời mỗi từ, tự kiểm tra lại trong đầu: "Đây có phải cách đọc mà người học tiếng Trung/Hán Nôm ở Việt Nam thường thấy nhất không?" — nếu không chắc, chọn phương án phổ biến, an toàn hơn.
+
+Danh sách từ (giữ đúng số thứ tự):
+${wordList}
+Trả lời CHỈ bằng JSON hợp lệ, đúng thứ tự, đúng định dạng, không thêm chữ nào khác:
+{"items":[{"n":1,"hv":"âm Hán Việt"}]}`;
+      const text = await callGemini(prompt);
+      const data = parseAiJson(text);
+      if (!Array.isArray(data.items)) {
+        errors++;
+        addErrorSample(errorSamples, 'Phản hồi AI không đúng định dạng JSON mong đợi (thiếu mảng "items")');
+        continue;
+      }
+      const toUpdate = [];
+      for (const item of data.items) {
+        const idx = (item.n | 0) - 1;
+        const w = batch[idx];
+        if (!w || !item.hv || !String(item.hv).trim()) continue;
+        toUpdate.push({ hz: w.hz, l: w.l, hanviet: String(item.hv).trim() });
+      }
+      if (toUpdate.length) {
+        const updated = await updateVocabHanviet(toUpdate);
+        done += updated;
+      }
+      batches++;
+    } catch (e) {
+      errors++;
+      addErrorSample(errorSamples, (e && e.message) || 'Lỗi không rõ');
+    }
+  }
+  return { batches, done, errors, totalPending: pending.length, errorSamples };
+}
+
+async function runHanziPartsGeneration(timeBudgetMs) {
+  const startedAt = Date.now();
+  const TIME_BUDGET_MS = timeBudgetMs || 50000;
+  const allWords = await getAllVocabWords();
+  const charSet = extractUniqueChars(allWords);
+  const existing = await getHanziPartsKeys();
+  const pending = [...charSet].filter(ch => !existing.has(ch)).sort();
+  let batches = 0, done = 0, errors = 0;
+  const errorSamples = []; // vài lỗi mẫu (không lặp lại thông điệp) để hiện chi tiết cho admin xem
+
+  for (let i = 0; i < pending.length; i += HANZI_BATCH_SIZE) {
+    if (Date.now() - startedAt > TIME_BUDGET_MS) break;
+    const batch = pending.slice(i, i + HANZI_BATCH_SIZE);
+    try {
+      const prompt = `Bạn là chuyên gia chữ Hán dạy người Việt. Với MỖI chữ Hán sau, hãy phân tích thành các bộ phận cấu tạo (bộ thủ/thành phần) nếu tách được rõ ràng, giải thích ngắn gọn bằng tiếng Việt ý nghĩa/gợi nhớ từng phần để giúp ghi nhớ mặt chữ. Nếu chữ là nét/hình cơ bản không tách được, chỉ viết 1 ghi chú ngắn.
+Danh sách chữ: ${batch.join(' ')}
+Trả lời CHỈ bằng JSON hợp lệ, đúng thứ tự các chữ đã cho, đúng định dạng:
+{"chars":[{"hz":"chữ","type":"parts","items":[{"c":"thành phần","m":"ý nghĩa/gợi nhớ ngắn"}]}, {"hz":"chữ khác","type":"note","text":"ghi chú ngắn"}]}`;
+      const text = await callGemini(prompt);
+      const data = parseAiJson(text);
+      if (!Array.isArray(data.chars)) {
+        errors++;
+        addErrorSample(errorSamples, 'Phản hồi AI không đúng định dạng JSON mong đợi (thiếu mảng "chars")');
+        continue;
+      }
+      const toInsert = [];
+      for (const item of data.chars) {
+        if (!item.hz || !batch.includes(item.hz)) continue;
+        if (item.type === 'parts' && Array.isArray(item.items) && item.items.length) {
+          const items = item.items.filter(x => x && x.c && x.m);
+          if (items.length) toInsert.push({ hz: item.hz, parts: { type: 'parts', items } });
+        } else if (item.type === 'note' && item.text) {
+          toInsert.push({ hz: item.hz, parts: { type: 'note', text: item.text } });
+        }
+      }
+      if (toInsert.length) { await insertHanziParts(toInsert); done += toInsert.length; }
+      batches++;
+    } catch (e) {
+      errors++;
+      addErrorSample(errorSamples, (e && e.message) || 'Lỗi không rõ');
+    }
+  }
+  return { batches, done, errors, totalPending: pending.length, errorSamples };
+}
+
+async function runWordExampleGeneration(timeBudgetMs) {
+  const startedAt = Date.now();
+  const TIME_BUDGET_MS = timeBudgetMs || 50000;
+  const allWords = await getAllVocabWords();
+  const existing = await getWordExampleCounts();
+  // Bỏ qua từ đã đủ ví dụ, xử lý theo đúng thứ tự bài rồi tới thứ tự từ trong bài
+  const pending = allWords.filter(w => (existing[w.hz + '-' + w.l] || 0) < TARGET_EXAMPLES_PER_WORD);
+  let batches = 0, wordsDone = 0, wordsRetried = 0, errors = 0;
+  const errorSamples = []; // vài lỗi mẫu (không lặp lại thông điệp) để hiện chi tiết cho admin xem
+
+  for (let i = 0; i < pending.length; i += WORD_BATCH_SIZE) {
+    if (Date.now() - startedAt > TIME_BUDGET_MS) break;
+    const batch = pending.slice(i, i + WORD_BATCH_SIZE);
+    try {
+      const wordList = batch.map(w => `${w.hz} (${w.py}) = ${w.vi}`).join('; ');
+      const prompt = `Bạn là giáo viên tiếng Trung cho người Việt mới học. Với MỖI từ trong danh sách sau, hãy soạn ${TARGET_EXAMPLES_PER_WORD} câu ví dụ tiếng Trung khác nhau, đơn giản, ngắn gọn — mỗi câu BẮT BUỘC phải chứa đúng chữ Hán của từ đó (không được bỏ sót), kèm nghĩa tiếng Việt của câu ví dụ đó.
+Danh sách từ (giữ đúng thứ tự): ${wordList}
+Trả lời CHỈ bằng JSON hợp lệ, đúng định dạng, đúng thứ tự các từ đã cho, không thêm chữ nào khác:
+{"words":[{"hz":"chữ Hán của từ","examples":[{"zh":"câu ví dụ tiếng Trung","vi":"nghĩa câu ví dụ"}]}]}`;
+      const text = await callGemini(prompt);
+      const data = parseAiJson(text);
+      if (!Array.isArray(data.words)) {
+        errors++;
+        addErrorSample(errorSamples, 'Phản hồi AI không đúng định dạng JSON mong đợi (thiếu mảng "words")');
+        continue;
+      }
+      for (const item of data.words) {
+        const w = batch.find(b => b.hz === item.hz);
+        if (!w || !Array.isArray(item.examples)) continue;
+        // Chỉ giữ lại câu THỰC SỰ chứa đúng chữ Hán — đảm bảo tính đúng đắn, không tin mù AI
+        const valid = item.examples.filter(e => e && e.zh && e.vi && e.zh.includes(w.hz)).slice(0, TARGET_EXAMPLES_PER_WORD);
+        if (valid.length > 0) {
+          await insertWordExamples(w.hz, w.l, valid);
+          if (valid.length >= TARGET_EXAMPLES_PER_WORD) wordsDone++; else wordsRetried++;
+        } else {
+          wordsRetried++;
+        }
+      }
+      batches++;
+    } catch (e) {
+      errors++;
+      addErrorSample(errorSamples, (e && e.message) || 'Lỗi không rõ');
+    }
+  }
+  return { batches, wordsDone, wordsRetried, errors, totalPending: pending.length, errorSamples };
+}
+
+// ── [AI] Chấm điểm phát âm — người dùng ghi âm đọc 1 từ, AI nghe và đánh giá thanh điệu/phát âm ──
+app.post('/api/pronunciation/grade', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const { hz, py, vi, audio, mimeType } = req.body || {};
+    if (!hz || !audio) return res.json({ ok: false, error: 'Thiếu dữ liệu ghi âm' });
+    if (audio.length > 4 * 1024 * 1024) return res.json({ ok: false, error: 'File ghi âm quá dài' });
+    const prompt = `Bạn là giáo viên tiếng Trung chấm phát âm cho người Việt mới học.
+Từ cần đọc: ${hz} (pinyin chuẩn: ${py || 'không rõ'}, nghĩa: ${vi || 'không rõ'}).
+Hãy nghe đoạn ghi âm đính kèm và đánh giá:
+- Người học có đọc đúng chữ Hán trên không (âm đầu, âm cuối)?
+- Thanh điệu (dấu giọng) có đúng không? Nếu sai, sai thành thanh mấy?
+- Cho điểm 0-10.
+- Viết 1 nhận xét ngắn gọn, khích lệ, bằng tiếng Việt, chỉ rõ cụ thể cần sửa gì (nếu có).
+Trả lời CHỈ bằng JSON hợp lệ, không thêm chữ nào khác, đúng định dạng:
+{"score": 8, "toneOk": true, "heardAs": "mô tả ngắn âm nghe được (có thể để trống nếu nghe rõ đúng)", "comment": "nhận xét ngắn gọn"}`;
+    const text = await callGeminiWithAudio(prompt, audio, mimeType || 'audio/webm');
+    const data = parseAiJson(text);
+    res.json({ ok: true, result: data });
+  } catch (e) {
+    res.json({ ok: false, error: 'Không chấm được phát âm: ' + e.message });
+  }
+});
+
+// ── [ADMIN] Tiến độ sinh nghĩa Hán Việt ──
+app.get('/api/admin/hanviet/progress', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const allWords = await getAllVocabWords();
+    const total = allWords.length;
+    const done = allWords.filter(w => w.hanviet && String(w.hanviet).trim()).length;
+    res.json({ ok: true, total, done });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Kích hoạt thủ công việc sinh nghĩa Hán Việt ──
+app.post('/api/admin/generate-hanviet', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const result = await runHanVietGeneration(50000);
+    const actingUser = authed.db.users[authed.username];
+    const errText = result.errorSamples && result.errorSamples.length ? ` — Lỗi mẫu: ${result.errorSamples.join(' | ')}` : '';
+    logActivity(authed.username, actingUser.role, 'vocab',
+      `Chạy sinh nghĩa Hán Việt: ${result.done} từ xong${result.errors ? `, ${result.errors} lỗi` : ''}${errText}`);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('⚠️  Lỗi:', e && e.message);
+    res.status(500).json({ ok: false, error: publicErrorMessage(e) });
+  }
+});
+
+// ── Lấy toàn bộ chiết tự bộ thủ đã có (dữ liệu nhỏ gọn, gửi hết 1 lần, không cần lọc theo bài) ──
+app.get('/api/hanzi-parts', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const rows = await getAllHanziParts();
+    res.set('Cache-Control', 'private, max-age=120');
+    res.json({ ok: true, parts: rows });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Tiến độ sinh chiết tự bộ thủ ──
+app.get('/api/admin/hanzi-parts/progress', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const allWords = await getAllVocabWords();
+    const charSet = extractUniqueChars(allWords);
+    const existing = await getHanziPartsKeys();
+    const done = [...charSet].filter(c => existing.has(c)).length;
+    res.json({ ok: true, total: charSet.size, done });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Kích hoạt thủ công việc sinh chiết tự bộ thủ ──
+app.post('/api/admin/generate-hanzi-parts', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const result = await runHanziPartsGeneration(50000);
+    const actingUser = authed.db.users[authed.username];
+    const errText = result.errorSamples && result.errorSamples.length ? ` — Lỗi mẫu: ${result.errorSamples.join(' | ')}` : '';
+    logActivity(authed.username, actingUser.role, 'vocab',
+      `Chạy sinh chiết tự bộ thủ: ${result.done} chữ xong${result.errors ? `, ${result.errors} lỗi` : ''}${errText}`);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('⚠️  Lỗi:', e && e.message);
+    res.status(500).json({ ok: false, error: publicErrorMessage(e) });
+  }
+});
+
+// ── Lấy toàn bộ ví dụ theo từ cho các bài đang học — dùng để minh hoạ từng câu hỏi trong Trắc nghiệm
+//     (mỗi từ có thể có vài ví dụ, client tự chọn ngẫu nhiên 1 câu để hiện) ──
+app.get('/api/word-examples', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  try {
+    const raw = String(req.query.lessons || '').trim();
+    if (!raw) return res.json({ ok: true, examples: [] });
+    const lessons = raw.split(',').map(s => parseInt(s, 10)).filter(Number.isFinite);
+    const examples = await getWordExamplesForLessons(lessons);
+    res.set('Cache-Control', 'private, max-age=60');
+    res.json({ ok: true, examples });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Tiến độ sinh ví dụ theo từ — bao nhiêu từ đã đủ ví dụ / tổng số từ ──
+app.get('/api/admin/word-examples/progress', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const allWords = await getAllVocabWords();
+    const counts = await getWordExampleCounts();
+    const total = allWords.length;
+    const done = allWords.filter(w => (counts[w.hz + '-' + w.l] || 0) >= TARGET_EXAMPLES_PER_WORD).length;
+    res.json({ ok: true, total, done });
+  } catch (e) { fail(res, e); }
+});
+
+// ── [ADMIN] Kích hoạt thủ công việc sinh ví dụ theo từ (giống nút "Chạy ngay" của câu luyện dịch) ──
+app.post('/api/admin/generate-word-examples', async (req, res) => {
+  const authed = await requireAuth(req, res);
+  if (!authed) return;
+  if (!requireAdmin(authed.db.users[authed.username], res)) return;
+  try {
+    const result = await runWordExampleGeneration(50000);
+    const actingUser = authed.db.users[authed.username];
+    const errText = result.errorSamples && result.errorSamples.length ? ` — Lỗi mẫu: ${result.errorSamples.join(' | ')}` : '';
+    logActivity(authed.username, actingUser.role, 'vocab',
+      `Chạy sinh ví dụ theo từ: ${result.wordsDone} từ xong, ${result.wordsRetried} cần thử lại${result.errors ? `, ${result.errors} lỗi` : ''}${errText}`);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('⚠️  Lỗi:', e && e.message);
+    res.status(500).json({ ok: false, error: publicErrorMessage(e) });
+  }
+});
+
+// ── [CRON — Vercel TỰ ĐỘNG gọi nhiều lần/ngày] Chạy GỘP cả 2 việc trong cùng 1 lượt: ưu tiên sinh
+//     ví dụ theo từ trước (quan trọng hơn, đảm bảo phủ hết từng từ), phần thời gian còn lại mới
+//     dùng cho câu luyện dịch theo bài. Đây là endpoint mà vercel.json trỏ lịch chạy tới. ──
+app.get('/api/cron/generate-daily', async (req, res) => {
+  if (process.env.CRON_SECRET) {
+    const auth = req.headers['authorization'];
+    if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
+      return res.status(401).json({ ok: false, error: 'Unauthorized' });
+    }
+  }
+  const overallStart = Date.now();
+  const TOTAL_BUDGET_MS = 50000;
+  try {
+    // Thứ tự ưu tiên: (1) NGHĨA HÁN VIỆT trước (rẻ, nhanh, nhiều người cần nhất), rồi tới (2) CHIẾT TỰ
+    // BỘ THỦ, cuối cùng mới (3) VÍ DỤ THEO TỪ — mỗi việc chạy cho tới khi xong hẳn (có thể mất nhiều
+    // lượt cron liên tiếp) rồi mới sang việc tiếp theo, không chạy xen kẽ nhiều việc cùng lúc.
+    const hanvietResult = await runHanVietGeneration(TOTAL_BUDGET_MS);
+    const hanvietStillPending = hanvietResult.totalPending - hanvietResult.done;
+    let hanziResult = { batches: 0, done: 0, errors: 0, totalPending: 0, errorSamples: [] };
+    let wordResult = { batches: 0, wordsDone: 0, wordsRetried: 0, errors: 0, totalPending: 0, errorSamples: [] };
+    let remaining = TOTAL_BUDGET_MS - (Date.now() - overallStart);
+    if (hanvietStillPending <= 0 && remaining > 5000) {
+      hanziResult = await runHanziPartsGeneration(remaining);
+      const hanziStillPending = hanziResult.totalPending - hanziResult.done;
+      remaining = TOTAL_BUDGET_MS - (Date.now() - overallStart);
+      // Chỉ đụng tới ví dụ theo từ khi chiết tự đã KHÔNG CÒN chữ nào cần xử lý
+      if (hanziStillPending <= 0 && remaining > 5000) {
+        wordResult = await runWordExampleGeneration(remaining);
+      }
+    }
+    const allErrSamples = [...(hanvietResult.errorSamples || []), ...(wordResult.errorSamples || []), ...(hanziResult.errorSamples || [])];
+    const errText = allErrSamples.length ? ` — Lỗi mẫu: ${allErrSamples.join(' | ')}` : '';
+    logActivity(null, 'system', 'system',
+      `[Tự động - cron] Hán Việt: ${hanvietResult.done} từ xong; Sinh ví dụ: ${wordResult.wordsDone} từ xong, ${wordResult.wordsRetried} cần thử lại; Chiết tự: ${hanziResult.done} chữ xong${errText}`);
+    res.json({ ok: true, hanviet: hanvietResult, wordExamples: wordResult, hanziParts: hanziResult });
+  } catch (e) {
+    console.error('⚠️  Lỗi:', e && e.message);
+    res.status(500).json({ ok: false, error: publicErrorMessage(e) });
+  }
+});
+
+// ── Bắt lỗi chung ──
+app.use((err, req, res, next) => {
+  if (err && (err.type === 'request.aborted' || err.message === 'request aborted')) {
+    console.error('⚠️  Request bị ngắt giữa chừng — bỏ qua.');
+    return;
+  }
+  console.error('⚠️  Lỗi server:', err && err.message);
+  if (!res.headersSent) res.status(500).json({ ok: false, error: 'Lỗi server nội bộ' });
+});
+
+// Chạy độc lập khi phát triển ở máy local (KHÔNG chạy khi ở trên Vercel)
+if (!process.env.VERCEL) {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`✅ Server đang chạy tại http://localhost:${PORT}`);
+    if (!process.env.DATABASE_URL) console.log('   ⚠️  Chưa đặt DATABASE_URL');
+    if (!process.env.GEMINI_API_KEY) console.log('   ⚠️  Chưa đặt GEMINI_API_KEY');
+  });
+}
+
+module.exports = app;
