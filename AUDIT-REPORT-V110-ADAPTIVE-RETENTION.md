@@ -140,3 +140,45 @@ Mở rộng V110 theo đúng thứ tự đề xuất. Không đổi FSRS, không
 5. Đây vẫn là **thích ứng theo quy tắc**, không phải CAT/IRT: không ước lượng độ khó câu hỏi, không có mô hình năng lực xác suất.
 6. "Thời lượng còn lại của phiên" mới tính theo **số thẻ chính thức còn lại**, chưa theo thời gian thực/mục tiêu phút học.
 7. Giao diện vẫn chỉ kiểm bằng vm + DOM giả, chưa thử trên Android thật.
+
+---
+
+# V112 — Sửa thời gian học: không tính khi chuyển tab, khớp với code thích ứng
+
+Không đổi schema, không đổi FSRS. Dùng lại cột `study_sessions.duration_seconds` nhưng đổi **ý nghĩa** của nó: từ "giờ treo tường" sang "tổng đoạn học thực".
+
+## 12. Nguyên nhân (đã đọc code, đã tái hiện bằng test)
+| # | Lỗi | Hậu quả |
+|---|---|---|
+| 1 | Server tính `duration_seconds = (bây giờ − start_time)` ở **cả** `recordStudyActivity` lẫn `heartbeat` | Mọi hoạt động trong vòng 15 phút sau lần trước được cộng **nguyên khoảng trống**: rời 10 phút rồi bấm 1 câu = 10 phút "học" |
+| 2 | Đồng hồ hiển thị = `Date.now() − startedAt`; `pauseStudyTimer` chỉ dừng việc *vẽ* | Quay lại là đồng hồ nhảy cóc. Ý định ở comment V74 ("không đếm bù thời gian đã rời đi") chưa bao giờ thành hiện thực |
+| 3 | `visibility-timer.js` chỉ trừ khi **trình duyệt bị ẩn** | Sang **tab khác trong app** (vd Thống kê) rồi quay lại: thời gian đó dính vào `responseTimeMs` → làm sai tín hiệu "đúng nhưng chậm" của bộ chọn thích ứng (V111) và gợi ý rating FSRS |
+| 4 | `render()` gọi `ensureStudySession()` sau **mỗi lần vẽ lại**, hàm đó tạo lại `setInterval` | Lỗi có sẵn: nếu vẽ lại mỗi vài giây thì heartbeat 20s có thể không bao giờ kịp chạy |
+| 5 | Buổi luyện bổ sung (V110, ở tab Phân tích) không nằm trong `STUDY_TABS` | Thời gian luyện bổ sung không được tính là học |
+| 6 | Phiên trong bộ nhớ không hết hạn sau 15 phút | Mở trang qua đêm vẫn cộng vào phiên cũ |
+
+## 13. Định nghĩa thống nhất "thời gian học thực"
+Chỉ cộng khi **đồng thời**: (1) trình duyệt đang hiển thị, (2) đang ở màn học (5 tab học + buổi luyện bổ sung đang làm bài), (3) có tương tác trong 90 giây gần nhất. Mỗi nhịp 1s cộng tối đa 2s (máy ngủ/tab đóng băng không cộng bù).
+
+- **Client** (`js/timer.js`): `activeMs` thay cho giờ treo tường; heartbeat báo `activeSeconds` (phần chưa gửi, không báo trùng, không gửi chồng); quay lại sau khi vắng thì gửi heartbeat đồng bộ với ≈ 0 giây để server dời mốc mà không cộng khoảng vắng.
+- **Server** (`lib/fsrs/study-time.js`, `analytics.js`): cộng dồn `credit = min(khoảng thực, trần 60s, activeSeconds client báo)`. Client không thể cộng lố; client cũ không báo gì vẫn bị trần chặn; retry trùng gần như không cộng thêm. Heartbeat chạy trong giao dịch có `FOR UPDATE`, `end_time` chỉ tiến.
+- **Thời gian trả lời từng câu** (`js/visibility-timer.js`): "vắng mặt" gồm cả đổi tab trong app (mỗi câu hỏi có tab sở hữu). Nếu tab đổi trong 500ms đầu (vd bấm chế độ luyện ở Hôm nay rồi chuyển sang Phân tích) thì nhận tab mới, không bị coi là vắng.
+- **Bảng Hôm nay học** nay hiện "Thời gian học thực" (V110 đã định nghĩa hàm hiển thị nhưng quên gọi).
+
+### Tệp
+**Mới**: `lib/fsrs/study-time.js`, `test/study-time.test.js`.
+**Sửa**: `js/timer.js`, `js/visibility-timer.js`, `js/navigation.js`, `js/study-queue.js`, `js/lesson.js`, `lib/fsrs/analytics.js`, `api/index.js` (heartbeat nhận `activeSeconds` tuỳ chọn), `package.json`, `test/v110-ui.smoke.test.js`.
+
+## 14. Kiểm thử V112
+- `node test/study-time.test.js`: **39 pass** (quy tắc cộng; `analytics.js` nạp thật với pool giả; `timer.js` + `visibility-timer.js` nạp thật với đồng hồ giả). Toàn bộ test cũ vẫn xanh.
+- Các tình huống đã mô phỏng: ẩn trình duyệt 10 phút; sang tab Thống kê 5 phút; bỏ không thao tác 200s; máy ngủ 1 giờ; mất mạng khi heartbeat; heartbeat chồng nhau; vắng > 15 phút; đổi tab trong app chồng với ẩn trình duyệt.
+- **Kiểm tra đột biến** (cố ý phá 4 chỗ: luôn coi là đang học; bỏ trần server; bỏ nhận biết tab trong app; trả lại công thức giờ treo tường) → test đều đỏ, rồi khôi phục.
+- 5 test đỏ lần chạy đầu: 4 cái do test không chờ hết chuỗi bất đồng bộ của `fetch`, 1 cái phát hiện ràng buộc thật (mốc bắt đầu vắng là lúc `vtSync()` chạy — mọi lần đổi tab đã đi qua `render()`; đã thêm test khoá ràng buộc đó).
+
+## 15. Giới hạn còn lại (nói thẳng)
+1. **Dữ liệu cũ không được sửa.** Các dòng `study_sessions` đã lưu theo giờ treo tường vẫn bị thổi phồng (không backfill vì không thể phân biệt đoạn vắng mặt trong quá khứ). Các màn thống kê tổng hợp nhiều ngày sẽ trộn số cũ (cao) với số mới (thật) → trung bình/tổng thời gian có thể **giảm đột ngột** sau khi triển khai. Đó là số được sửa đúng, không phải lỗi.
+2. **Client cũ còn bị cache** (chưa tải lại trang) vẫn gửi heartbeat không có `activeSeconds`, kể cả lúc đang ẩn: server chỉ chặn bằng trần 60s/lần nên các client đó vẫn cộng lố một phần cho tới khi tải lại trang. Nên yêu cầu tải lại sau khi deploy.
+3. **Hai ngưỡng là lựa chọn của thiết kế, chưa hiệu chỉnh bằng dữ liệu thật:** 90s không tương tác, trần 60s/khoảng. Người học đọc ví dụ rất lâu mà không chạm màn hình sẽ bị tính thiếu sau 90s.
+4. **Chưa chạy SQL mới trên PostgreSQL thật** (truy vấn `SELECT … FOR UPDATE` + `GREATEST(end_time, $1)`); chỉ kiểm tra bằng pool giả ghi lại câu lệnh và tham số.
+5. **Chưa thử trên trình duyệt thật**: độ tin cậy của `document.hidden`/`visibilitychange` trên iOS Safari/WebView, và `fetch keepalive` lúc đóng trang chưa kiểm chứng. Nếu sự kiện ẩn không bắn, thời gian vẫn dừng nhờ ngưỡng 90s không tương tác (nhưng có thể lố tối đa 90s mỗi lần).
+6. Phân tích tổng hợp nhiều ngày (Thống kê) chưa được rà lại để hiện chú thích "từ ngày X đo theo giờ học thực".
