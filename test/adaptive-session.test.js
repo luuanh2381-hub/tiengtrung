@@ -59,6 +59,7 @@ function makeEnv(opts) {
     rvClearCountdown() {}, rvFindExample: () => null, lessonsLabel: () => 'Bài', playDing() {}, playBuzz() {}, speak() {},
   };
   vm.createContext(ctx);
+  vm.runInContext(read('js/skill-score.js'), ctx); // V111: bộ chọn dùng SS để cập nhật hồ sơ sau mỗi câu
   vm.runInContext(read('js/question-engine.js'), ctx);
   vm.runInContext(read('js/question-selector.js'), ctx);
   const consts = ['RV_NEW_GAP', 'RV_DRILL_GAP', 'RV_DRILL_MAX_TRIES', 'RV_EXTRA_MAX', 'RV_PRACTICE_TYPES'].map(constLine).join('\n');

@@ -48,7 +48,7 @@ function makeEnv(over) {
     fetch: async (url, opts) => { calls.fetch.push({ url, body: opts && opts.body ? JSON.parse(opts.body) : null }); return { json: async () => ({ ok: true, systemRating: 'good' }) }; },
   }, over || {});
   vm.createContext(ctx);
-  for (const f of ['js/answer-match.js', 'js/question-engine.js', 'js/question-selector.js', 'js/review.js']) vm.runInContext(read(f), ctx);
+  for (const f of ['js/answer-match.js', 'js/skill-score.js', 'js/question-engine.js', 'js/question-selector.js', 'js/review.js']) vm.runInContext(read(f), ctx);
   ctx.__calls = calls; ctx.__input = typedInput;
   return ctx;
 }
@@ -185,6 +185,83 @@ test('bấm đúp "Kiểm tra" không gửi 2 lần (rvPhase đổi ngay)', asyn
   ctx.__input.value = 'zhǔnbèi';
   await Promise.all([R(ctx, 'rvSubmitTyped(false)'), R(ctx, 'rvSubmitTyped(false)')]);
   assert.strictEqual(ctx.__calls.practice.length, 1);
+});
+
+console.log('\n[E] V111 — thích ứng trong phiên học (review.js thật)');
+const E_POOL = POOL.concat([{ hz: '准备好', py: 'zhǔnbèihǎo', vi: 'đã sẵn sàng', l: 5 }]);
+const E_WEAK = { recognition: { status: 'ok', level: 'good', score: 0.9, attempts: 8, wa: 5.5, wc: 5.2, correct: 8 }, recall: { status: 'ok', level: 'good', score: 0.9, attempts: 8, wa: 5.5, wc: 5.2, correct: 8 },
+  listening: { status: 'ok', level: 'good', score: 0.9, attempts: 8, wa: 5.5, wc: 5.2, correct: 8 }, pinyin: { status: 'ok', level: 'good', score: 0.9, attempts: 8, wa: 5.5, wc: 5.2, correct: 8 }, context: { status: 'ok', level: 'good', score: 0.9, attempts: 8, wa: 5.5, wc: 5.2, correct: 8 } };
+test('rvRecordAnswer cập nhật hồ sơ NGAY — cho cả các thẻ khác của CÙNG từ trong hàng đợi, không đụng từ khác', () => {
+  const ctx = makeEnv();
+  const w = POOL[0], other = POOL[1];
+  R(ctx, `rvQSession = QS.newSession(); rvQueue.items = [
+    { type: 'review', word: ${JSON.stringify(w)}, skillProfile: ${JSON.stringify(E_WEAK)} },
+    { type: 'redo', word: ${JSON.stringify(w)}, skillProfile: ${JSON.stringify(E_WEAK)} },
+    { type: 'review', word: ${JSON.stringify(other)}, skillProfile: ${JSON.stringify(E_WEAK)} } ]; rvLog = [];`);
+  R(ctx, `{ const q = QE.build('hz2vi', rvQueue.items[0].word, rvQCtx()); rvRecordAnswer(rvQueue.items[0], q, false, 2500, true); }`);
+  assert.strictEqual(R(ctx, 'rvQueue.items[0].skillProfile.recognition.attempts'), 9);
+  assert.ok(R(ctx, 'rvQueue.items[0].skillProfile.recognition.score') < 0.9, 'sai phải làm điểm giảm');
+  assert.strictEqual(R(ctx, 'rvQueue.items[1].skillProfile.recognition.attempts'), 9, 'thẻ khác của CÙNG từ phải thấy kết quả');
+  assert.strictEqual(R(ctx, 'rvQueue.items[2].skillProfile.recognition.attempts'), 8, 'từ khác không bị ảnh hưởng');
+  assert.strictEqual(R(ctx, 'rvQueue.items[0].skillProfile.recall.attempts'), 8, 'kỹ năng khác không bị ảnh hưởng');
+});
+test('THAY ĐỔI LỰA CHỌN trong phiên: từ "đều tốt" → sai ở nhớ chủ động nhiều lần → câu kế là nghĩa→chữ Hán (không tự gõ)', () => {
+  const ctx = makeEnv(); const w = POOL[0];
+  R(ctx, `rvTypedEnabled = () => false; rvQSession = QS.newSession(); rvQueue.items = [{ type: 'review', word: ${JSON.stringify(w)}, skillProfile: ${JSON.stringify(E_WEAK)} }]; rvLog = [];`);
+  for (let i = 0; i < 5; i++) R(ctx, `{ const it = rvQueue.items[0]; const q = QE.build('vi2hz', it.word, rvQCtx()); rvRecordAnswer(it, q, false, 3000, true); }`);
+  assert.strictEqual(R(ctx, 'rvQueue.items[0].skillProfile.recall.level'), 'weak');
+  R(ctx, 'rvQSession.asked = {}; rvQSession.history = [];'); // tách khỏi chống lặp để chỉ đo tác động của HỒ SƠ
+  const q = R(ctx, 'rvBuildQuestionFor(rvQueue.items[0])');
+  assert.strictEqual(q.typeId, 'vi2hz');
+  assert.ok(q.why && q.why.includes('Nhớ chủ động') && q.why.includes('yếu'), q.why);
+});
+test('từ hay nhầm (server gửi item.confusions) → đáp án đó thật sự xuất hiện trong lựa chọn câu hỏi', () => {
+  let hit = 0;
+  for (let i = 0; i < 20; i++) {
+    const ctx = makeEnv({ WORDS: E_POOL }); const w = POOL[0];
+    R(ctx, `rvTypedEnabled = () => false; rvQSession = QS.newSession(); rvQueue.items = [{ type: 'review', word: ${JSON.stringify(w)}, skillProfile: {}, confusions: [{ text: '认真', n: 3 }] }]; rvLog = [];`);
+    const q = R(ctx, `QE.build('vi2hz', rvQueue.items[0].word, Object.assign(rvQCtx(), { confusions: rvQueue.items[0].confusions }))`);
+    if (q && q.options.some(o => o.key === '认真')) hit++;
+  }
+  assert.strictEqual(hit, 20, 'cặp này hợp lệ nên đáp án hay nhầm phải LUÔN xuất hiện, được ' + hit + '/20 (nếu chỉ tình cờ thì ~1/3)');
+});
+test('rvBuildQuestionFor truyền confusions và số thẻ chính thức còn lại cho bộ chọn', () => {
+  const src = read('js/review.js');
+  assert.ok(/confusions: item\.confusions/.test(src) && /remaining: rvQueue\.items\.filter\(rvIsOfficial\)\.length/.test(src));
+});
+test('lý do chọn dạng bài hiện trên màn hình (1 dòng, đã thoát HTML)', () => {
+  const ctx = makeEnv();
+  const w = POOL[0];
+  const weak = Object.assign({}, E_WEAK, { listening: { status: 'weak', level: 'weak', score: 0.3, attempts: 6, wa: 3.7, wc: 0.7, correct: 1 } });
+  R(ctx, `rvQSession = QS.newSession(); rvQueue.items = [${JSON.stringify({ type: 'review', word: w, skillProfile: weak })}]; rvQueue.totalPlanned = 1; rvStage='run'; rvStartInfo=null; rvLog=[]; rvPrepareCurrentCard();`);
+  const h = R(ctx, 'renderReview()');
+  assert.ok(h.includes('class="rv-why"') && h.includes('💡'), 'thiếu dòng lý do');
+  R(ctx, `rvQuestion.why = '<img src=x onerror=1>'`);
+  assert.ok(!R(ctx, 'renderReview()').includes('<img src=x'), 'lý do phải được thoát HTML');
+});
+test('câu bị ÉP (kiểm tra ngay sau khi xem từ mới) KHÔNG có dòng lý do', () => {
+  const ctx = makeEnv(); const w = POOL[0];
+  R(ctx, `rvQSession = QS.newSession(); rvQueue.items = [${JSON.stringify({ type: 'check', word: w, skillProfile: {} })}]; rvQueue.totalPlanned = 1; rvStage='run'; rvStartInfo=null; rvLog=[]; rvPrepareCurrentCard();`);
+  assert.ok(!R(ctx, 'renderReview()').includes('class="rv-why"'));
+});
+test('tải lại trang: nhịp trả lời (rt) và lịch sử dựng lại từ nhật ký; vị trí đáp án cũ được xoá', () => {
+  const ctx = makeEnv();
+  R(ctx, `rvLog = [
+    { hz: '准备', typeId: 'hz2vi', skill: 'recognition', correct: true, ms: 1000 },
+    { hz: '认真', typeId: 'hz2vi', skill: 'recognition', correct: true, ms: 1200 },
+    { hz: '参加', typeId: 'hz2vi', skill: 'recognition', correct: false, ms: 9000 } ]; rvRestoreQSession();`);
+  assert.deepStrictEqual(JSON.parse(R(ctx, 'JSON.stringify(rvQSession.rt)')), { 'recognition:c': [1000, 1200] }, 'chỉ câu đúng làm chuẩn');
+  assert.strictEqual(R(ctx, 'rvQSession.history.length'), 3);
+  assert.strictEqual(R(ctx, 'rvQSession.recentCorrectPositions.length'), 0);
+  assert.strictEqual(R(ctx, "rvQSession.asked['准备|hz2vi']"), 1);
+});
+test('câu tự gõ cũng cập nhật hồ sơ (cùng đường rvRecordAnswer) và dùng ngưỡng chậm riêng của câu gõ', async () => {
+  const ctx = makeEnv(); const w = POOL[0];
+  R(ctx, `rvQSession = QS.newSession(); rvQueue.items = [{ type: 'extra', word: ${JSON.stringify(w)}, skillProfile: ${JSON.stringify(E_WEAK)} }]; rvLog = [];
+    rvQuestion = QE.build('typeHz2py', rvQueue.items[0].word, rvQCtx()); rvPhase = 'question';`);
+  ctx.__input.value = 'zhǔnbèi';
+  await R(ctx, 'rvSubmitTyped(false)');
+  assert.strictEqual(R(ctx, 'rvQueue.items[0].skillProfile.pinyin.attempts'), 9);
 });
 
 console.log('\n[B] Bảng "Hôm nay học"');
