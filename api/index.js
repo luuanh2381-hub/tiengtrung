@@ -2430,10 +2430,13 @@ async function callWithRetry(doFn) {
   throw lastErr;
 }
 
-function callGemini(prompt) {
-  return callWithRetry(() => doCallGemini(prompt));
+function callGemini(prompt, opts) {
+  return callWithRetry(() => doCallGemini(prompt, opts));
 }
-function doCallGemini(prompt) {
+// opts.maxOutputTokens / opts.timeoutMs: dùng cho các lượt gọi "lô lớn" (vd sinh ví dụ cho ~25 từ/lần)
+// cần câu trả lời dài hơn và nhiều thời gian chờ hơn mặc định (4096 token / 20 giây).
+function doCallGemini(prompt, opts) {
+  const o = opts || {};
   return new Promise((resolve, reject) => {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return reject(new Error('Chưa cấu hình GEMINI_API_KEY trên server'));
@@ -2441,7 +2444,7 @@ function doCallGemini(prompt) {
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 4096,
+        maxOutputTokens: o.maxOutputTokens || 4096,
         thinkingConfig: { thinkingBudget: 0 },
         responseMimeType: 'application/json',
       },
@@ -2480,7 +2483,8 @@ function doCallGemini(prompt) {
       });
     });
     reqq.on('error', (e) => reject(new Error('Không kết nối được tới Gemini API: ' + e.message)));
-    reqq.setTimeout(20000, () => { reqq.destroy(new Error('Gemini API timeout sau 20s')); });
+    const toMs = o.timeoutMs || 20000;
+    reqq.setTimeout(toMs, () => { reqq.destroy(new Error('Gemini API timeout sau ' + Math.round(toMs / 1000) + 's')); });
     reqq.write(payload);
     reqq.end();
   });
@@ -2558,7 +2562,12 @@ function parseAiJson(text) {
 // mỗi câu được kiểm tra chắc chắn có chứa đúng chữ Hán của từ đó (nếu AI trả sai, câu đó bị loại,
 // từ vẫn coi là "chưa xong" và sẽ được thử lại ở lượt chạy sau).
 const TARGET_EXAMPLES_PER_WORD = 3;
-const WORD_BATCH_SIZE = 12;
+// Giới hạn của Google tính theo SỐ LẦN GỌI chứ không theo độ dài, nên mỗi lần gọi nhồi nhiều từ nhất có thể.
+// (trước đây 12 từ/lần). Nếu thấy nhiều lỗi "JSON không hợp lệ/bị cắt" thì giảm số này xuống 15–20.
+const WORD_BATCH_SIZE = 25;
+// Số lượt gọi AI chạy SONG SONG cho phần ví dụ — hàng đợi quota dùng chung (reserveGeminiSlot) vẫn
+// đảm bảo không vượt 5 lần/phút, nên chạy 2 luồng chỉ giúp lấp thời gian chờ phản hồi, không gây lỗi quota.
+const WORD_EXAMPLE_CONCURRENCY = 2;
 // Logic sinh CHIẾT TỰ BỘ THỦ cho từng chữ Hán đơn lẻ (khác word_examples — đây là phân tích cấu tạo
 // mặt chữ, không phải câu ví dụ). Chữ nào không tách được rõ ràng thì AI chỉ ghi 1 ghi chú ngắn.
 const HANZI_BATCH_SIZE = 20;
@@ -2701,41 +2710,50 @@ async function runWordExampleGeneration(timeBudgetMs) {
   let batches = 0, wordsDone = 0, wordsRetried = 0, errors = 0;
   const errorSamples = []; // vài lỗi mẫu (không lặp lại thông điệp) để hiện chi tiết cho admin xem
 
-  for (let i = 0; i < pending.length; i += WORD_BATCH_SIZE) {
-    if (Date.now() - startedAt > TIME_BUDGET_MS) break;
-    const batch = pending.slice(i, i + WORD_BATCH_SIZE);
-    try {
-      const wordList = batch.map(w => `${w.hz} (${w.py}) = ${w.vi}`).join('; ');
-      const prompt = `Bạn là giáo viên tiếng Trung cho người Việt mới học. Với MỖI từ trong danh sách sau, hãy soạn ${TARGET_EXAMPLES_PER_WORD} câu ví dụ tiếng Trung khác nhau, đơn giản, ngắn gọn — mỗi câu BẮT BUỘC phải chứa đúng chữ Hán của từ đó (không được bỏ sót), kèm nghĩa tiếng Việt của câu ví dụ đó.
-Danh sách từ (giữ đúng thứ tự): ${wordList}
-Trả lời CHỈ bằng JSON hợp lệ, đúng định dạng, đúng thứ tự các từ đã cho, không thêm chữ nào khác:
-{"words":[{"hz":"chữ Hán của từ","examples":[{"zh":"câu ví dụ tiếng Trung","vi":"nghĩa câu ví dụ"}]}]}`;
-      const text = await callGemini(prompt);
-      const data = parseAiJson(text);
-      if (!Array.isArray(data.words)) {
-        errors++;
-        addErrorSample(errorSamples, 'Phản hồi AI không đúng định dạng JSON mong đợi (thiếu mảng "words")');
-        continue;
-      }
-      for (const item of data.words) {
-        const w = batch.find(b => b.hz === item.hz);
-        if (!w || !Array.isArray(item.examples)) continue;
-        // Chỉ giữ lại câu THỰC SỰ chứa đúng chữ Hán — đảm bảo tính đúng đắn, không tin mù AI
-        const valid = item.examples.filter(e => e && e.zh && e.vi && e.zh.includes(w.hz)).slice(0, TARGET_EXAMPLES_PER_WORD);
-        if (valid.length > 0) {
-          await insertWordExamples(w.hz, w.l, valid);
-          if (valid.length >= TARGET_EXAMPLES_PER_WORD) wordsDone++; else wordsRetried++;
-        } else {
-          wordsRetried++;
+  // Chia sẵn thành các lô; nhiều "luồng" cùng lấy lô tiếp theo từ danh sách chung (mỗi lô chỉ 1 luồng nhận).
+  const queue = [];
+  for (let i = 0; i < pending.length; i += WORD_BATCH_SIZE) queue.push(pending.slice(i, i + WORD_BATCH_SIZE));
+  let nextIdx = 0;
+
+  async function worker() {
+    while (nextIdx < queue.length) {
+      if (Date.now() - startedAt > TIME_BUDGET_MS) return;
+      const batch = queue[nextIdx++];
+      try {
+        const wordList = batch.map(w => `${w.hz} (${w.py}) = ${w.vi}`).join('; ');
+        const prompt = `Bạn là giáo viên tiếng Trung cho người Việt mới học. Với MỖI từ trong danh sách sau, hãy soạn ${TARGET_EXAMPLES_PER_WORD} câu ví dụ tiếng Trung khác nhau, đơn giản, ngắn gọn — mỗi câu BẮT BUỘC phải chứa đúng chữ Hán của từ đó (không được bỏ sót), kèm nghĩa tiếng Việt của câu ví dụ đó.\nDanh sách từ (giữ đúng thứ tự): ${wordList}\nTrả lời CHỈ bằng JSON hợp lệ, đúng định dạng, đúng thứ tự các từ đã cho, không thêm chữ nào khác:\n{"words":[{"hz":"chữ Hán của từ","examples":[{"zh":"câu ví dụ tiếng Trung","vi":"nghĩa câu ví dụ"}]}]}`;
+        // Lô lớn → cho phép câu trả lời dài (16384 token) và chờ tối đa 90 giây
+        const text = await callGemini(prompt, { maxOutputTokens: 16384, timeoutMs: 90000 });
+        const data = parseAiJson(text);
+        if (!Array.isArray(data.words)) {
+          errors++;
+          addErrorSample(errorSamples, 'Phản hồi AI không đúng định dạng JSON mong đợi (thiếu mảng "words")');
+          continue;
         }
+        for (const item of data.words) {
+          const w = batch.find(b => b.hz === item.hz);
+          if (!w || !Array.isArray(item.examples)) continue;
+          // Chỉ giữ lại câu THỰC SỰ chứa đúng chữ Hán — đảm bảo tính đúng đắn, không tin mù AI
+          const valid = item.examples.filter(e => e && e.zh && e.vi && e.zh.includes(w.hz)).slice(0, TARGET_EXAMPLES_PER_WORD);
+          if (valid.length > 0) {
+            await insertWordExamples(w.hz, w.l, valid);
+            if (valid.length >= TARGET_EXAMPLES_PER_WORD) wordsDone++; else wordsRetried++;
+          } else {
+            wordsRetried++;
+          }
+        }
+        batches++;
+      } catch (e) {
+        errors++;
+        addErrorSample(errorSamples, (e && e.message) || 'Lỗi không rõ');
       }
-      batches++;
-    } catch (e) {
-      errors++;
-      addErrorSample(errorSamples, (e && e.message) || 'Lỗi không rõ');
     }
   }
-  return { batches, wordsDone, wordsRetried, errors, totalPending: pending.length, errorSamples };
+  const workers = [];
+  for (let k = 0; k < WORD_EXAMPLE_CONCURRENCY; k++) workers.push(worker());
+  await Promise.all(workers);
+  // queueExhausted = đã thử hết mọi lô trong lượt này (từ nào AI vẫn trả thiếu sẽ được thử lại ở lượt sau)
+  return { batches, wordsDone, wordsRetried, errors, totalPending: pending.length, errorSamples, queueExhausted: nextIdx >= queue.length };
 }
 
 // ── [AI] Chấm điểm phát âm — người dùng ghi âm đọc 1 từ, AI nghe và đánh giá thanh điệu/phát âm ──
@@ -2895,23 +2913,23 @@ app.get('/api/cron/generate-daily', async (req, res) => {
     }
   }
   const overallStart = Date.now();
-  const TOTAL_BUDGET_MS = 50000;
+  // Ngân sách để BẮT ĐẦU các lô mới. Mỗi lô ví dụ mất ~30–60 giây, hàm Vercel được phép chạy tối đa
+  // 300 giây (vercel.json) nên dừng nhận lô mới sau 150 giây để lô cuối còn kịp xong.
+  const TOTAL_BUDGET_MS = 150000;
   try {
-    // Thứ tự ưu tiên: (1) NGHĨA HÁN VIỆT trước (rẻ, nhanh, nhiều người cần nhất), rồi tới (2) CHIẾT TỰ
-    // BỘ THỦ, cuối cùng mới (3) VÍ DỤ THEO TỪ — mỗi việc chạy cho tới khi xong hẳn (có thể mất nhiều
-    // lượt cron liên tiếp) rồi mới sang việc tiếp theo, không chạy xen kẽ nhiều việc cùng lúc.
-    const hanvietResult = await runHanVietGeneration(TOTAL_BUDGET_MS);
-    const hanvietStillPending = hanvietResult.totalPending - hanvietResult.done;
-    let hanziResult = { batches: 0, done: 0, errors: 0, totalPending: 0, errorSamples: [] };
-    let wordResult = { batches: 0, wordsDone: 0, wordsRetried: 0, errors: 0, totalPending: 0, errorSamples: [] };
+    // Thứ tự ưu tiên MỚI: (1) VÍ DỤ THEO TỪ trước (theo yêu cầu), rồi (2) NGHĨA HÁN VIỆT, cuối cùng
+    // (3) CHIẾT TỰ BỘ THỦ — thời gian còn dư sau mỗi việc mới chuyển sang việc kế tiếp.
+    let wordResult = await runWordExampleGeneration(TOTAL_BUDGET_MS);
     let remaining = TOTAL_BUDGET_MS - (Date.now() - overallStart);
-    if (hanvietStillPending <= 0 && remaining > 5000) {
-      hanziResult = await runHanziPartsGeneration(remaining);
-      const hanziStillPending = hanziResult.totalPending - hanziResult.done;
+    let hanvietResult = { batches: 0, done: 0, errors: 0, totalPending: 0, errorSamples: [] };
+    let hanziResult = { batches: 0, done: 0, errors: 0, totalPending: 0, errorSamples: [] };
+    // Chỉ sang việc kế khi đã thử hết các lô ví dụ (một vài từ cứng đầu không đủ 3 câu không được chặn việc khác)
+    if (wordResult.queueExhausted && remaining > 5000) {
+      hanvietResult = await runHanVietGeneration(remaining);
       remaining = TOTAL_BUDGET_MS - (Date.now() - overallStart);
-      // Chỉ đụng tới ví dụ theo từ khi chiết tự đã KHÔNG CÒN chữ nào cần xử lý
-      if (hanziStillPending <= 0 && remaining > 5000) {
-        wordResult = await runWordExampleGeneration(remaining);
+      const hanvietStillPending = hanvietResult.totalPending - hanvietResult.done;
+      if (hanvietStillPending <= 0 && remaining > 5000) {
+        hanziResult = await runHanziPartsGeneration(remaining);
       }
     }
     const allErrSamples = [...(hanvietResult.errorSamples || []), ...(wordResult.errorSamples || []), ...(hanziResult.errorSamples || [])];
