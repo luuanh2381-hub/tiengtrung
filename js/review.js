@@ -120,7 +120,8 @@ function rvRecordAnswer(item, q, correct, ms, official) {
   // V111: cập nhật hồ sơ kỹ năng NGAY (cùng công thức server) để câu kế tiếp — kể cả khi từ này quay lại hàng đợi — thấy kết quả
   // vừa rồi: sai thì kỹ năng đó yếu đi, đúng thì tiến lên; đúng nhưng chậm thì đánh dấu "chưa chắc". PHẢI gọi trước QS.record
   // (để câu hiện tại chưa tính vào chuẩn nhịp). Chỉ là ước lượng cục bộ cho phiên này; server ghi & tính lại độc lập.
-  if (item) {
+  // V113: câu check/redo (vừa xem đáp án) và lượt đầu sau màn giới thiệu KHÔNG cập nhật hồ sơ cục bộ — server cũng không tính chúng.
+  if (item && !(item.type === 'check' || item.type === 'redo' || item.introduced)) {
     const updated = QS.learn(item.skillProfile, rvQSession, q, correct, ms);
     item.skillProfile = updated;
     for (const other of rvQueue.items) if (other !== item && other.word && other.word.hz === q.hz) other.skillProfile = updated;
@@ -532,6 +533,7 @@ async function rvCommitRating(attemptId, chosenRating) {
     selectedAnswer: pending.selectedAnswer,
     responseTimeMs: pending.responseTimeMs, answerChanges: pending.answerChanges,
     rating: rvFinalRating,
+    exposure: item.introduced ? 'intro' : undefined, // V113: thẻ từ mới vừa qua màn giới thiệu
   }).then(data => {
     if (attemptId !== rvAttemptId || currentTab !== 'review') return;
     if (data && data.ok) {

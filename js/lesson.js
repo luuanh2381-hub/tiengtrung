@@ -172,9 +172,9 @@ function renderTodayPanel(data) {
     if (planned > 0) {
       const pct = Math.round((done / planned) * 100);
       progressHtml = `<div style="margin:2px 0 12px">
-        <div style="display:flex;justify-content:space-between;font-size:.8rem;font-weight:700"><span>Tiến độ hôm nay</span><span>${done}/${planned} thẻ (${pct}%)</span></div>
+        <div style="display:flex;justify-content:space-between;font-size:.8rem;font-weight:700"><span>Tiến độ nhiệm vụ hôm nay</span><span>${done}/${planned} thẻ (${pct}%)</span></div>
         <div style="height:10px;border-radius:5px;background:var(--active);overflow:hidden;margin-top:4px"><div style="height:100%;width:${Math.max(pct, 2)}%;background:var(--l8a,#27ae60)"></div></div>
-        <div style="font-size:.7rem;color:var(--muted);margin-top:3px">${dl.unlimited ? 'Chế độ học không giới hạn mỗi ngày' : `Giới hạn ngày: ôn ${dl.reviewLimit} · từ mới ${dl.newLimit}`}</div></div>`;
+        <div style="font-size:.7rem;color:var(--muted);margin-top:3px">${dl.unlimited ? 'Chế độ học không giới hạn mỗi ngày' : `Giới hạn ngày: ôn ${dl.reviewLimit} · từ mới ${dl.newLimit}`} · <b>Đây là tiến độ làm bài, không phải % từ đã nhớ lâu dài.</b></div></div>`;
     }
   }
 
@@ -187,10 +187,24 @@ function renderTodayPanel(data) {
     b ? cell('weak', `🎯 ${b.weakSkill}`, 'Từ có kỹ năng yếu', b.weakSkill ? 'cần ≥3 lượt/kỹ năng để kết luận' : 'chưa phát hiện (hoặc chưa đủ dữ liệu)') : '',
     b ? cell('lesson', `⏳ ${b.delayed}`, 'Cần kiểm tra lại', `đã học, chưa đến hạn, ≥${b.delayedAfterDays} ngày chưa gặp`) : '',
     pr ? cell('lesson', `✅ ${pr.officialAnswers + pr.practiceAnswers}`, 'Lượt câu hỏi hôm nay', `${pr.officialAnswers} ôn chính thức · ${pr.practiceAnswers} luyện thêm`) : '',
+    // V113: tỉ lệ đúng CÓ mẫu số (chỉ lượt tính năng lực; không tính câu vừa xem đáp án) + từ đủ bằng chứng ổn định.
+    pr && pr.measuredAnswers != null ? cell('lesson', pr.measuredAnswers >= 5 ? `🎯 ${Math.round(pr.measuredCorrect / pr.measuredAnswers * 100)}%` : '🎯 —', 'Tỉ lệ trả lời đúng', pr.measuredAnswers >= 5 ? `${pr.measuredCorrect}/${pr.measuredAnswers} lượt (không tính câu vừa xem đáp án)` : `mới ${pr.measuredAnswers} lượt — chưa đủ để nêu %`) : '',
+    b && b.stableWords != null ? cell('lesson', `🧭 ${b.stableWords}`, 'Từ đủ bằng chứng tương đối ổn định', 'cần ≥2 kỹ năng, ≥6 lượt, ≥3 ngày — không phải “đã thuộc”') : '',
     // V112: thời gian học THỰC (chỉ cộng khi tab hiển thị + đang ở màn học + có tương tác) — không còn tính lúc chuyển tab/ẩn app.
     pr ? cell('lesson', `⏱ ${tdFmtDuration(pr.durationSeconds)}`, 'Thời gian học thực', 'không tính lúc chuyển tab / không thao tác') : '',
   ].join('');
 
+  // V113: MỤC TIÊU ƯU TIÊN CHÍNH của phiên — chọn theo thứ tự cố định, KHÔNG bỏ qua thẻ đến hạn: ôn đến hạn → củng cố → kỹ năng yếu → kiểm tra sau nghỉ.
+  let goalHtml = '';
+  {
+    let goal = null;
+    if ((data.dueCount || 0) > 0) goal = `Ưu tiên ôn ${data.dueCount} thẻ đến hạn theo lịch FSRS.`;
+    else if (b && b.reinforce > 0) goal = `Ưu tiên củng cố ${b.reinforce} từ đang học / học lại.`;
+    else if ((data.newInCurrentLesson || 0) > 0) goal = `Học ${data.newInCurrentLesson} từ mới của Bài ${data.currentLesson}.`;
+    else if (b && b.weakSkill > 0) goal = `Luyện thêm kỹ năng yếu của ${b.weakSkill} từ (luyện bổ sung, không đổi lịch FSRS).`;
+    else if (b && b.delayed > 0) goal = `Kiểm tra lại sau khoảng nghỉ cho ${b.delayed} từ.`;
+    if (goal) goalHtml = `<div style="font-size:.85rem;font-weight:800;margin:0 0 10px;padding:8px 10px;border-radius:10px;background:var(--active)">🎯 Mục tiêu chính: ${goal}</div>`;
+  }
   let unique = '';
   if (b) {
     const total = b.uniqueWords + (data.newInCurrentLesson || 0);
@@ -222,6 +236,7 @@ function renderTodayPanel(data) {
   </details>`;
 
   return `
+    ${goalHtml}
     ${progressHtml}
     <div class="study-grid">${grid}</div>
     ${unique}

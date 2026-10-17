@@ -79,7 +79,7 @@ function saRenderRecs() {
   if (!r) inner = saState.error ? `<div class="sa-note">⚠️ Không tải được khuyến nghị: ${escapeHtml(saState.error)} <button class="btn btn-sm" onclick="saLoadExtras()">Thử lại</button></div>` : `<div class="sa-note">⏳ Đang phân tích...</div>`;
   else if (r.status === 'insufficient') inner = `<div class="sa-note">${(r.notes || []).map(escapeHtml).join('<br>')}</div>`;
   else {
-    const items = (r.items || []).map(it => `<div class="sa-rec"><div class="sa-rec-t">${escapeHtml(it.title)}</div><div class="sa-rec-w">${escapeHtml(it.why)}</div>${saActionButton(it.action)}</div>`).join('');
+    const items = (r.items || []).map(it => `<div class="sa-rec"><div class="sa-rec-t">${escapeHtml(it.title)}</div><div class="sa-rec-w">${escapeHtml(it.why)}</div>${it.stopWhen ? `<div class="sa-note" style="margin:4px 0 0">⏹ ${escapeHtml(it.stopWhen)}</div>` : ''}${saActionButton(it.action)}</div>`).join('');
     const notes = (r.notes || []).map(n => `<div class="sa-note">ℹ️ ${escapeHtml(n)}</div>`).join('');
     inner = (items || `<div class="sa-note">Chưa có việc nào cần luyện thêm theo dữ liệu hiện có.</div>`) + notes;
   }
@@ -90,7 +90,7 @@ function saRenderRecs() {
 // ── Trí nhớ theo khoảng nghỉ ────────────────────────────────────────────────────────────────────
 function saRenderRetention() {
   const r = saState.retention; if (!r) return '';
-  const order = ['immediate', 'day', 'week', 'month'];
+  const order = ['immediate', 'short', 'd1', 'd3', 'd7'];
   const rows = order.map(id => {
     const b = r.buckets[id]; if (!b) return '';
     const a = b.all;
@@ -104,7 +104,7 @@ function saRenderRetention() {
   const total = order.reduce((n, id) => n + (r.buckets[id] ? r.buckets[id].all.n : 0), 0);
   return `<div class="panel"><div class="panel-title">⏳ Nhớ sau khoảng nghỉ</div>
     ${total ? rows : `<div class="sa-note">Chưa có dữ liệu. Học vài phiên (và quay lại sau vài ngày) để hệ thống so sánh được trí nhớ ngay sau học với sau khoảng nghỉ.</div>`}
-    <div class="sa-note">Mỗi thanh = tỉ lệ nhớ đúng trong <b>các lượt đã được kiểm tra</b> ở khoảng cách đó (${r.windowDays} ngày gần nhất); chỉ hiện % khi có ≥ ${SA_MIN_N} lượt. Từ chưa được kiểm tra lại <b>không</b> bị tính là quên. Khoảng cách tính từ lần gặp từ trước đó; lượt vừa xem đáp án được xếp vào “ngay sau khi học”.</div></div>`;
+    <div class="sa-note">Mỗi thanh = tỉ lệ nhớ đúng trong <b>các lượt đã được kiểm tra</b> ở khoảng cách đó (${r.windowDays} ngày gần nhất); chỉ hiện % khi có ≥ ${SA_MIN_N} lượt. Từ chưa được kiểm tra lại <b>không</b> bị tính là quên. Khoảng cách tính từ lần gặp từ trước đó; lượt vừa xem đáp án (kể cả câu đầu sau màn giới thiệu từ mới) được xếp vào “ngay sau khi học”. <b>Giới hạn:</b> các thanh gộp nhiều kỹ năng và dạng câu hỏi có độ khó khác nhau, nên chỉ so sánh để tham khảo — không phải tốc độ quên đo chính xác.</div></div>`;
 }
 
 // ── Kết quả theo dạng bài ───────────────────────────────────────────────────────────────────────
@@ -176,13 +176,15 @@ function saRenderWordDetail() {
     const detail = s.level === 'insufficient'
       ? `<span class="sk-nodata">${s.attempts} lượt (cần ≥ 3)</span>`
       : `<span style="font-size:.75rem">${saPct(s.score)} · ${s.correct}/${s.attempts} đúng</span>`;
+    const EV = { none: 'Chưa có dữ liệu', few: 'Dữ liệu còn ít', developing: 'Đang phát triển', stable: 'Tương đối ổn định', retested: 'Đã kiểm tra lại sau khoảng nghỉ' };
+    const evTxt = s.stage && s.stage !== 'none' ? `<div class="sa-note" style="margin:2px 0 0">Bằng chứng: <b>${EV[s.stage] || ''}</b> · ${s.attempts} lượt${s.activeDays ? ' · ' + s.activeDays + ' ngày' : ''}${s.delayedN ? ` · sau khoảng nghỉ ≥24h: đúng ${s.delayedOk}/${s.delayedN}` : ''}</div>` : '';
     const last = s.lastAttemptAt ? `<div class="sa-note" style="margin:0">gần nhất: ${escapeHtml(new Date(s.lastAttemptAt).toLocaleDateString('vi-VN'))}</div>` : '';
-    return `<div class="sa-brow" style="align-items:flex-start"><span class="sa-blbl">${escapeHtml(SK_LABEL[k])}</span><div style="flex:1"><span class="sa-lv ${lv.cls}">${lv.text}</span> ${detail}${last}</div></div>`;
+    return `<div class="sa-brow" style="align-items:flex-start"><span class="sa-blbl">${escapeHtml(SK_LABEL[k])}</span><div style="flex:1"><span class="sa-lv ${lv.cls}">${lv.text}</span> ${detail}${evTxt}${last}</div></div>`;
   }).join('');
 
   const rec = d.recommendation || { items: [] };
   const recHtml = rec.items && rec.items.length
-    ? rec.items.map(it => `<div class="sa-rec"><div class="sa-rec-t">${escapeHtml(it.title)}</div><div class="sa-rec-w">${escapeHtml(it.why)}</div>${it.action && it.action.kind === 'practice' ? `<button class="btn btn-sm" style="margin-top:6px" ${it.action.skill === 'listening' && !skAudioOk() ? 'disabled' : `onclick="skStartPracticeForWord('${escapeJsAttr(w.hz)}','${escapeJsAttr(it.action.skill)}')"`}>Luyện từ này · ${escapeHtml(it.action.hint || '')}</button>` : ''}</div>`).join('')
+    ? rec.items.map(it => `<div class="sa-rec"><div class="sa-rec-t">${escapeHtml(it.title)}</div><div class="sa-rec-w">${escapeHtml(it.why)}</div>${it.stopWhen ? `<div class="sa-note" style="margin:4px 0 0">⏹ ${escapeHtml(it.stopWhen)}</div>` : ''}${it.action && it.action.kind === 'practice' ? `<button class="btn btn-sm" style="margin-top:6px" ${it.action.skill === 'listening' && !skAudioOk() ? 'disabled' : `onclick="skStartPracticeForWord('${escapeJsAttr(w.hz)}','${escapeJsAttr(it.action.skill)}')"`}>Luyện từ này · ${escapeHtml(it.action.hint || '')}</button>` : ''}</div>`).join('')
     : `<div class="sa-note">${escapeHtml(rec.note || 'Chưa có khuyến nghị.')}</div>`;
 
   const weakTypes = (d.weakTypes || []).length
@@ -195,7 +197,7 @@ function saRenderWordDetail() {
   return saStyle() + back + head
     + `<div class="panel"><div class="panel-title">📅 Trạng thái FSRS</div>${fsrs}</div>`
     + `<div class="panel"><div class="panel-title">🎯 Kỹ năng của từ này</div>${skillRows}${weakTypes}
-        <div class="sa-note">Mỗi kỹ năng đánh giá riêng; cần ≥ 3 lượt hợp lệ mới kết luận. Không có điểm tổng hợp.</div></div>`
+        <div class="sa-note">Mỗi kỹ năng đánh giá riêng; cần ≥ 3 lượt hợp lệ mới kết luận, “tốt” cần ≥ 5 lượt. Lượt vừa xem đáp án (kiểm tra ngay sau học, luyện lại câu sai) không được tính vào điểm. Không có điểm tổng hợp.</div></div>`
     + `<div class="panel"><div class="panel-title">💡 Nên luyện gì?</div>${recHtml}</div>`
     + `<div class="panel"><div class="panel-title">🕘 Lịch sử gần đây</div>${hist || '<div class="sa-note">Chưa có lượt nào ghi nhận kỹ năng cho từ này.</div>'}
         <div class="sa-note">Chỉ liệt kê các lượt từ khi hệ thống ghi nhận kỹ năng; tối đa 15 lượt gần nhất.</div></div>`;

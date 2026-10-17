@@ -14,6 +14,14 @@ const SS = (function () {
   const MIN_ATTEMPTS = 3;      // dưới ngưỡng → "chưa đủ dữ liệu", KHÔNG hiện điểm
   const WEAK_THRESHOLD = 0.6;  // đủ dữ liệu và điểm < ngưỡng → "yếu"
   const GOOD_THRESHOLD = 0.75; // ≥ ngưỡng → "tốt"; giữa 2 ngưỡng → "đang phát triển"
+  // V113: với Laplace + decay 0.85, CHỈ 3 lượt đúng đã cho điểm 0.78 (≥ GOOD) — quá ít để gọi là "tốt". Nay "tốt" cần thêm
+  // đủ số lượt; chưa đủ thì tối đa "đang phát triển". Ngưỡng "yếu" giữ nguyên: 3 lượt sai liên tiếp (điểm 0.22) là tín hiệu đủ rõ.
+  const GOOD_MIN_ATTEMPTS = 5;
+  // Nhãn BẰNG CHỨNG (độ đầy đủ của dữ liệu — KHÔNG phải xác suất nhớ): quy tắc cố định, xem evidenceOf().
+  const STABLE_MIN_ATTEMPTS = 6;   // 'tương đối ổn định': ≥ 6 lượt hợp lệ …
+  const STABLE_MIN_DAYS = 3;       // … rải trên ≥ 3 ngày khác nhau …
+  const RETESTED_MIN = 2;          // 'đã kiểm tra lại sau khoảng nghỉ': ≥ 2 lượt cách lần trước ≥ DELAYED_GAP_HOURS
+  const DELAYED_GAP_HOURS = 24;    // khoảng nghỉ tối thiểu (tính trên cùng từ + cùng kỹ năng, chỉ lượt hợp lệ)
 
   function estimateScore(wAttempts, wCorrect) {
     const a = Number(wAttempts) || 0;
@@ -33,9 +41,32 @@ const SS = (function () {
       return { status: 'insufficient', level: 'insufficient', score: null, confidence: confidenceOf(attempts), attempts };
     }
     const score = estimateScore(row.w_attempts, row.w_correct);
-    const level = score < WEAK_THRESHOLD ? 'weak' : (score < GOOD_THRESHOLD ? 'developing' : 'good');
+    let level = score < WEAK_THRESHOLD ? 'weak' : (score < GOOD_THRESHOLD ? 'developing' : 'good');
+    if (level === 'good' && attempts < GOOD_MIN_ATTEMPTS) level = 'developing'; // chưa đủ lượt để gọi là tốt
     return { status: score < WEAK_THRESHOLD ? 'weak' : 'ok', level, score, confidence: confidenceOf(attempts), attempts };
   }
+  // ── V113: BẰNG CHỨNG của một (từ, kỹ năng). Trả { stage, activeDays, delayedN, delayedOk }.
+  //   none       : 0 lượt hợp lệ.                                            → "Chưa có dữ liệu"
+  //   few        : 1–2 lượt.                                                 → "Dữ liệu còn ít"
+  //   developing : ≥ 3 lượt nhưng chưa đạt tiêu chí dưới.                    → "Đang phát triển"
+  //   stable     : ≥ 6 lượt, ≥ 3 ngày khác nhau, điểm ≥ GOOD.                → "Tương đối ổn định"
+  //   retested   : ≥ 2 lượt sau khoảng nghỉ ≥ 24 giờ (và ≥ 3 lượt tổng).     → "Đã kiểm tra lại sau khoảng nghỉ"
+  // Hàng cũ chưa có số ngày (active_days = 0 dù attempts > 0) KHÔNG thể là 'stable' (không biết rải mấy ngày → không đoán).
+  // Nhãn CHỈ nói dữ liệu đủ đến đâu; kết quả cao/thấp nằm ở `level`. retested + level weak = "đã kiểm tra lại nhưng vẫn yếu".
+  function evidenceOf(row) {
+    const attempts = row ? Number(row.attempts) || 0 : 0;
+    const activeDays = row ? Number(row.active_days != null ? row.active_days : row.ad) || 0 : 0;
+    const delayedN = row ? Number(row.delayed_attempts != null ? row.delayed_attempts : row.dn) || 0 : 0;
+    const delayedOk = row ? Number(row.delayed_correct != null ? row.delayed_correct : row.dc) || 0 : 0;
+    let stage;
+    if (attempts <= 0) stage = 'none';
+    else if (attempts < MIN_ATTEMPTS) stage = 'few';
+    else if (delayedN >= RETESTED_MIN) stage = 'retested';
+    else if (attempts >= STABLE_MIN_ATTEMPTS && activeDays >= STABLE_MIN_DAYS && estimateScore(row.w_attempts, row.w_correct) >= GOOD_THRESHOLD) stage = 'stable';
+    else stage = 'developing';
+    return { stage, activeDays, delayedN, delayedOk };
+  }
+
   // Bản JS của đúng phép cập nhật mà SQL UPSERT (skill-store.upsertSkillStatTx) thực hiện.
   function applyAttempt(prev, isCorrect) {
     const p = prev || { attempts: 0, correct: 0, w_attempts: 0, w_correct: 0 };
@@ -53,10 +84,12 @@ const SS = (function () {
   const r4 = (x) => Math.round((Number(x) || 0) * 1e4) / 1e4;
   function toProfileEntry(row) {
     const c = classify(row);
+    const ev = evidenceOf(row);
     return Object.assign({}, c, {
       correct: row ? Number(row.correct) || 0 : 0,
       wa: row ? r4(row.w_attempts) : 0,
       wc: row ? r4(row.w_correct) : 0,
+      stage: ev.stage, ad: ev.activeDays, dn: ev.delayedN, dc: ev.delayedOk,
     });
   }
   // Cập nhật 1 mục hồ sơ (trình duyệt) sau 1 câu: trả mục MỚI (không sửa mục cũ). entry có thể undefined (chưa có dữ liệu).
@@ -75,12 +108,19 @@ const SS = (function () {
       base = { attempts: n, correct: 0, w_attempts: wa, w_correct: Math.max(0, Math.min(wa, e.score * (wa + 2) - 1)) };
     }
     const next = applyAttempt(base, !!isCorrect);
+    // V113: số ngày / lượt sau nghỉ — ước lượng cục bộ theo daysSince của mục cũ (server tính lại chính xác bằng SQL).
+    const ok = isCorrect ? 1 : 0, gapDays = Number.isFinite(e.daysSince) ? e.daysSince : null;
+    const ad0 = Number(e.ad) || 0, dn0 = Number(e.dn) || 0, dc0 = Number(e.dc) || 0;
+    const newDay = gapDays == null || gapDays >= 1, delayed = gapDays != null && gapDays * 24 >= DELAYED_GAP_HOURS;
+    next.active_days = ad0 + (newDay ? 1 : 0);
+    next.delayed_attempts = dn0 + (delayed ? 1 : 0);
+    next.delayed_correct = dc0 + (delayed ? ok : 0);
     const out = toProfileEntry(next);
     out.daysSince = 0; // vừa kiểm tra xong
     return out;
   }
 
-  return { DECAY, MIN_ATTEMPTS, WEAK_THRESHOLD, GOOD_THRESHOLD, estimateScore, confidenceOf, classify, applyAttempt, toProfileEntry, advanceProfileEntry };
+  return { DECAY, MIN_ATTEMPTS, WEAK_THRESHOLD, GOOD_THRESHOLD, GOOD_MIN_ATTEMPTS, STABLE_MIN_ATTEMPTS, STABLE_MIN_DAYS, RETESTED_MIN, DELAYED_GAP_HOURS, estimateScore, confidenceOf, classify, evidenceOf, applyAttempt, toProfileEntry, advanceProfileEntry };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = SS;

@@ -205,7 +205,7 @@ function submitFsrsReview(args) {
 // 'again'|'hard'|'good'|'easy' do NGƯỜI DÙNG bấm tay hoặc do countdown ở FE tự chọn khi hết giờ —
 // xem js/review.js:rvCommitRating(). Các tab khác (Flashcard/Trắc nghiệm/Gõ chữ/Nghe-chọn) không
 // truyền field này, server tự rơi về đúng hành vi V67 cũ (100% tự động, không override).
-async function _submitFsrsReviewImpl({ word, quizType, selectedAnswer, responseTimeMs, answerChanges, rating, exerciseType, sessionId }) {
+async function _submitFsrsReviewImpl({ word, quizType, selectedAnswer, responseTimeMs, answerChanges, rating, exerciseType, sessionId, exposure }) {
   // FIX (Vấn đề 1 — đúng thứ tự lên Neon): nếu outbox đang kẹt sẵn các lượt CŨ hơn (chưa gửi được
   // do mất mạng/lỗi tạm thời trước đó), tranh thủ thử gửi NỀN (không await, không chặn lượt hiện
   // tại) TRƯỚC KHI thêm lượt mới vào outbox — giảm tối đa khoảng thời gian các lượt cũ hơn bị "đứng
@@ -223,6 +223,7 @@ async function _submitFsrsReviewImpl({ word, quizType, selectedAnswer, responseT
   if (typeof rating === 'string' && rating) payload.rating = rating;
   if (typeof exerciseType === 'string' && exerciseType) payload.exerciseType = exerciseType; // V104: nhãn kỹ năng (server tự kiểm tra khớp quizType)
   if (typeof sessionId === 'string' && sessionId) payload.sessionId = sessionId; // V110: id phiên học (phân tích trí nhớ dài hạn)
+  if (exposure === 'intro') payload.exposure = 'intro'; // V113: vừa xem đáp án ở màn giới thiệu → server không cộng vào điểm kỹ năng
   addToOutbox(payload);
   let res, data;
   try {
