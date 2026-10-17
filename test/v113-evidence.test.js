@@ -109,13 +109,15 @@ test('chỉ review_history của lượt ĐẦU sau giới thiệu mang exposure
 });
 test('client: lượt official sau intro gửi exposure=intro; check/redo/intro không gọi QS.learn', () => {
   const rv = read('js/review.js'), sq = read('js/study-queue.js');
-  assert.ok(rv.includes("exposure: item.introduced ? 'intro' : undefined"));
-  assert.ok(/item\.type === 'check' \|\| item\.type === 'redo' \|\| item\.introduced/.test(rv));
+  // V114: cờ gửi exposure tách khỏi `introduced` (xem test/v114-fixes.test.js); kỳ vọng V113 cũ gắn theo `introduced` là SAI hành vi nên được cập nhật.
+  assert.ok(rv.includes("exposure: rvIsIntroExposure(item) ? 'intro' : undefined"));
+  assert.ok(/item\.type === 'check' \|\| item\.type === 'redo' \|\| rvIsIntroExposure\(item\)/.test(rv));
   assert.ok(sq.includes("payload.exposure = 'intro'") && sq.includes('sessionId, exposure }'));
 });
 test('trend + theo dạng bài loại lượt vừa xem đáp án; retention xếp chúng vào "ngay sau học"', () => {
   const src = read('lib/skill-store.js');
-  assert.ok((src.match(/COALESCE\(source, 'practice'\) <> ALL\(\$3::text\[\]\)/g) || []).length >= 4, 'trend + byType + 2 truy vấn today');
+  // V114: 2 truy vấn "today" (measured, measured_correct) được gộp thành MỘT tập `valid` dùng chung → còn 3 lần xuất hiện (trend + byType + valid).
+  assert.ok((src.match(/COALESCE\(source, 'practice'\) <> ALL\(\$3::text\[\]\)/g) || []).length >= 3, 'trend + byType + tập valid của today');
   assert.ok(src.includes("(exposure = 'intro') IS TRUE AS shown"));
   assert.ok(src.includes("exposure IS DISTINCT FROM 'intro'"));
 });
@@ -219,7 +221,7 @@ test('UI phân tích: hiện "Dừng khi", nhãn bằng chứng, giới hạn c�
   assert.ok(ui.includes('it.stopWhen') && ui.includes('Tương đối ổn định') && ui.includes('Đã kiểm tra lại sau khoảng nghỉ') && ui.includes('Giới hạn:'));
   assert.ok(!/ghi nhớ chắc chắn/.test(ui + read('js/lesson.js') + read('js/review.js')));
 });
-test('migrate script tồn tại, có DRY_RUN và ROLLBACK khi lỗi', () => {
+test('migrate script tồn tại, có DRY_RUN và ROLLBACK khi lỗi (V114: kiểm hành vi thật ở v114-fixes)', () => {
   const m = read('scripts/migrate-skill-evidence.js');
   assert.ok(m.includes('DRY_RUN') && m.includes("ROLLBACK") && m.includes('V113_skill_evidence.sql'));
 });

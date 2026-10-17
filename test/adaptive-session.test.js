@@ -63,7 +63,7 @@ function makeEnv(opts) {
   vm.runInContext(read('js/question-engine.js'), ctx);
   vm.runInContext(read('js/question-selector.js'), ctx);
   const consts = ['RV_NEW_GAP', 'RV_DRILL_GAP', 'RV_DRILL_MAX_TRIES', 'RV_EXTRA_MAX', 'RV_PRACTICE_TYPES'].map(constLine).join('\n');
-  const fns = ['rvIsPractice', 'rvIsOfficial', 'rvQCtx', 'rvSkillTypes', 'rvTypedEnabled', 'rvPracticeSource', // V110: rvBuildQuestionFor/rvPickPractice gọi 2 hàm này
+  const fns = ['rvIsPractice', 'rvIsOfficial', 'rvIsIntroExposure', 'rvQCtx', 'rvSkillTypes', 'rvTypedEnabled', 'rvPracticeSource', // V110: rvBuildQuestionFor/rvPickPractice gọi 2 hàm này
      'rvBuildQuestionFor', 'rvStageLabel', 'rvRecordAnswer', 'rvRestoreQSession',
     'rvPrepareCurrentCard', 'rvIntroDone', 'rvAdvanceQueue', 'rvFetchWeakWords', 'rvWordOf', 'rvAddExtras', 'rvInsertMatch', 'rvBuildStartInfo',
     'rvSummaryHtml', 'rvBeginPracticeOnly', 'rvStartRedoWrong', 'rvStartWeakPractice', 'rvPickPractice', 'rvMatchPick', 'rvMatchFinish', 'rvMatchContinue', 'rvPracticeContinue'].map(grab).join('\n');
