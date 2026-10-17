@@ -36,9 +36,11 @@
     "test:answer-match": "node test/answer-match.test.js",
     "test:retention": "node test/retention-recommend.test.js",
     "test:v110-ui": "node test/v110-ui.smoke.test.js",
-    "test:v110": "npm run test:answer-match && npm run test:retention && npm run test:v110-ui && npm run test:adaptive-v111 && npm run test:study-time",
+    "test:v110": "npm run test:answer-match && npm run test:retention && npm run test:v110-ui && npm run test:adaptive-v111 && npm run test:study-time && npm run test:v113",
     "test:adaptive-v111": "node test/adaptive-v111.test.js",
-    "test:study-time": "node test/study-time.test.js"
+    "test:study-time": "node test/study-time.test.js",
+    "test:v113": "node test/v113-evidence.test.js",
+    "migrate:skill-evidence": "node scripts/migrate-skill-evidence.js"
   },
   "dependencies": {
     "express": "^4.19.2",
