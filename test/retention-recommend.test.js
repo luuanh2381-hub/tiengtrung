@@ -20,12 +20,15 @@ const T = true, F = false;
 
 console.log('\n[1] Nhóm khoảng cách (retentionBucketOf)');
 test('đúng ranh giới các nhóm', () => {
-  assert.strictEqual(S.retentionBucketOf(0.5, false), 'immediate');
-  assert.strictEqual(S.retentionBucketOf(1, false), 'day');
-  assert.strictEqual(S.retentionBucketOf(71.9, false), 'day');
-  assert.strictEqual(S.retentionBucketOf(72, false), 'week');
-  assert.strictEqual(S.retentionBucketOf(24 * 14 - 0.1, false), 'week');
-  assert.strictEqual(S.retentionBucketOf(24 * 14, false), 'month');
+  // V113: 5 nhóm theo yêu cầu: <10 phút | 10 phút–<24 giờ | 1–<3 ngày | 3–<7 ngày | ≥7 ngày
+  assert.strictEqual(S.retentionBucketOf(9 / 60, false), 'immediate');
+  assert.strictEqual(S.retentionBucketOf(10 / 60, false), 'short');
+  assert.strictEqual(S.retentionBucketOf(23.9, false), 'short');
+  assert.strictEqual(S.retentionBucketOf(24, false), 'd1');
+  assert.strictEqual(S.retentionBucketOf(71.9, false), 'd1');
+  assert.strictEqual(S.retentionBucketOf(72, false), 'd3');
+  assert.strictEqual(S.retentionBucketOf(24 * 7 - 0.1, false), 'd3');
+  assert.strictEqual(S.retentionBucketOf(24 * 7, false), 'd7');
 });
 test('vừa xem đáp án (check/redo) → luôn "ngay sau học" dù khoảng cách bao lâu', () => {
   assert.strictEqual(S.retentionBucketOf(1000, true), 'immediate');
@@ -42,25 +45,25 @@ test('nguồn "check"/"redo" là nguồn đã thấy đáp án; "extra"/"mode" t
 console.log('\n[2] Tổng hợp trí nhớ dài hạn (summarizeRetention)');
 test('chưa có dữ liệu → mọi tỉ lệ null, không bịa', () => {
   const r = S.summarizeRetention([]);
-  for (const id of ['immediate', 'day', 'week', 'month']) assert.strictEqual(r[id].all.rate, null);
+  for (const id of ['immediate', 'short', 'd1', 'd3', 'd7']) assert.strictEqual(r[id].all.rate, null);
 });
 test('dưới ngưỡng mẫu (MIN_RETENTION_N) → rate null nhưng vẫn báo n', () => {
-  const r = S.summarizeRetention([{ bucket: 'week', kind: 'fsrs', n: S.MIN_RETENTION_N - 1, correct: 5 }]);
-  assert.strictEqual(r.week.all.n, S.MIN_RETENTION_N - 1);
-  assert.strictEqual(r.week.all.rate, null);
+  const r = S.summarizeRetention([{ bucket: 'd3', kind: 'fsrs', n: S.MIN_RETENTION_N - 1, correct: 5 }]);
+  assert.strictEqual(r.d3.all.n, S.MIN_RETENTION_N - 1);
+  assert.strictEqual(r.d3.all.rate, null);
 });
 test('đủ mẫu → rate = correct/n của CHÍNH nhóm đó; tách riêng FSRS và luyện bổ sung', () => {
   const r = S.summarizeRetention([
-    { bucket: 'week', kind: 'fsrs', n: 10, correct: 8 },
-    { bucket: 'week', kind: 'practice', n: 10, correct: 4 },
+    { bucket: 'd3', kind: 'fsrs', n: 10, correct: 8 },
+    { bucket: 'd3', kind: 'practice', n: 10, correct: 4 },
   ]);
-  assert.strictEqual(r.week.fsrs.rate, 0.8);
-  assert.strictEqual(r.week.practice.rate, 0.4);
-  assert.strictEqual(r.week.all.n, 20); assert.strictEqual(r.week.all.correct, 12); assert.strictEqual(r.week.all.rate, 0.6);
+  assert.strictEqual(r.d3.fsrs.rate, 0.8);
+  assert.strictEqual(r.d3.practice.rate, 0.4);
+  assert.strictEqual(r.d3.all.n, 20); assert.strictEqual(r.d3.all.correct, 12); assert.strictEqual(r.d3.all.rate, 0.6);
 });
 test('nhóm lạ / kind lạ bị bỏ qua (không làm bẩn số liệu)', () => {
-  const r = S.summarizeRetention([{ bucket: 'zzz', kind: 'fsrs', n: 99, correct: 99 }, { bucket: 'day', kind: 'other', n: 99, correct: 99 }]);
-  assert.strictEqual(r.day.all.n, 0);
+  const r = S.summarizeRetention([{ bucket: 'zzz', kind: 'fsrs', n: 99, correct: 99 }, { bucket: 'd1', kind: 'other', n: 99, correct: 99 }]);
+  assert.strictEqual(r.d1.all.n, 0);
 });
 
 console.log('\n[3] Chấm đáp án qua gradeAnswer / EXERCISES');
@@ -157,23 +160,46 @@ test('kỹ năng có ≥ 3 từ yếu → khuyến nghị; 1–2 từ yếu → 
   assert.ok(!b.items.some(i => i.id === 'weak-listening'));
 });
 test('thiếu dữ liệu kiểm tra muộn → ghi chú, KHÔNG kết luận trí nhớ dài hạn', () => {
-  const r = R.recommendGlobal({ overview: ov(mkSk({})), retention: S.summarizeRetention([{ bucket: 'week', kind: 'fsrs', n: 3, correct: 3 }]) });
+  const r = R.recommendGlobal({ overview: ov(mkSk({})), retention: S.summarizeRetention([{ bucket: 'd3', kind: 'fsrs', n: 3, correct: 3 }]) });
   assert.ok(r.notes.some(n => /Chưa đủ dữ liệu kiểm tra/.test(n)));
   assert.ok(!r.items.some(i => i.id === 'late-drop'));
 });
 test('kiểm tra muộn kém hơn ngay-sau-học ≥ 20 điểm (cả 2 nhóm đủ mẫu) → tăng ưu tiên kiểm tra lại', () => {
   const ret = S.summarizeRetention([
     { bucket: 'immediate', kind: 'practice', n: 20, correct: 19 },
-    { bucket: 'week', kind: 'fsrs', n: 20, correct: 10 },
+    { bucket: 'd3', kind: 'fsrs', n: 20, correct: 10 },
   ]);
   const r = R.recommendGlobal({ overview: ov(mkSk({})), retention: ret });
   const it = r.items.find(i => i.id === 'late-drop');
   assert.ok(it && it.action.kind === 'delayed' && /95%/.test(it.why) && /50%/.test(it.why));
 });
 test('kiểm tra muộn tốt, không kỹ năng yếu → báo ổn định (giảm luyện không cần thiết)', () => {
-  const ret = S.summarizeRetention([{ bucket: 'immediate', kind: 'practice', n: 20, correct: 18 }, { bucket: 'month', kind: 'fsrs', n: 20, correct: 18 }]);
-  const r = R.recommendGlobal({ overview: ov(mkSk({})), retention: ret });
+  const ret = S.summarizeRetention([{ bucket: 'immediate', kind: 'practice', n: 20, correct: 18 }, { bucket: 'd7', kind: 'fsrs', n: 20, correct: 18 }]);
+  const full = {}; for (const k of S.MEASURABLE_SKILLS) full[k] = { enough: 12, weak: 0 };
+  const r = R.recommendGlobal({ overview: ov(mkSk(full)), retention: ret });
   assert.strictEqual(r.items[0].id, 'stable-overall');
+});
+
+console.log('\n[V113] Khuyến nghị: chẩn đoán, điều kiện dừng, mục tiêu chính');
+test('kỹ năng thiếu dữ liệu → đề xuất CHẨN ĐOÁN, không gọi là yếu', () => {
+  const r = R.recommendGlobal({ overview: ov(mkSk({ recognition: { enough: 20 }, recall: { enough: 20 }, listening: { enough: 1 }, pinyin: { enough: 20 }, context: { enough: 20 } })), retention: S.summarizeRetention([]) });
+  const d = r.items.find(i => i.id === 'diagnose-listening');
+  assert.ok(d && /chẩn đoán/.test(d.title) && /không có nghĩa là yếu/.test(d.why));
+  assert.ok(!r.items.some(i => i.id === 'weak-listening'));
+  assert.strictEqual(r.items.filter(i => i.id.startsWith('diagnose-')).length, 1, 'tối đa 1 gợi ý chẩn đoán (chống quá tải)');
+});
+test('khuyến nghị yếu có việc nổi bật → KHÔNG chen thêm gợi ý chẩn đoán', () => {
+  const r = R.recommendGlobal({ overview: ov(mkSk({ recall: { enough: 10, weak: 5 } })), retention: S.summarizeRetention([]) });
+  assert.ok(!r.items.some(i => i.id.startsWith('diagnose-')));
+});
+test('mọi khuyến nghị có hành động đều kèm điều kiện giảm/dừng; primaryGoal = việc đầu tiên có hành động', () => {
+  const r = R.recommendGlobal({ overview: ov(mkSk({ recall: { enough: 10, weak: 5 } })), retention: S.summarizeRetention([]) });
+  for (const it of r.items.filter(i => i.action)) assert.ok(it.stopWhen && it.stopWhen.length > 10, it.id);
+  assert.strictEqual(r.primaryGoal.id, r.items.find(i => i.action).id);
+});
+test('khuyến nghị từng từ: có stopWhen', () => {
+  const rec = R.recommendForWord({ stats: { recall: { attempts: 6, correct: 1, w_attempts: 4, w_correct: 0.5 }, recognition: { attempts: 6, correct: 6, w_attempts: 4, w_correct: 4 } }, recentBySkill: {} });
+  assert.ok(rec.items.some(i => i.action && i.stopWhen));
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

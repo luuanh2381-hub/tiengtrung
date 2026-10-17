@@ -351,7 +351,7 @@ test('khuyến nghị: có gợi ý → hiện lý do + nút luyện; nội dung
 test('trí nhớ dài hạn: chưa đủ mẫu → "Chưa đủ dữ liệu (n/10)", KHÔNG hiện %; đủ mẫu → hiện % kèm mẫu số', () => {
   const ctx = skEnv();
   const mk = (n, c) => ({ label: 'L', fsrs: { n, correct: c, rate: n >= 10 ? c / n : null }, practice: { n: 0, correct: 0, rate: null }, all: { n, correct: c, rate: n >= 10 ? c / n : null } });
-  R(ctx, `saState.retention = ${JSON.stringify({ windowDays: 90, byType: [], buckets: { immediate: mk(20, 18), day: mk(3, 3), week: mk(12, 6), month: mk(0, 0) } })}`);
+  R(ctx, `saState.retention = ${JSON.stringify({ windowDays: 90, byType: [], buckets: { immediate: mk(20, 18), short: mk(0, 0), d1: mk(3, 3), d3: mk(12, 6), d7: mk(0, 0) } })}`);
   const h = R(ctx, 'saRenderRetention()');
   assert.ok(h.includes('Chưa đủ dữ liệu (3/10 lượt)'), 'nhóm ít mẫu phải báo thiếu dữ liệu');
   assert.ok(h.includes('90% (18/20)') && h.includes('50% (6/12)'));
@@ -360,7 +360,7 @@ test('trí nhớ dài hạn: chưa đủ mẫu → "Chưa đủ dữ liệu (n/1
 test('trí nhớ dài hạn: hoàn toàn chưa có dữ liệu → giải thích, không vẽ thanh', () => {
   const ctx = skEnv();
   const empty = { label: 'L', fsrs: { n: 0, correct: 0, rate: null }, practice: { n: 0, correct: 0, rate: null }, all: { n: 0, correct: 0, rate: null } };
-  R(ctx, `saState.retention = ${JSON.stringify({ windowDays: 90, byType: [], buckets: { immediate: empty, day: empty, week: empty, month: empty } })}`);
+  R(ctx, `saState.retention = ${JSON.stringify({ windowDays: 90, byType: [], buckets: { immediate: empty, short: empty, d1: empty, d3: empty, d7: empty } })}`);
   const h = R(ctx, 'saRenderRetention()');
   assert.ok(h.includes('Chưa có dữ liệu') && !h.includes('sa-bar-in'));
 });
