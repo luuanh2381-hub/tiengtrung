@@ -1,0 +1,18 @@
+# Tự động gọi server để sinh ví dụ / Hán Việt / chiết tự (miễn phí).
+# Cần 2 secret trong GitHub repo: APP_URL (vd https://ten-app.vercel.app) và CRON_SECRET (nếu có đặt trên Vercel).
+name: generate-daily
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # mỗi 10 phút (GitHub có thể trễ vài phút, bình thường)
+  workflow_dispatch: {}       # cho phép bấm chạy tay ở tab Actions
+concurrency:
+  group: generate-daily
+  cancel-in-progress: false   # không chạy chồng 2 lượt cùng lúc
+jobs:
+  call:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Gọi API sinh dữ liệu
+        run: |
+          curl -sS --max-time 330 -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" "${{ secrets.APP_URL }}/api/cron/generate-daily" | head -c 1500
