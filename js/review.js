@@ -71,6 +71,23 @@ const RV_EXTRA_MAX = 6;
 const RV_PRACTICE_TYPES = ['drill', 'extra', 'check', 'redo'];
 function rvIsPractice(it) { return !!it && RV_PRACTICE_TYPES.includes(it.type); }
 function rvIsOfficial(it) { return !!it && (it.type === 'review' || it.type === 'new'); }
+// V114: TÁCH 2 trạng thái trước đây dồn chung vào cờ `introduced`:
+//   • introduced            = "từ này ĐÃ qua màn giới thiệu" (chỉ để không hiện lại màn giới thiệu). Tồn tại suốt phiên, kể cả khi thẻ bị sai và quay lại hàng đợi.
+//   • introExposurePending  = "lượt FSRS chính thức ĐẦU TIÊN sau giới thiệu CHƯA được gửi" (người học vừa xem đáp án ở màn giới thiệu/câu kiểm tra
+//     → lượt đó mang exposure:'intro', không cộng điểm kỹ năng). Chỉ đặt khi tạo thẻ chính thức sau câu kiểm tra; TẮT ngay khi lượt đó được gửi đi
+//     (ghi outbox write-ahead xong) nên thẻ quay lại hàng đợi/tải lại trang/gửi lại do mất mạng không bao giờ mang lại cờ này lần nữa.
+function rvIsIntroExposure(it) { return !!it && it.type === 'new' && it.introExposurePending === true; }
+// Tương thích V113: hàng đợi đã lưu trong localStorage từ bản V113 chỉ có `introduced` (chưa có introExposurePending). Với thẻ chính thức
+// kiểu đó, dùng nhật ký phiên (rvLog) để phân biệt: đã có lượt chính thức của từ này trong phiên → KHÔNG còn là lượt đầu; chưa có → vẫn là lượt đầu.
+function rvNormalizeIntroFlags(items, log) {
+  const answered = new Set((Array.isArray(log) ? log : []).filter(e => e && e.official).map(e => e.hz));
+  for (const it of (Array.isArray(items) ? items : [])) {
+    if (it && it.type === 'new' && it.introduced === true && it.introExposurePending === undefined && it.word) {
+      it.introExposurePending = !answered.has(it.word.hz);
+    }
+  }
+  return items;
+}
 
 function rvQCtx() {
   return {
@@ -121,7 +138,8 @@ function rvRecordAnswer(item, q, correct, ms, official) {
   // vừa rồi: sai thì kỹ năng đó yếu đi, đúng thì tiến lên; đúng nhưng chậm thì đánh dấu "chưa chắc". PHẢI gọi trước QS.record
   // (để câu hiện tại chưa tính vào chuẩn nhịp). Chỉ là ước lượng cục bộ cho phiên này; server ghi & tính lại độc lập.
   // V113: câu check/redo (vừa xem đáp án) và lượt đầu sau màn giới thiệu KHÔNG cập nhật hồ sơ cục bộ — server cũng không tính chúng.
-  if (item && !(item.type === 'check' || item.type === 'redo' || item.introduced)) {
+  // V114: "lượt đầu sau giới thiệu" = introExposurePending (KHÔNG còn là introduced) — các lượt sau của từ đó cập nhật bình thường.
+  if (item && !(item.type === 'check' || item.type === 'redo' || rvIsIntroExposure(item))) {
     const updated = QS.learn(item.skillProfile, rvQSession, q, correct, ms);
     item.skillProfile = updated;
     for (const other of rvQueue.items) if (other !== item && other.word && other.word.hz === q.hz) other.skillProfile = updated;
@@ -253,6 +271,7 @@ async function startStudySession(weakMode, forceNew) {
         rvQueue.dayKey = saved.dayKey || todayKey();
         rvSummary = (saved.extra && saved.extra.summary) || rvSummary;
         rvLog = (saved.extra && Array.isArray(saved.extra.log)) ? saved.extra.log : []; rvRestoreQSession();
+        rvNormalizeIntroFlags(rvQueue.items, rvLog); // V114: hàng đợi lưu từ V113 chưa có cờ introExposurePending
         rvStage = 'run'; rvStartInfo = null; rvMatch = null;
         rvBlockedByBacklog = false; rvTotalDue = 0; // phiên đang khôi phục chắc chắn có thẻ thật, không liên quan lý do "bị chặn"
         rvExamplePool = []; rvLastAnswer = null;
@@ -533,7 +552,7 @@ async function rvCommitRating(attemptId, chosenRating) {
     selectedAnswer: pending.selectedAnswer,
     responseTimeMs: pending.responseTimeMs, answerChanges: pending.answerChanges,
     rating: rvFinalRating,
-    exposure: item.introduced ? 'intro' : undefined, // V113: thẻ từ mới vừa qua màn giới thiệu
+    exposure: rvIsIntroExposure(item) ? 'intro' : undefined, // V114: CHỈ lượt chính thức đầu tiên sau giới thiệu (V113 gắn theo `introduced` nên lượt sau cũng bị gắn nhầm)
   }).then(data => {
     if (attemptId !== rvAttemptId || currentTab !== 'review') return;
     if (data && data.ok) {
@@ -543,6 +562,13 @@ async function rvCommitRating(attemptId, chosenRating) {
     rvRatingPhase = 'done';
     render();
   });
+  // V114: lượt đầu sau giới thiệu ĐÃ được giao cho submitFsrsReview — hàm đó ghi outbox (write-ahead, kèm idempotencyKey + exposure) ĐỒNG BỘ trước
+  // await đầu tiên, nên tới đây payload đã nằm an toàn trong outbox và việc gửi lại sẽ dùng đúng payload cũ. Tắt cờ + lưu ngay: nếu thẻ quay lại
+  // hàng đợi (trả lời sai), hoặc trang bị tải lại giữa chừng, lượt sau KHÔNG bị gắn exposure:'intro' nữa.
+  if (item.introExposurePending) {
+    item.introExposurePending = false;
+    if (!rvQueue.practiceOnly) sqPersist(rvStorageMode(), rvQueue, { summary: rvSummary, log: rvLog });
+  }
   // AUDIT V82 (Phần 2/12 — "chuyển card nhanh", "không có animation thừa"): giảm khoảng nghỉ tối
   // thiểu từ 1000ms xuống 450ms. Đây chỉ là thời gian TỐI THIỂU để user kịp thấy dòng "Đã lưu lịch
   // ôn" trước khi sang thẻ kế — KHÔNG ảnh hưởng an toàn dữ liệu (reviewPromise vẫn luôn được đợi đủ
@@ -1046,7 +1072,7 @@ function rvAdvanceQueue() {
   } else if (it && it.type === 'check') {
     // Xong câu kiểm tra ngay sau khi xem từ mới → đưa THẺ FSRS CHÍNH THỨC của từ này vào lại sau RV_NEW_GAP thẻ.
     rvQueue.items.splice(Math.min(RV_NEW_GAP, rvQueue.items.length), 0,
-      { type: 'new', word: it.word, introduced: true, skillProfile: it.skillProfile, suggestedSkill: it.suggestedSkill, confusions: it.confusions });
+      { type: 'new', word: it.word, introduced: true, introExposurePending: true, skillProfile: it.skillProfile, suggestedSkill: it.suggestedSkill, confusions: it.confusions }); // V114: đây là lượt chính thức ĐẦU sau giới thiệu
   } else if (it && rvIsPractice(it)) {
     // extra/redo/drill: sai → hỏi lại tối đa RV_DRILL_MAX_TRIES lần, mỗi lần ĐỔI dạng so với lần sai.
     if (!ok && (it.tries || 0) + 1 < RV_DRILL_MAX_TRIES) {
@@ -1058,7 +1084,7 @@ function rvAdvanceQueue() {
     if (!Array.isArray(rvQueue.completedCards)) rvQueue.completedCards = [];
     rvQueue.completedCards.push({ hz: it.word.hz, l: it.word.l, correct: ok, at: Date.now() });
     if (ok) { sessionKnownHz.add(it.word.hz); saveSessionKnownHz(); sqPurgeHzFromAllQueues(it.word.hz); } // V74: loại khỏi TẤT CẢ tab khác; FIX: persist qua reload; purge khỏi hàng đợi tab khác
-    else rvQueue.items.splice(Math.min(REPEAT_GAP, rvQueue.items.length), 0, it);
+    else rvQueue.items.splice(Math.min(REPEAT_GAP, rvQueue.items.length), 0, Object.assign({}, it, { introExposurePending: false })); // V114: quay lại hàng đợi = KHÔNG còn là lượt đầu sau giới thiệu (introduced vẫn giữ → không hiện lại màn giới thiệu)
   }
   const savedKey = rvStorageMode();
   if (!rvQueue.items.length) {
