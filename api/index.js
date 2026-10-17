@@ -27,7 +27,7 @@ const reviewService = require('../lib/fsrs/reviewService');
 const skillStore = require('../lib/skill-store');
 const wordNotes = require('../lib/word-notes');
 const orphans = require('../lib/orphans');
-const { resolveExercise, isCountableAnswer, MEASURABLE_SKILLS, gradeAnswer, PRACTICE_SOURCES } = require('../lib/skills');
+const { resolveExercise, isCountableAnswer, MEASURABLE_SKILLS, gradeAnswer, PRACTICE_SOURCES, cleanExposure } = require('../lib/skills');
 const skillRecommend = require('../lib/skill-recommend'); // V110: khuyến nghị cá nhân hoá (thuần, theo quy tắc)
 const fsrsAnalytics = require('../lib/fsrs/analytics');
 const fsrsOptimizer = require('../lib/fsrs/optimizer');
@@ -719,7 +719,7 @@ app.post('/api/study/review/preview', async (req, res) => {
 app.post('/api/study/review', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
-  const { wordId, quizType, selectedAnswer, responseTimeMs, answerChanges, idempotencyKey, rating, exerciseType, sessionId } = req.body || {};
+  const { wordId, quizType, selectedAnswer, responseTimeMs, answerChanges, idempotencyKey, rating, exerciseType, sessionId, exposure } = req.body || {};
   const hz = wordId && wordId.hz;
   const l = wordId && Number(wordId.l);
   if (!hz || !Number.isFinite(l)) return res.json({ ok: false, error: 'Thiếu wordId {hz, l} hợp lệ' });
@@ -763,7 +763,7 @@ app.post('/api/study/review', async (req, res) => {
     // quáng nhãn từ client: resolveExercise() loại mọi nhãn lạ/sai chiều.
     // (ex đã được xác định ở trên cùng với việc chấm điểm.)
     const skillRecord = (ex && ex.fsrs && isCountableAnswer(selectedAnswer))
-      ? { skill: ex.skill, exerciseType: ex.exerciseType, sessionId, wrongAnswer: selectedAnswer } : null;
+      ? { skill: ex.skill, exerciseType: ex.exerciseType, sessionId, wrongAnswer: selectedAnswer, exposure: cleanExposure(exposure) } : null;
     const result = await reviewService.reviewCard({
       userId: authed.username, hz, l, answerCorrect, responseTimeMs: rt, answerChanges: changes, idempotencyKey: idemKey, ratingOverride, skillRecord,
     });
@@ -962,11 +962,12 @@ app.get('/api/skills/word', async (req, res) => {
     const recentBySkill = {};
     for (const h of d.history) if (h.skill && new Date(h.ts).getTime() >= weekAgo) recentBySkill[h.skill] = (recentBySkill[h.skill] || 0) + 1;
     const recommendation = skillRecommend.recommendForWord({ stats: d.stats, recentBySkill, repeatedWrong: d.repeatedWrong });
-    const { classify } = require('../lib/skills');
+    const { classify, evidenceOf } = require('../lib/skills');
     const skills = {};
     for (const sk of MEASURABLE_SKILLS) {
       const row = d.stats[sk];
-      skills[sk] = { ...classify(row), correct: row ? row.correct : 0, lastAttemptAt: row ? row.last_attempt_at : null };
+      const ev = evidenceOf(row); // V113: nhãn bằng chứng (độ đầy đủ dữ liệu) tách khỏi điểm
+      skills[sk] = { ...classify(row), correct: row ? row.correct : 0, lastAttemptAt: row ? row.last_attempt_at : null, stage: ev.stage, activeDays: ev.activeDays, delayedN: ev.delayedN, delayedOk: ev.delayedOk };
     }
     // typeStats: dạng bài hay sai (cần ≥ 3 lượt mới xếp hạng, tránh kết luận từ 1–2 câu).
     const weakTypes = d.typeStats.filter(t => t.n >= 3 && t.wrong / t.n >= 0.5).sort((a, b) => b.wrong / b.n - a.wrong / a.n);
@@ -1219,10 +1220,12 @@ app.post('/api/study/session/start', async (req, res) => {
 app.post('/api/study/session/heartbeat', async (req, res) => {
   const authed = await requireAuth(req, res);
   if (!authed) return;
-  const { sessionId } = req.body || {};
+  const { sessionId, activeSeconds } = req.body || {};
   if (!Number.isFinite(Number(sessionId))) return res.json({ ok: false, error: 'Thiếu sessionId hợp lệ' });
+  // V112: activeSeconds (tuỳ chọn) = số giây học thực client đo được; server vẫn chặn bằng thời gian thực + trần (lib/fsrs/study-time.js).
+  const active = (activeSeconds === undefined || activeSeconds === null) ? undefined : Number(activeSeconds);
   try {
-    const session = await fsrsAnalytics.heartbeatExplicitSession(authed.username, Number(sessionId), new Date());
+    const session = await fsrsAnalytics.heartbeatExplicitSession(authed.username, Number(sessionId), new Date(), active);
     if (!session) return res.json({ ok: false, error: 'Không tìm thấy session' });
     res.json({ ok: true, durationSeconds: session.duration_seconds });
   } catch (e) { fail(res, e); }
